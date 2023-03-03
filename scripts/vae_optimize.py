@@ -59,14 +59,8 @@ import numpy as np
 import modules.devices as devices
 import math
 import torch
-import torch.backends.mps
 import torch.nn.functional as F
 from tqdm import tqdm
-
-# important constants for tiling
-ENCODER_TILE_SIZE = 1024
-DECODER_TILE_SIZE = 128
-
 
 def estimate_tensor_space(tensor):
     num_elements = np.prod(tensor.shape)
@@ -118,6 +112,8 @@ def build_sampling(task_queue, net, is_decoder):
     """
     block_ids = net.num_res_blocks
     if is_decoder:
+        resblock2task(task_queue, net.mid.block_1)
+        resblock2task(task_queue, net.mid.block_2)
         module = net.up
         block_ids += 1
     else:
@@ -133,6 +129,9 @@ def build_sampling(task_queue, net, is_decoder):
                 task_queue.append(('upsample', module[i_level].upsample))
             else:
                 task_queue.append(('downsample', module[i_level].downsample))
+    if not is_decoder:
+        resblock2task(task_queue, net.mid.block_1)
+        resblock2task(task_queue, net.mid.block_2)
 
 
 def build_task_queue(net, is_decoder):
@@ -143,18 +142,17 @@ def build_task_queue(net, is_decoder):
     @return: the task queue
     """
     task_queue = []
-    if not is_decoder:
-        task_queue.append(('conv_in', net.conv_in))
+    task_queue.append(('conv_in', net.conv_in))
 
     # construct the sampling part of the task queue
     # because encoder and decoder share the same architecture, we extract the sampling part
     build_sampling(task_queue, net, is_decoder)
 
-    if is_decoder and not net.give_pre_end:
+    if not is_decoder or not net.give_pre_end:
         task_queue.append(('pre_norm', net.norm_out))
         task_queue.append(('silu', inplace_nonlinearity))
         task_queue.append(('conv_out', net.conv_out))
-        if net.tanh_out:
+        if is_decoder and net.tanh_out:
             task_queue.append(('tanh', torch.tanh))
 
     return task_queue
@@ -225,6 +223,20 @@ def vae_tile_encode(self, x):
     @param x: image
     @return: latent vector
     """
+    # Automatically determine the tile size
+    if torch.cuda.is_available():
+        device = x.device
+        total_memory = torch.cuda.get_device_properties(device).total_memory//1024//1024
+        if total_memory > 16*1000:
+            ENCODER_TILE_SIZE = 3072
+        elif total_memory > 12*1000:
+            ENCODER_TILE_SIZE = 2048
+        elif total_memory > 8*1000:
+            ENCODER_TILE_SIZE = 1536
+        else:
+            ENCODER_TILE_SIZE = 960
+    else:
+        ENCODER_TILE_SIZE = 512
     return vae_tile_forward(self, x, ENCODER_TILE_SIZE, is_decoder=False)
 
 
@@ -235,6 +247,22 @@ def vae_tile_decode(self, z):
     @param z: latent vector
     @return: image
     """
+    # Automatically determine the tile size
+    if torch.cuda.is_available():
+        device = z.device
+        total_memory = torch.cuda.get_device_properties(device).total_memory//1024//1024
+        if total_memory > 30*1000:
+            DECODER_TILE_SIZE = 512
+        elif total_memory > 16*1000:
+            DECODER_TILE_SIZE = 256
+        elif total_memory > 12*1000:
+            DECODER_TILE_SIZE = 192
+        elif total_memory > 8*1000:
+            DECODER_TILE_SIZE = 128
+        else:
+            DECODER_TILE_SIZE = 96
+    else:
+        DECODER_TILE_SIZE = 64
     return vae_tile_forward(self, z, DECODER_TILE_SIZE, is_decoder=True)
 
 
@@ -248,9 +276,8 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     height, width = z.shape[2], z.shape[3]
     self.last_z_shape = z.shape
     device = z.device
-    memory_inflator = 4 if is_decoder else 2
-
     # split the input into tiles and build a task queue for each tile
+
     tile_input_bboxes = []
     tile_output_bboxes = []
 
@@ -284,44 +311,26 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
 
             tile_input_bboxes.append(input_bbox)
 
-    # in the early stage of forward, if it is a decoder,
-    # we directly pass the input to its first several layers
-    # this involves attention and groupnorm, which reduces 
-    # the probability of NaNs in fp16 mode
-    
-    # Process tiles input
-    num_tiles = len(tile_input_bboxes)
-    # Build task queues
-    task_queues = [build_task_queue(self, is_decoder).copy() for _ in range(num_tiles)]
-    pbar = tqdm(total=num_tiles * (len(task_queues[0])+1)+ (4 if is_decoder else 6), desc='Executing VAE ' +
-                ('Decoder' if is_decoder else 'Encoder') + ' Task Queue: ')
-    if is_decoder:
-        z = self.conv_in(z)
-        pbar.update(1)
-        z = self.mid.block_1(z, None)
-        pbar.update(1)
-        z = self.mid.attn_1(z)
-        pbar.update(1)
-        z = self.mid.block_2(z, None)
-        pbar.update(1)
-
-    # Prepare tiles by split the input latents.
-    # Initially, we keep all tiles on the GPU to reduce unnecessary data transfer
+    # Prepare tiles by split the input latents
     tiles = []
-    for i, input_bbox in enumerate(tile_input_bboxes):
+    for input_bbox in tile_input_bboxes:
         tile = z[:, :, input_bbox[2]:input_bbox[3],
-                 input_bbox[0]:input_bbox[1]]
+                 input_bbox[0]:input_bbox[1]].cpu()
         tiles.append(tile)
-        pbar.update(1)
         # DEBUG: 
         # print('tile shape: ', tile.shape, 'input bbox: ', input_bbox, 'output bbox: ', tile_output_bboxes[len(completed_tiles)])
-
+    num_tiles = len(tiles)
     completed = [None] * num_tiles
     num_completed = 0
     # Free memory of input latent tensor
     del z
     devices.torch_gc()
 
+    # Build task queues
+    task_queues = [build_task_queue(self, is_decoder).copy() for _ in range(num_tiles)]
+    # Task queue execution
+    pbar = tqdm(total=num_tiles * len(task_queues[0]), desc='Executing VAE ' +
+                ('Decoder' if is_decoder else 'Encoder') + ' Task Queue: ')
     # execute the task back and forth when switch tiles so that we always 
     # keep one tile on the GPU to reduce unnecessary data transfer
     forward = True
@@ -369,11 +378,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
                     task_id = 0
                     while task_queue[task_id][0] != 'add_res':
                         task_id += 1
-                    res = task[1](tile)
-                    if estimate_tensor_space(res) * memory_inflator < estimate_free_memory(device):
-                        task_queue[task_id][1] = res
-                    else:
-                        task_queue[task_id][1] = res.cpu()
+                    task_queue[task_id][1] = task[1](tile).cpu()
                 elif task[0] == 'add_res':
                     tile = tile + task[1].to(device)
                 elif task[0] == 'temb':
@@ -394,17 +399,14 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             elif i == 0 and not forward:
                 forward = True
                 tiles[i] = tile
-            elif estimate_tensor_space(tile) * memory_inflator < estimate_free_memory(device):
-                tiles[i] = tile
             else:
                 tiles[i] = tile.cpu()
+                del tile
                 # devices.torch_gc()
             if len(task_queue) == 0:
-                if is_decoder:
-                    completed[i] = tiles[i].cpu()
-                else:
-                    completed[i] = tiles[i]
+                completed[i] = tiles[i].cpu()
                 num_completed += 1
+                
         if num_completed == num_tiles:
             break
         # aggregate the mean and var for the group norm calculation
@@ -435,6 +437,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             group_norm_tmp_weight = None
             group_norm_tmp_bias = None
 
+    pbar.close()
     # crop tiles
     for i in range(num_tiles):
         completed[i] = crop_valid_region(
@@ -446,26 +449,11 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
         for j in range(num_width_tiles):
             tile_w.append(completed[i*num_width_tiles+j])
         result.append(torch.cat(tile_w, dim=3))
-    z = torch.cat(result, dim=2)
-    del result
-    devices.torch_gc()
-    # In the final stage of forward, if the model is a encoder
-    # we send it back to the gpu and complete several mid layers
+    result = torch.cat(result, dim=2)
+    # if the model is a encoder, we send it back to the gpu
     if not is_decoder:
-        z = z.to(device)
-        # middle
-        z = self.mid.block_1(z, None)
-        pbar.update(1)
-        z = self.mid.attn_1(z)
-        pbar.update(1)
-        z = self.mid.block_2(z, None)
-        pbar.update(1)
-        # end
-        z = self.norm_out(z)
-        pbar.update(1)
-        z = inplace_nonlinearity(z)
-        pbar.update(1)
-        z = self.conv_out(z)
-        pbar.update(1)
-    pbar.close()
-    return z
+        result = result.to(device)
+    if torch.cuda.is_available():
+        print("Max memory allocated: ", torch.cuda.max_memory_allocated(device)/1024/1024, "MB")
+        torch.cuda.reset_max_memory_allocated(device)
+    return result
