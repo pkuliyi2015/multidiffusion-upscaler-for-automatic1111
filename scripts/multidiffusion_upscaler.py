@@ -2,7 +2,6 @@ import math
 import types
 
 import torch
-from scripts.vae_optimize import vae_tile_decode, vae_tile_encode
 from tqdm import tqdm
 
 import modules.scripts as scripts
@@ -207,28 +206,15 @@ class Script(scripts.Script):
                 x_dec = torch.where(fusion_count > 1, new_dec / fusion_count, new_dec)
                 if callback: callback(i)
 
-            org_vae_decoder_forward = self.model.first_stage_model.decoder.forward
-            # hijack the vae to save vram
-            if x_latent.shape[2] > 192 or x_latent.shape[3] > 192:
-                print("The latent is larger than 192x192. Hijack VAE decoding...")
-                def delegate_decode(self, x):
-                    try:
-                        return vae_tile_decode(self, x)
-                    finally:
-                        self.forward = org_vae_decoder_forward
-                self.model.first_stage_model.decoder.forward = types.MethodType(delegate_decode,self.model.first_stage_model.decoder)
             return x_dec
 
         org_sampler = sd_samplers.create_sampler
         custom_sampler = org_sampler('DDIM', p.sd_model)
         custom_sampler.sampler.decode = types.MethodType(multidiffusion_decode, custom_sampler.sampler)
         sd_samplers.create_sampler = lambda name, model: custom_sampler
-        org_vae_encoder_forward = p.sd_model.first_stage_model.encoder.forward
-        p.sd_model.first_stage_model.encoder.forward = types.MethodType(vae_tile_encode, p.sd_model.first_stage_model.encoder)
-
+        
         try:
             return processing.process_images(p)
         finally:
             sd_samplers.create_sampler = org_sampler
-            p.sd_model.first_stage_model.encoder.forward = org_vae_encoder_forward
 

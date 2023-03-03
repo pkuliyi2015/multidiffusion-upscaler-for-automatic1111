@@ -18,11 +18,11 @@
 #
 #   Drawbacks:
 #   - Giant RAM needed. To store the intermediate results for a 4096x4096
-#       images, you need 32 GB RAM it consumes ~20GB); for 8192x8192 
+#       images, you need 32 GB RAM it consumes ~20GB); for 8192x8192
 #       you need 128 GB RAM machine (it consumes ~100 GB)
 #   - NaNs always appear in for 8k images when you use fp16 (half) VAE
 #       You must use --no-half-vae to disable half VAE for that giant image.
-#   - Slow speed. With default tile size, it takes around 50/200 seconds 
+#   - Slow speed. With default tile size, it takes around 50/200 seconds
 #       to encode/decode a 4096x4096 image; and 200/900 seconds to encode/decode
 #       a 8192x8192 image. (The speed is limited by both the GPU and the CPU.)
 #   - The gradient calculation is not compatible with this hack. It
@@ -56,15 +56,23 @@
 #
 # -------------------------------------------------------------------------
 import modules.devices as devices
+import modules.shared as shared
+from modules.script_callbacks import on_before_image_saved, remove_callbacks_for_function
 import math
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+import modules.scripts as scripts
+import gradio as gr
+import types
 
 # inplace version of silu
+
+
 def inplace_nonlinearity(x):
     # Test: fix for Nans
     return F.silu(x, inplace=True)
+
 
 def resblock2task(queue, block):
     """
@@ -90,6 +98,7 @@ def resblock2task(queue, block):
     queue.append(('silu', inplace_nonlinearity))
     queue.append(('conv2', block.conv2))
     queue.append(['add_res', None])
+
 
 def build_sampling(task_queue, net, is_decoder):
     """
@@ -204,17 +213,14 @@ def crop_valid_region(x, input_bbox, target_bbox, scale):
     margin = [target_bbox[i] - padded_bbox[i] for i in range(4)]
     return x[:, :, margin[2]:x.size(2)+margin[3], margin[0]:x.size(3)+margin[1]]
 
-@torch.inference_mode()
-def vae_tile_encode(self, x):
+
+def get_recommend_encoder_tile_size():
     """
-    Encode an image into a latent vector in a tiled manner.
-    @param x: image
-    @return: latent vector
+    Get the recommended encoder tile size
     """
-    # Automatically determine the tile size
     if torch.cuda.is_available():
-        device = x.device
-        total_memory = torch.cuda.get_device_properties(device).total_memory//1024//1024
+        total_memory = torch.cuda.get_device_properties(
+            devices.device).total_memory//1024//1024
         if total_memory > 16*1000:
             ENCODER_TILE_SIZE = 3072
         elif total_memory > 12*1000:
@@ -225,20 +231,13 @@ def vae_tile_encode(self, x):
             ENCODER_TILE_SIZE = 960
     else:
         ENCODER_TILE_SIZE = 512
-    return vae_tile_forward(self, x, ENCODER_TILE_SIZE, is_decoder=False)
+    return ENCODER_TILE_SIZE
 
 
-@torch.inference_mode()
-def vae_tile_decode(self, z):
-    """
-    Decode a latent vector z into an image in a tiled manner.
-    @param z: latent vector
-    @return: image
-    """
-    # Automatically determine the tile size
+def get_recommend_decoder_tile_size():
     if torch.cuda.is_available():
-        device = z.device
-        total_memory = torch.cuda.get_device_properties(device).total_memory//1024//1024
+        total_memory = torch.cuda.get_device_properties(
+            devices.device).total_memory//1024//1024
         if total_memory > 30*1000:
             DECODER_TILE_SIZE = 256
         elif total_memory > 16*1000:
@@ -251,7 +250,7 @@ def vae_tile_decode(self, z):
             DECODER_TILE_SIZE = 64
     else:
         DECODER_TILE_SIZE = 64
-    return vae_tile_forward(self, z, DECODER_TILE_SIZE, is_decoder=True)
+    return DECODER_TILE_SIZE
 
 
 @torch.inference_mode()
@@ -284,7 +283,8 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
 
             # if the output bbox is close to the image boundary, we extend it to the image boundary
             output_bbox = [input_bbox[0] if input_bbox[0] > pad else 0,
-                           input_bbox[1] if input_bbox[1] < width - pad else width,
+                           input_bbox[1] if input_bbox[1] < width -
+                           pad else width,
                            input_bbox[2] if input_bbox[2] > pad else 0,
                            input_bbox[3] if input_bbox[3] < height - pad else height]
 
@@ -305,7 +305,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
         tile = z[:, :, input_bbox[2]:input_bbox[3],
                  input_bbox[0]:input_bbox[1]].cpu()
         tiles.append(tile)
-        # DEBUG: 
+        # DEBUG:
         # print('tile shape: ', tile.shape, 'input bbox: ', input_bbox, 'output bbox: ', tile_output_bboxes[len(completed_tiles)])
     num_tiles = len(tiles)
     completed = [None] * num_tiles
@@ -315,11 +315,12 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     devices.torch_gc()
 
     # Build task queues
-    task_queues = [build_task_queue(self, is_decoder).copy() for _ in range(num_tiles)]
+    task_queues = [build_task_queue(self, is_decoder).copy()
+                   for _ in range(num_tiles)]
     # Task queue execution
-    pbar = tqdm(total=num_tiles * len(task_queues[0]), desc='Executing VAE ' +
+    pbar = tqdm(total=num_tiles * len(task_queues[0]), desc='Executing Tiled VAE ' +
                 ('Decoder' if is_decoder else 'Encoder') + ' Task Queue: ')
-    # execute the task back and forth when switch tiles so that we always 
+    # execute the task back and forth when switch tiles so that we always
     # keep one tile on the GPU to reduce unnecessary data transfer
     forward = True
     while True:
@@ -374,12 +375,13 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
                 else:
                     tile = task[1](tile)
                 pbar.update(1)
-            # check for NaNs in the tile. 
+            # check for NaNs in the tile.
             # If there are NaNs, we abort the process to save user's time
             try:
                 devices.test_for_nans(tile, "vae")
             except:
-                print("Detected NaNs in the VAE output. Please use VAE with proper weights.")
+                print(
+                    "Detected NaNs in the VAE output. Please use VAE with proper weights.")
                 raise
             if i == num_tiles - 1 and forward:
                 forward = False
@@ -394,7 +396,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             if len(task_queue) == 0:
                 completed[i] = tiles[i].cpu()
                 num_completed += 1
-                
+
         if num_completed == num_tiles:
             break
         # aggregate the mean and var for the group norm calculation
@@ -442,6 +444,76 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     if not is_decoder:
         result = result.to(device)
     if torch.cuda.is_available():
-        print("Max memory allocated: ", torch.cuda.max_memory_allocated(device)/1024/1024, "MB")
+        print("Max memory allocated: ",
+              torch.cuda.max_memory_allocated(device)/1024/1024, "MB")
         torch.cuda.reset_peak_memory_stats(device)
     return result
+
+
+class Script(scripts.Script):
+
+    def title(self):
+        return "VAE Tiling"
+
+    def show(self, is_img2img):
+        return scripts.AlwaysVisible
+
+    def ui(self, is_img2img):
+        ctrls = []
+        recommend_encoder_tile_size = get_recommend_encoder_tile_size()
+        recommend_decoder_tile_size = get_recommend_decoder_tile_size()
+        with gr.Group():
+            with gr.Accordion('VAE Tiling', open=True):
+                with gr.Row():
+                    enabled = gr.Checkbox(label='Enable', value=True)
+                    reset = gr.Button(value="Reset Tile Size")
+                info = gr.HTML(
+            "<p style=\"margin-bottom:1.0em\">Please use smaller tile size when see CUDA error: out of memory.</p>")
+                encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256,
+                                              maximum=3088, step=16, value=recommend_encoder_tile_size, interactive=True)
+                decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,
+                                              maximum=256, step=16, value=recommend_decoder_tile_size, interactive=True)
+                def reset_tile_size():
+                    return get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()
+                reset.click(fn=reset_tile_size, inputs=[], outputs=[encoder_tile_size, decoder_tile_size])
+                ctrls.extend([enabled, encoder_tile_size, decoder_tile_size])
+        return ctrls
+
+    def process(self, p, enabled, encoder_tile_size, decoder_tile_size):
+        if not enabled or p is None:
+            return p
+        if devices.device == torch.device('cpu'):
+            print("VAE Tiling is not supported on CPU")
+            return p
+        image = p.init_images[0]
+        width = image.width
+        height = image.height
+        hijack_encoder = width > encoder_tile_size or height > encoder_tile_size
+        hijack_decoder = math.ceil(
+            width/8) > decoder_tile_size or math.ceil(height/8) > decoder_tile_size
+        if not hijack_encoder and not hijack_decoder:
+            print("VAE Tiling is not needed for small images")
+            return p
+        print("VAE Tiling is hooked.")
+        vae = p.sd_model.first_stage_model
+        origin_encoder = vae.encoder
+        origin_decoder = vae.decoder
+        if hijack_encoder:
+            def new_encoder_forward(self, x): return vae_tile_forward(
+                self, x, encoder_tile_size, False)
+            vae.encoder.forward = types.MethodType(
+                new_encoder_forward, vae.encoder)
+        if hijack_decoder:
+            def new_decoder_forward(self, x): return vae_tile_forward(
+                self, x, decoder_tile_size, True)
+            vae.decoder.forward = types.MethodType(
+                new_decoder_forward, vae.decoder)
+
+        def recover(_):
+            vae.encoder = origin_encoder
+            vae.decoder = origin_decoder
+            print("VAE Tiling is unhooked.")
+            remove_callbacks_for_function(recover)
+
+        on_before_image_saved(recover)
+        return p
