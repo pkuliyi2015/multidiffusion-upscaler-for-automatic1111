@@ -64,8 +64,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 # important constants for tiling
-ENCODER_TILE_SIZE = 2048
-DECODER_TILE_SIZE = 256
+ENCODER_TILE_SIZE = 1024
+DECODER_TILE_SIZE = 128
 
 
 def estimate_tensor_space(tensor):
@@ -248,7 +248,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     height, width = z.shape[2], z.shape[3]
     self.last_z_shape = z.shape
     device = z.device
-    memory_inflator = 2.5 if is_decoder else 1.2
+    memory_inflator = 4 if is_decoder else 2
 
     # split the input into tiles and build a task queue for each tile
     tile_input_bboxes = []
