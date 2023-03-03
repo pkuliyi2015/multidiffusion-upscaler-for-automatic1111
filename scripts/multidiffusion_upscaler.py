@@ -55,23 +55,11 @@
 #   Please give me a star if you like this project!
 #
 # -------------------------------------------------------------------------
-import numpy as np
 import modules.devices as devices
 import math
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
-def estimate_tensor_space(tensor):
-    num_elements = np.prod(tensor.shape)
-    space_usage = num_elements * 4
-    space_usage_mb = space_usage / (1024 * 1024)
-    return space_usage_mb
-
-def estimate_free_memory(device):
-    if torch.cuda.is_available():
-        return torch.cuda.mem_get_info(device)[0] / (1024 * 1024)
-    return 0
 
 # inplace version of silu
 def inplace_nonlinearity(x):
