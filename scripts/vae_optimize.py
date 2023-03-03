@@ -55,23 +55,11 @@
 #   Please give me a star if you like this project!
 #
 # -------------------------------------------------------------------------
-import numpy as np
 import modules.devices as devices
 import math
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
-def estimate_tensor_space(tensor):
-    num_elements = np.prod(tensor.shape)
-    space_usage = num_elements * 4
-    space_usage_mb = space_usage / (1024 * 1024)
-    return space_usage_mb
-
-def estimate_free_memory(device):
-    if torch.cuda.is_available():
-        return torch.cuda.mem_get_info(device)[0] / (1024 * 1024)
-    return 0
 
 # inplace version of silu
 def inplace_nonlinearity(x):
@@ -252,15 +240,15 @@ def vae_tile_decode(self, z):
         device = z.device
         total_memory = torch.cuda.get_device_properties(device).total_memory//1024//1024
         if total_memory > 30*1000:
-            DECODER_TILE_SIZE = 512
-        elif total_memory > 16*1000:
             DECODER_TILE_SIZE = 256
-        elif total_memory > 12*1000:
+        elif total_memory > 16*1000:
             DECODER_TILE_SIZE = 192
-        elif total_memory > 8*1000:
+        elif total_memory > 12*1000:
             DECODER_TILE_SIZE = 128
-        else:
+        elif total_memory > 8*1000:
             DECODER_TILE_SIZE = 96
+        else:
+            DECODER_TILE_SIZE = 64
     else:
         DECODER_TILE_SIZE = 64
     return vae_tile_forward(self, z, DECODER_TILE_SIZE, is_decoder=True)
@@ -402,7 +390,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             else:
                 tiles[i] = tile.cpu()
                 del tile
-                # devices.torch_gc()
+                devices.torch_gc()
             if len(task_queue) == 0:
                 completed[i] = tiles[i].cpu()
                 num_completed += 1
