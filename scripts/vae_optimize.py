@@ -468,14 +468,16 @@ class Script(scripts.Script):
                     enabled = gr.Checkbox(label='Enable', value=True)
                     reset = gr.Button(value="Reset Tile Size")
                 info = gr.HTML(
-            "<p style=\"margin-bottom:1.0em\">Please use smaller tile size when see CUDA error: out of memory.</p>")
+                    "<p style=\"margin-bottom:1.0em\">Please use smaller tile size when see CUDA error: out of memory.</p>")
                 encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256,
                                               maximum=3088, step=16, value=recommend_encoder_tile_size, interactive=True)
                 decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,
                                               maximum=256, step=16, value=recommend_decoder_tile_size, interactive=True)
+
                 def reset_tile_size():
                     return get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()
-                reset.click(fn=reset_tile_size, inputs=[], outputs=[encoder_tile_size, decoder_tile_size])
+                reset.click(fn=reset_tile_size, inputs=[], outputs=[
+                            encoder_tile_size, decoder_tile_size])
                 ctrls.extend([enabled, encoder_tile_size, decoder_tile_size])
         return ctrls
 
@@ -488,9 +490,13 @@ class Script(scripts.Script):
         image = p.init_images[0]
         width = image.width
         height = image.height
-        hijack_encoder = width > encoder_tile_size or height > encoder_tile_size
-        hijack_decoder = math.ceil(
-            width/8) > decoder_tile_size or math.ceil(height/8) > decoder_tile_size
+        # If the image is smaller than tile size + two sides' padding
+        # we don't need to tile the VAE
+        pad = 32
+        hijack_encoder = width > encoder_tile_size + \
+            2 * pad or height > encoder_tile_size + 2 * pad
+        hijack_decoder = math.ceil(width/8) > decoder_tile_size + \
+            2 * pad or math.ceil(height/8) > decoder_tile_size + 2 * pad
         if not hijack_encoder and not hijack_decoder:
             print("VAE Tiling is not needed for small images")
             return p
