@@ -443,5 +443,5 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
         result = result.to(device)
     if torch.cuda.is_available():
         print("Max memory allocated: ", torch.cuda.max_memory_allocated(device)/1024/1024, "MB")
-        torch.cuda.reset_max_memory_allocated(device)
+        torch.cuda.reset_peak_memory_stats(device)
     return result
