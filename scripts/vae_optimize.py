@@ -447,6 +447,8 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             tile_w.append(completed[i*num_width_tiles+j])
         result.append(torch.cat(tile_w, dim=3))
     z = torch.cat(result, dim=2)
+    del result
+    devices.torch_gc()
     # In the final stage of forward, if the model is a encoder
     # we send it back to the gpu and complete several mid layers
     if not is_decoder:
