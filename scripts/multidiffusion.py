@@ -323,7 +323,8 @@ class Script(scripts.Script):
                         label='Enable MultiDiffusion', value=False)
                     override_image_size = gr.Checkbox(
                         label='Overwrite image size', value=False, visible=(not is_img2img))
-
+                    keep_input_size = gr.Checkbox(
+                        label='Keep input image size', value=True, visible=(is_img2img))
                 with gr.Row():
                     image_width = gr.Slider(minimum=256, maximum=8192, step=16, label='Image width', value=1024,
                                             elem_id=self.elem_id("image_width"), visible=False)
@@ -357,9 +358,9 @@ class Script(scripts.Script):
             override_image_size.change(fn=on_override_image_size, inputs=[
                                        override_image_size], outputs=[image_width, image_height])
 
-        return [enabled, override_image_size, image_width, image_height, tile_width, tile_height, overlap, batch_size, upscaler_index, scale_factor]
+        return [enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, batch_size, upscaler_index, scale_factor]
 
-    def process(self, p, enabled, override_image_size, image_width, image_height, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor):
+    def process(self, p, enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor):
         if not enabled:
             return p
         if isinstance(upscaler_index, str):
@@ -378,8 +379,9 @@ class Script(scripts.Script):
             else:
                 image = init_img
             p.init_images[0] = image
-            p.width = image.width
-            p.height = image.height
+            if keep_input_size:
+                p.width = image.width
+                p.height = image.height
         elif override_image_size:
             p.width = image_width
             p.height = image_height

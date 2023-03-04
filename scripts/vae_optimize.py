@@ -469,7 +469,7 @@ class VAEHook:
     def __call__(self, x):
         if x.shape[2] <= self.pad * 2 + self.tile_size and x.shape[3] <= self.pad * 2 + self.tile_size:
             print("VAE Tiling: input size is too small, skip tiling")
-            return self.net(x, None)
+            return self.net(x)
         else:
             print("VAE Tiling: input size is larger than", self.tile_size, "x", self.tile_size, ", use tiling")
             return vae_tile_forward(self.net, x, self.tile_size, self.is_decoder)
