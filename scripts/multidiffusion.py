@@ -119,6 +119,13 @@ class MultiDiffusionDelegate(object):
         self.x_buffer_pred = None
         self.pbar = None
 
+        # try to load ControlNet support
+        try:
+            from scripts import controlnet
+            print("MultiDiffusion ControlNet support loaded")
+        except ImportError:
+            print("ControlNet not found. MultiDiffusion Control support is disabled.")
+
 
     @staticmethod
     def splitable(w, h, tile_w, tile_h, overlap):
