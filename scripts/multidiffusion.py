@@ -113,7 +113,7 @@ class MultiDiffusionDelegate(object):
         # And avoid the overhead of weight summing
         self.weights = weights.unsqueeze(0).unsqueeze(0)
         self.x_buffer = None
-        self.pbar = tqdm(total=self.num_batches * ((state.job_count * state.sampling_steps) * 2 - 1), desc="MultiDiffusion Sampling: ")
+        self.pbar = None
 
 
     @staticmethod
@@ -174,7 +174,7 @@ class MultiDiffusionDelegate(object):
         def func(x_tile, bboxes):
             sigma_in_tile = sigma_in.repeat(len(bboxes))
             new_cond = self.repeat_con_dict(cond, bboxes)
-            x_tile_out = self.sampler_func(x_tile, sigma_in_tile, new_cond)
+            x_tile_out = self.sampler_func(x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
         return self.compute_x_tile(x_in, func)
                 
@@ -188,7 +188,7 @@ class MultiDiffusionDelegate(object):
                 cond_in_tile = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
                 ucond_shape = unconditional_conditioning.shape
                 ucond_tile = unconditional_conditioning.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
-            x_tile_out = self.sampler_func(x_tile, cond_in_tile, ts, ucond_tile, *args, **kwargs)
+            x_tile_out = self.sampler_func(x_tile, cond_in_tile, ts, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out
         return self.compute_x_tile(x_in, func)
     
@@ -199,6 +199,10 @@ class MultiDiffusionDelegate(object):
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
         else:
             self.x_buffer.zero_()
+
+        if self.pbar is None:
+            self.pbar = tqdm(total=self.num_batches * ((state.job_count * state.sampling_steps) * 2 - 1), desc="MultiDiffusion Sampling: ")
+        
         for bboxes in self.batched_bboxes:
             if state.interrupted:
                 return x_in
@@ -218,8 +222,9 @@ class MultiDiffusionDelegate(object):
     
     def kdiff_tile_prompt(delegate_self, self, x, sigma, uncond, cond, cond_scale, image_cond):
         '''
-            TODO: Complete this feature
             Hijack into the CFGDenoiser forward function to support per tile prompt control
+            This is because the K-Diffusion sampler may deal with prompt differently
+            Also, we want to eliminate the overhead of reconstructing the useless overall prompt
         '''
 
         if state.interrupted or state.skipped:
