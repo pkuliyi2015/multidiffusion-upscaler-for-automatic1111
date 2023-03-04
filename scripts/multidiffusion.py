@@ -344,9 +344,9 @@ class Script(scripts.Script):
                 with gr.Group():
                     with gr.Row():
                         upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers],
-                                                     value="None", elem_id=self.elem_id("upscaler_index"))
+                                                     value="None", elem_id=self.elem_id("upscaler_index"), visible=is_img2img)
                         scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
-                                                 elem_id=self.elem_id("scale_factor"))
+                                                 elem_id=self.elem_id("scale_factor"), visible=is_img2img)
         if not is_img2img:
             def on_override_image_size(value):
                 if value:
