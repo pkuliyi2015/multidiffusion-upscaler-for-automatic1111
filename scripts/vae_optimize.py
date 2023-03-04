@@ -460,8 +460,9 @@ def vae_tile_forward(net, z, tile_size, is_decoder):
     return result
 
 class VAEHook:
-    def __init__(self, net, tile_size, is_decoder):
+    def __init__(self, net, origin_forward, tile_size, is_decoder):
         self.net = net
+        self.origin_forward = origin_forward
         self.tile_size = tile_size
         self.is_decoder = is_decoder
         self.pad = 32
@@ -469,7 +470,7 @@ class VAEHook:
     def __call__(self, x):
         if x.shape[2] <= self.pad * 2 + self.tile_size and x.shape[3] <= self.pad * 2 + self.tile_size:
             print("VAE Tiling: input size is too small, skip tiling")
-            return self.net(x)
+            return self.origin_forward(x)
         else:
             print("VAE Tiling: input size is larger than", self.tile_size, "x", self.tile_size, ", use tiling")
             return vae_tile_forward(self.net, x, self.tile_size, self.is_decoder)
@@ -479,8 +480,6 @@ class Script(scripts.Script):
 
     def __init__(self):
         self.enabled = False
-        self.org_encoder = None
-        self.org_decoder = None
 
     def title(self):
         return "VAE Tiling"
@@ -518,22 +517,22 @@ class Script(scripts.Script):
         vae = p.sd_model.first_stage_model
         if not enabled:
             if isinstance(vae.encoder.forward, VAEHook):
-                vae.encoder.forward = vae.encoder.forward.net.forward
+                vae.encoder.forward = vae.encoder.forward.origin_forward
             if isinstance(vae.decoder.forward, VAEHook):
-                vae.decoder.forward = vae.decoder.forward.net.forward
+                vae.decoder.forward = vae.decoder.forward.origin_forward
             return p
         if devices.device == torch.device('cpu'):
             print("VAE Tiling is not supported on CPU")
             return p
         
         if isinstance(vae.encoder.forward, VAEHook):
-            new_hook = VAEHook(vae.encoder.forward.net, encoder_tile_size, False)
+            new_hook = VAEHook(vae.encoder, vae.encoder.forward.origin_forward, encoder_tile_size, False)
         else:
-            new_hook = VAEHook(vae.encoder, encoder_tile_size, False)
+            new_hook = VAEHook(vae.encoder, vae.encoder.forward, encoder_tile_size, False)
         vae.encoder.forward = new_hook
         if isinstance(vae.decoder.forward, VAEHook):
-            new_hook = VAEHook(vae.decoder.forward.net, decoder_tile_size, True)
+            new_hook = VAEHook(vae.decoder, vae.decoder.forward.origin_forward, decoder_tile_size, True)
         else:
-            new_hook = VAEHook(vae.decoder, decoder_tile_size, True)
+            new_hook = VAEHook(vae.decoder, vae.decoder.forward, decoder_tile_size, True)
         vae.decoder.forward = new_hook
         return p
