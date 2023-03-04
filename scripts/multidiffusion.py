@@ -361,11 +361,11 @@ class Script(scripts.Script):
 
     def process(self, p, enabled, override_image_size, image_width, image_height, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor):
         if not enabled:
-            return False
+            return p
         if isinstance(upscaler_index, str):
             upscaler_index = [x.name.lower() for x in shared.sd_upscalers].index(
                 upscaler_index.lower())
-        if len(p.init_images) > 0:
+        if hasattr(p, "init_images") and len(p.init_images) > 0:
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
             upscaler = shared.sd_upscalers[upscaler_index]
@@ -373,6 +373,8 @@ class Script(scripts.Script):
                 print(f"Upscaling image with {upscaler.name}...")
                 image = upscaler.scaler.upscale(
                     init_img, scale_factor, upscaler.data_path)
+                p.extra_generation_params["MultiDiffusion upscaler"] = upscaler.name
+                p.extra_generation_params["MultiDiffusion scale factor"] = scale_factor
             else:
                 image = init_img
             p.init_images[0] = image
@@ -388,8 +390,6 @@ class Script(scripts.Script):
         p.extra_generation_params["MultiDiffusion tile width"] = tile_width
         p.extra_generation_params["MultiDiffusion tile height"] = tile_height
         p.extra_generation_params["MultiDiffusion overlap"] = overlap
-        p.extra_generation_params["MultiDiffusion upscaler"] = upscaler.name
-        p.extra_generation_params["MultiDiffusion scale factor"] = scale_factor
         # hack the create_sampler function to get the created sampler
         old_create_sampler = sd_samplers.create_sampler
         def create_sampler(name, model):

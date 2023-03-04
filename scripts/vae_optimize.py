@@ -257,14 +257,14 @@ def get_recommend_decoder_tile_size():
 
 
 @torch.inference_mode()
-def vae_tile_forward(self, z, tile_size, is_decoder):
+def vae_tile_forward(net, z, tile_size, is_decoder):
     """
     Decode a latent vector z into an image in a tiled manner.
     @param z: latent vector
     @return: image
     """
     height, width = z.shape[2], z.shape[3]
-    self.last_z_shape = z.shape
+    net.last_z_shape = z.shape
     device = z.device
     # split the input into tiles and build a task queue for each tile
 
@@ -276,6 +276,10 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     # we only need to pad 32 pixels to avoid seams for decoder (which is divisible by 8)
     num_height_tiles = math.ceil((height - 2 * pad) / tile_size)
     num_width_tiles = math.ceil((width - 2 * pad) / tile_size)
+    # If any of the numbers are 0, we let it be 1
+    # This is to avoid the case where the image very long or very high
+    num_height_tiles = max(num_height_tiles, 1)
+    num_width_tiles = max(num_width_tiles, 1)
 
     for i in range(num_height_tiles):
         for j in range(num_width_tiles):
@@ -318,7 +322,7 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
     devices.torch_gc()
 
     # Build task queues
-    task_queues = [build_task_queue(self, is_decoder).copy()
+    task_queues = [build_task_queue(net, is_decoder).copy()
                    for _ in range(num_tiles)]
     # Task queue execution
     pbar = tqdm(total=num_tiles * len(task_queues[0]), desc='Executing Tiled VAE ' +
@@ -455,8 +459,28 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
         torch.cuda.reset_peak_memory_stats(device)
     return result
 
+class VAEHook:
+    def __init__(self, net, tile_size, is_decoder):
+        self.net = net
+        self.tile_size = tile_size
+        self.is_decoder = is_decoder
+        self.pad = 32
+
+    def __call__(self, x):
+        if x.shape[2] <= self.pad * 2 + self.tile_size and x.shape[3] <= self.pad * 2 + self.tile_size:
+            print("VAE Tiling: input size is too small, skip tiling")
+            return self.net(x, None)
+        else:
+            print("VAE Tiling: input size is larger than", self.tile_size, "x", self.tile_size, ", use tiling")
+            return vae_tile_forward(self.net, x, self.tile_size, self.is_decoder)
+
 
 class Script(scripts.Script):
+
+    def __init__(self):
+        self.enabled = False
+        self.org_encoder = None
+        self.org_decoder = None
 
     def title(self):
         return "VAE Tiling"
@@ -489,44 +513,27 @@ class Script(scripts.Script):
         return ctrls
 
     def process(self, p, enabled, encoder_tile_size, decoder_tile_size):
-        if not enabled or p is None:
+        if p is None:
+            return p
+        vae = p.sd_model.first_stage_model
+        if not enabled:
+            if isinstance(vae.encoder.forward, VAEHook):
+                vae.encoder.forward = vae.encoder.forward.net.forward
+            if isinstance(vae.decoder.forward, VAEHook):
+                vae.decoder.forward = vae.decoder.forward.net.forward
             return p
         if devices.device == torch.device('cpu'):
             print("VAE Tiling is not supported on CPU")
             return p
-        image = p.init_images[0]
-        width = image.width
-        height = image.height
-        # If the image is smaller than tile size + two sides' padding
-        # we don't need to tile the VAE
-        pad = 32
-        hijack_encoder = width > encoder_tile_size + \
-            2 * pad or height > encoder_tile_size + 2 * pad
-        hijack_decoder = math.ceil(width/8) > decoder_tile_size + \
-            2 * pad or math.ceil(height/8) > decoder_tile_size + 2 * pad
-        if not hijack_encoder and not hijack_decoder:
-            print("VAE Tiling is not needed for small images")
-            return p
-        print("VAE Tiling is hooked.")
-        vae = p.sd_model.first_stage_model
-        origin_encoder = vae.encoder
-        origin_decoder = vae.decoder
-        if hijack_encoder:
-            def new_encoder_forward(self, x): return vae_tile_forward(
-                self, x, encoder_tile_size, False)
-            vae.encoder.forward = types.MethodType(
-                new_encoder_forward, vae.encoder)
-        if hijack_decoder:
-            def new_decoder_forward(self, x): return vae_tile_forward(
-                self, x, decoder_tile_size, True)
-            vae.decoder.forward = types.MethodType(
-                new_decoder_forward, vae.decoder)
-
-        def recover(_):
-            vae.encoder = origin_encoder
-            vae.decoder = origin_decoder
-            print("VAE Tiling is unhooked.")
-            remove_callbacks_for_function(recover)
-
-        on_before_image_saved(recover)
+        
+        if isinstance(vae.encoder.forward, VAEHook):
+            new_hook = VAEHook(vae.encoder.forward.net, encoder_tile_size, False)
+        else:
+            new_hook = VAEHook(vae.encoder, encoder_tile_size, False)
+        vae.encoder.forward = new_hook
+        if isinstance(vae.decoder.forward, VAEHook):
+            new_hook = VAEHook(vae.decoder.forward.net, decoder_tile_size, True)
+        else:
+            new_hook = VAEHook(vae.decoder, decoder_tile_size, True)
+        vae.decoder.forward = new_hook
         return p
