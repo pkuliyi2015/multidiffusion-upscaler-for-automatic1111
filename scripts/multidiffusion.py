@@ -79,11 +79,13 @@ class MultiDiffusionDelegate(object):
                 self.sampler_func = self.sampler.inner_model.forward
                 self.sampler.inner_model.forward = self.kdiff_repeat
         else:
+            self.sampler = sampler
             if tile_prompt:
                 raise NotImplementedError("Tile prompt is not supported yet")
             else:
                 self.sampler_func = sampler.orig_p_sample_ddim
                 self.sampler.orig_p_sample_ddim = self.ddim_repeat
+        self.is_kdiff = is_kdiff
 
         # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
@@ -113,6 +115,8 @@ class MultiDiffusionDelegate(object):
         # And avoid the overhead of weight summing
         self.weights = weights.unsqueeze(0).unsqueeze(0)
         self.x_buffer = None
+        # For ddim sampler we need to cache the pred_x0
+        self.x_buffer_pred = None
         self.pbar = None
 
 
@@ -181,15 +185,17 @@ class MultiDiffusionDelegate(object):
     def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
         def func(x_tile, bboxes):
             if isinstance(cond_in, dict):
-                cond_in_tile = self.repeat_con_dict(cond_in, bboxes)
+                ts_tile = ts.repeat(len(bboxes))
+                cond_tile = self.repeat_con_dict(cond_in, bboxes)
                 ucond_tile = self.repeat_con_dict(unconditional_conditioning, bboxes)
             else:
+                ts_tile = ts.repeat(len(bboxes))
                 cond_shape = cond_in.shape
-                cond_in_tile = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
+                cond_tile = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
                 ucond_shape = unconditional_conditioning.shape
                 ucond_tile = unconditional_conditioning.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
-            x_tile_out = self.sampler_func(x_tile, cond_in_tile, ts, unconditional_conditioning=ucond_tile, *args, **kwargs)
-            return x_tile_out
+            x_tile_out, x_pred = self.sampler_func(x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
+            return x_tile_out, x_pred
         return self.compute_x_tile(x_in, func)
     
     def compute_x_tile(self, x_in, func):
@@ -199,9 +205,13 @@ class MultiDiffusionDelegate(object):
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
         else:
             self.x_buffer.zero_()
-
+        if not self.is_kdiff:
+            if self.x_buffer_pred is None:
+                self.x_buffer_pred = torch.zeros_like(x_in, device=x_in.device)
+            else:
+                self.x_buffer_pred.zero_()
         if self.pbar is None:
-            self.pbar = tqdm(total=self.num_batches * ((state.job_count * state.sampling_steps) * 2 - 1), desc="MultiDiffusion Sampling: ")
+            self.pbar = tqdm(total=self.num_batches * (state.job_count * state.sampling_steps), desc="MultiDiffusion Sampling: ")
         
         for bboxes in self.batched_bboxes:
             if state.interrupted:
@@ -210,14 +220,23 @@ class MultiDiffusionDelegate(object):
             for _, _, bbox in bboxes:
                 x_tile_list.append(x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             x_tile = torch.cat(x_tile_list, dim=0)
-            x_tile_out = func(x_tile, bboxes)
-            for i, (_, _, bbox) in enumerate(bboxes):
-                self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+            if self.is_kdiff:
+                x_tile_out = func(x_tile, bboxes)
+                for i, (_, _, bbox) in enumerate(bboxes):
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+            else:
+                x_tile_out, x_tile_pred = func(x_tile, bboxes)
+                for i, (_, _, bbox) in enumerate(bboxes):
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                    self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
             if self.pbar.n >= self.pbar.total:
                 self.pbar.close()
             else:
                 self.pbar.update()
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
+        if not self.is_kdiff:
+            x_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
+            return x_out, x_pred
         return x_out
     
     def kdiff_tile_prompt(delegate_self, self, x, sigma, uncond, cond, cond_scale, image_cond):
@@ -378,9 +397,9 @@ class Script(scripts.Script):
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            print("MultiDiffusion hooked into", p.sampler_name, "sampler.")
-            MultiDiffusionDelegate(sampler, p.sampler_name not in [
+            delegate = MultiDiffusionDelegate(sampler, p.sampler_name not in [
                                    'DDIM', 'PLMS'], p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False)
+            print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x", tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
             return sampler
         sd_samplers.create_sampler = create_sampler
         
