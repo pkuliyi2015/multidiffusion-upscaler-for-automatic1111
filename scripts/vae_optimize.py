@@ -30,10 +30,11 @@
 #       (But you can still use the VAE to generate training data.)
 #
 #   How it works:
-#   1) The image is split into tiles of 1024*1024 pixels (in real size).
-#       To ensure perfect results, each tile is padded with 256 pixels
-#       on each side, so that conv2d can produce identical results to
-#       the original image without splitting.
+#   1) The image is split into tiles.
+#       - To ensure perfect results, each tile is padded with 32 pixels
+#           on each side.
+#       - Then the conv2d/silu/upsample/downsample can produce identical 
+#           results to the original image without splitting.
 #   2) The original forward is decomposed into a task queue and a task worker.
 #       - The task queue is a list of functions that will be executed in order.
 #       - The task worker is a loop that executes the tasks in the queue.
@@ -56,7 +57,7 @@
 #
 # -------------------------------------------------------------------------
 import modules.devices as devices
-import modules.shared as shared
+from modules.shared import state
 from modules.script_callbacks import on_before_image_saved, remove_callbacks_for_function
 import math
 import torch
@@ -107,25 +108,27 @@ def build_sampling(task_queue, net, is_decoder):
     @param net: the network
     @param is_decoder: currently building decoder or encoder
     """
-    block_ids = net.num_res_blocks
     if is_decoder:
         resblock2task(task_queue, net.mid.block_1)
         resblock2task(task_queue, net.mid.block_2)
+        resolution_iter = reversed(range(net.num_resolutions))
+        block_ids = net.num_res_blocks + 1
+        condition = 0
         module = net.up
-        block_ids += 1
+        func_name = 'upsample'
     else:
+        resolution_iter = range(net.num_resolutions)
+        block_ids = net.num_res_blocks
+        condition = net.num_resolutions - 1
         module = net.down
-    sample_condition = 0 if is_decoder else (net.num_resolutions - 1)
-    resolution_iter = range(net.num_resolutions) if not is_decoder else reversed(
-        range(net.num_resolutions))
+        func_name = 'downsample'
+
     for i_level in resolution_iter:
         for i_block in range(block_ids):
             resblock2task(task_queue, module[i_level].block[i_block])
-        if i_level != sample_condition:
-            if is_decoder:
-                task_queue.append(('upsample', module[i_level].upsample))
-            else:
-                task_queue.append(('downsample', module[i_level].downsample))
+        if i_level != condition:
+            task_queue.append((func_name, getattr(module[i_level], func_name)))
+
     if not is_decoder:
         resblock2task(task_queue, net.mid.block_1)
         resblock2task(task_queue, net.mid.block_2)
@@ -334,6 +337,9 @@ def vae_tile_forward(self, z, tile_size, is_decoder):
             input_bbox = tile_input_bboxes[i]
             task_queue = task_queues[i]
             while len(task_queue) > 0:
+                # if user interrupt, return None
+                if state.interrupted: 
+                    return None
                 # DEBUG: current task
                 # print('Running task: ', task_queue[0][0], ' on tile ', i, '/', num_tiles, ' with shape ', tile.shape)
                 task = task_queue.pop(0)
@@ -469,9 +475,10 @@ class Script(scripts.Script):
                     reset = gr.Button(value="Reset Tile Size")
                 info = gr.HTML(
                     "<p style=\"margin-bottom:1.0em\">Please use smaller tile size when see CUDA error: out of memory.</p>")
-                encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256,
+                with gr.Row():
+                    encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256,
                                               maximum=3088, step=16, value=recommend_encoder_tile_size, interactive=True)
-                decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,
+                    decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,
                                               maximum=256, step=16, value=recommend_decoder_tile_size, interactive=True)
 
                 def reset_tile_size():
