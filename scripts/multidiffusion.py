@@ -62,7 +62,7 @@ class MultiDiffusionDelegate(object):
     Hijack the original sampler into MultiDiffusion samplers
     """
 
-    def __init__(self, sampler, is_kdiff, steps, w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1, tile_prompt=False, prompt=[], neg_prompt=[]):
+    def __init__(self, sampler, is_kdiff, steps, w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1, tile_prompt=False, prompt=[], neg_prompt=[], controlnet_script=None):
  
         self.steps = steps
         # record the steps for progress bar
@@ -92,8 +92,8 @@ class MultiDiffusionDelegate(object):
         min_tile_size = min(tile_w, tile_h)
         if overlap >= min_tile_size:
             overlap = min_tile_size - 4
-        if overlap == 0:
-            raise ValueError("Overlap must be greater than 0")
+        if overlap < 0:
+            overlap = 0
         self.tile_w = tile_w
         self.tile_h = tile_h
         bboxes, weights = self.split_views(tile_w, tile_h, overlap)
@@ -119,13 +119,9 @@ class MultiDiffusionDelegate(object):
         self.x_buffer_pred = None
         self.pbar = None
 
-        # try to load ControlNet support
-        try:
-            from scripts import controlnet
-            print("MultiDiffusion ControlNet support loaded")
-        except ImportError:
-            print("ControlNet not found. MultiDiffusion Control support is disabled.")
-
+        self.controlnet_script = controlnet_script
+        self.control_tensors = None
+        self.control_params = None
 
     @staticmethod
     def splitable(w, h, tile_w, tile_h, overlap):
@@ -208,6 +204,14 @@ class MultiDiffusionDelegate(object):
     def compute_x_tile(self, x_in, func):
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
+
+        # ControlNet support
+        if self.controlnet_script is not None and self.control_params is None:
+            latest_network = self.controlnet_script.latest_network
+            if latest_network is not None and hasattr(latest_network, 'control_params'):
+                self.control_tensors = [param.hint_cond for param in latest_network.control_params]
+                self.control_params = latest_network.control_params
+
         if self.x_buffer is None:
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
         else:
@@ -227,20 +231,42 @@ class MultiDiffusionDelegate(object):
             for _, _, bbox in bboxes:
                 x_tile_list.append(x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             x_tile = torch.cat(x_tile_list, dim=0)
-            if self.is_kdiff:
-                x_tile_out = func(x_tile, bboxes)
-                for i, (_, _, bbox) in enumerate(bboxes):
-                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
-            else:
-                x_tile_out, x_tile_pred = func(x_tile, bboxes)
-                for i, (_, _, bbox) in enumerate(bboxes):
-                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
-                    self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
+            # controlnet tiling
+            if self.control_tensors is not None:
+                control_tile_list = []
+                for i in range(len(self.control_tensors)):
+                    control_tensor = self.control_tensors[i]
+                    for _, _, bbox in bboxes:
+                        control_tile = control_tensor[:, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
+                        control_tile_list.append(control_tile)
+                    if self.is_kdiff:
+                        control_tile = torch.cat([t for t in control_tile_list for _ in range(2)], dim=0)
+                    else:
+                        control_tile = torch.cat(control_tile_list*2, dim=0)
+                    self.control_params[i].hint_cond = control_tile
+            # compute tiles
+            try:
+                if self.is_kdiff:
+                    x_tile_out = func(x_tile, bboxes)
+                    for i, (_, _, bbox) in enumerate(bboxes):
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                else:
+                    x_tile_out, x_tile_pred = func(x_tile, bboxes)
+                    for i, (_, _, bbox) in enumerate(bboxes):
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
+            finally:
+                # controlnet restore.
+                for i in range(len(self.control_tensors)):
+                    self.control_params[i].hint_cond = self.control_tensors[i]
+
+            # update progress bar
             if self.pbar.n >= self.pbar.total:
                 self.pbar.close()
             else:
                 self.pbar.update()
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
+        
         if not self.is_kdiff:
             x_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
             return x_out, x_pred
@@ -333,19 +359,19 @@ class Script(scripts.Script):
                     keep_input_size = gr.Checkbox(
                         label='Keep input image size', value=True, visible=(is_img2img))
                 with gr.Row():
-                    image_width = gr.Slider(minimum=256, maximum=8192, step=16, label='Image width', value=1024,
+                    image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024,
                                             elem_id=self.elem_id("image_width"), visible=False)
-                    image_height = gr.Slider(minimum=256, maximum=8192, step=16, label='Image height', value=1024,
+                    image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024,
                                              elem_id=self.elem_id("image_height"), visible=False)
                 with gr.Group():
                     with gr.Row():
-                        tile_width = gr.Slider(minimum=16, maximum=128, step=16, label='Latent tile width', value=64,
+                        tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=64,
                                                elem_id=self.elem_id("latent_tile_width"))
-                        tile_height = gr.Slider(minimum=16, maximum=128, step=16, label='Latent tile height', value=64,
+                        tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=64,
                                                 elem_id=self.elem_id("latent_tile_height"))
 
                     with gr.Row():
-                        overlap = gr.Slider(minimum=2, maximum=128, step=4, label='Latent tile overlap', value=48,
+                        overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=32,
                                             elem_id=self.elem_id("latent_overlap"))
                         batch_size = gr.Slider(
                             minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1)
@@ -401,13 +427,34 @@ class Script(scripts.Script):
         p.extra_generation_params["MultiDiffusion overlap"] = overlap
         # hack the create_sampler function to get the created sampler
         old_create_sampler = sd_samplers.create_sampler
+        controlnet_script = None
+        # try to hook into controlnet tensors
+        try:
+            from scripts.cldm import ControlNet
+            # fix controlnet multi-batch issue
+            def align(self, hint, h, w):
+                if(len(hint.shape) == 3):
+                    hint = hint.unsqueeze(0)
+                _, _, h1, w1 = hint.shape
+                if h != h1 or w != w1:
+                    hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
+                return hint
+            ControlNet.align = align
+            for script in p.scripts.scripts + p.scripts.alwayson_scripts:
+                if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
+                    controlnet_script = script   
+                    print("ControlNet found. MultiDiffusion ControlNet support is enabled.")
+                    break                  
+        except ImportError:
+            print("ControlNet not found. MultiDiffusion Control support is disabled.")
+
         def create_sampler(name, model):
             # create the sampler with the original function
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
             delegate = MultiDiffusionDelegate(sampler, p.sampler_name not in [
-                                   'DDIM', 'PLMS'], p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False)
+                                   'DDIM', 'PLMS'], p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False, controlnet_script=controlnet_script)
             print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x", tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
             return sampler
         sd_samplers.create_sampler = create_sampler

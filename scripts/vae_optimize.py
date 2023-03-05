@@ -452,7 +452,7 @@ class VAEHook:
                 group_norm_var = torch.vstack(group_norm_var_list)
                 group_norm_mean = torch.vstack(group_norm_mean_list)
                 max_value = max(group_norm_pixel_list)
-                group_norm_pixels = torch.FloatTensor(group_norm_pixel_list, device=device) / max_value
+                group_norm_pixels = torch.tensor(group_norm_pixel_list, dtype=torch.float32, device=device) / max_value
                 sum_group_norm_pixels = torch.sum(group_norm_pixels)
                 group_norm_pixels = group_norm_pixels.unsqueeze(1) / sum_group_norm_pixels
                 group_norm_var = torch.sum(group_norm_var * group_norm_pixels, dim=0)
