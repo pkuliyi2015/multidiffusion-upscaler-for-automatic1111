@@ -415,6 +415,9 @@ class Script(scripts.Script):
             if keep_input_size:
                 p.width = image.width
                 p.height = image.height
+            elif upscaler.name != "None":
+                p.width *= scale_factor
+                p.height *= scale_factor
         elif override_image_size:
             p.width = image_width
             p.height = image_height

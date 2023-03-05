@@ -57,6 +57,8 @@
 #
 # -------------------------------------------------------------------------
 
+import gc
+from time import time
 import math
 from tqdm import tqdm
 
@@ -71,7 +73,8 @@ from modules.shared import state
 
 def get_recommend_encoder_tile_size():
     if torch.cuda.is_available():
-        total_memory = torch.cuda.get_device_properties(devices.device).total_memory // 2**20
+        total_memory = torch.cuda.get_device_properties(
+            devices.device).total_memory // 2**20
         if total_memory > 16*1000:
             ENCODER_TILE_SIZE = 3072
         elif total_memory > 12*1000:
@@ -84,9 +87,11 @@ def get_recommend_encoder_tile_size():
         ENCODER_TILE_SIZE = 512
     return ENCODER_TILE_SIZE
 
+
 def get_recommend_decoder_tile_size():
     if torch.cuda.is_available():
-        total_memory = torch.cuda.get_device_properties(devices.device).total_memory // 2**20
+        total_memory = torch.cuda.get_device_properties(
+            devices.device).total_memory // 2**20
         if total_memory > 30*1000:
             DECODER_TILE_SIZE = 256
         elif total_memory > 16*1000:
@@ -255,6 +260,87 @@ def crop_valid_region(x, input_bbox, target_bbox, scale):
     margin = [target_bbox[i] - padded_bbox[i] for i in range(4)]
     return x[:, :, margin[2]:x.size(2)+margin[3], margin[0]:x.size(3)+margin[1]]
 
+# ↓↓↓ https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer ↓↓↓
+
+
+def perfcount(fn):
+    def wrapper(*args, **kwargs):
+        ts = time()
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(devices.device)
+        devices.torch_gc()
+        gc.collect()
+
+        ret = fn(*args, **kwargs)
+
+        devices.torch_gc()
+        gc.collect()
+        if torch.cuda.is_available():
+            vram = torch.cuda.max_memory_allocated(devices.device) / 2**20
+            torch.cuda.reset_peak_memory_stats(devices.device)
+            print(f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
+        else:
+            print(f'[Tiled VAE]: Done in {time() - ts:.3f}s')
+
+        return ret
+    return wrapper
+
+# copy end :)
+
+
+class GroupNormParam:
+    def __init__(self):
+        self.var_list = []
+        self.mean_list = []
+        self.pixel_list = []
+        self.weight = None
+        self.bias = None
+    
+    def add_tile(self, tile, layer):
+        var, mean = get_var_mean(tile, 32)
+        # For giant images, the variance can be larger than max float16
+        # In this case we create a copy to float32
+        if var.dtype == torch.float16 and var.isinf().any():
+            fp32_tile = tile.float()
+            var, mean = get_var_mean(fp32_tile, 32)
+        # ============= DEBUG: test for infinite =============
+        # if torch.isinf(var).any():
+        #    print('var: ', var)
+        # ====================================================
+        self.var_list.append(var)
+        self.mean_list.append(mean)
+        self.pixel_list.append(
+            tile.shape[2]*tile.shape[3])
+        if hasattr(layer, 'weight'):
+            self.weight = layer.weight
+            self.bias = layer.bias
+        else:
+            self.weight = None
+            self.bias = None
+
+    def summary(self):
+        """
+        summarize the mean and var and return a function
+        that apply group norm on each tile
+        """
+        if len(self.var_list) == 0:
+            return None
+        var = torch.vstack(self.var_list)
+        mean = torch.vstack(self.mean_list)
+        max_value = max(self.pixel_list)
+        pixels = torch.tensor(
+            self.pixel_list, dtype=torch.float32, device=devices.device) / max_value
+        sum_pixels = torch.sum(pixels)
+        pixels = pixels.unsqueeze(
+            1) / sum_pixels
+        var = torch.sum(
+            var * pixels, dim=0)
+        mean = torch.sum(
+            mean * pixels, dim=0)
+        return lambda x:  custom_group_norm(x, 32, mean, var, self.weight, self.bias)
+    
+
 
 class VAEHook:
 
@@ -262,17 +348,93 @@ class VAEHook:
         self.net = net                  # encoder | decoder
         self.tile_size = tile_size
         self.is_decoder = is_decoder
-        self.pad = 32
+        self.pad = 11 if is_decoder else 32
 
     def __call__(self, x):
         B, C, H, W = x.shape
         if max(H, W) <= self.pad * 2 + self.tile_size:
-            print("VAE Tiling: input size is too small, skip tiling")
-            return self.net.origin_forward(x)
+            print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
+            return self.net.original_forward(x)
         else:
-            print(f"VAE Tiling: input size is larger than {self.tile_size}x{self.tile_size}, use tiling")
             return self.vae_tile_forward(x)
+    
+    def get_best_tile_size(self, lowerbound, upperbound):
+        """
+        Get the best tile size for GPU memory
+        """
+        divider = 32
+        while divider >= 2:
+            remainer = lowerbound % divider
+            if remainer == 0:
+                return lowerbound
+            candidate = lowerbound - remainer + divider
+            if candidate <= upperbound:
+                return candidate
+            divider //= 2
+        return lowerbound
+        
+    def split_tiles(self, h, w):
+        """
+        Tool function to split the image into tiles
+        @param h: height of the image
+        @param w: width of the image
+        @return: tile_input_bboxes, tile_output_bboxes
+        """
+        tile_input_bboxes, tile_output_bboxes = [], []
+        tile_size = self.tile_size
+        pad = self.pad
+        num_height_tiles = math.ceil((h - 2 * pad) / tile_size)
+        num_width_tiles = math.ceil((w - 2 * pad) / tile_size)
+        # If any of the numbers are 0, we let it be 1
+        # This is to deal with long and thin images
+        num_height_tiles = max(num_height_tiles, 1)
+        num_width_tiles = max(num_width_tiles, 1)
 
+        # Suggestions from https://github.com/Kahsolt: auto shrink the tile size
+        real_tile_height = math.ceil((h - 2 * pad) / num_height_tiles)
+        real_tile_width = math.ceil((w - 2 * pad) / num_width_tiles)
+        real_tile_height = self.get_best_tile_size(real_tile_height, tile_size)
+        real_tile_width = self.get_best_tile_size(real_tile_width, tile_size)
+
+        print(f'[Tiled VAE]: split to {num_height_tiles}x{num_width_tiles} = {num_height_tiles*num_width_tiles} tiles. ' + \
+              f'Optimal tile size {real_tile_width}x{real_tile_height}, original tile size {tile_size}x{tile_size}')
+
+        for i in range(num_height_tiles):
+            for j in range(num_width_tiles):
+                # bbox: [x1, x2, y1, y2]
+                # the padding is is unnessary for image borders. So we directly start from (32, 32)
+                input_bbox = [
+                    pad + j * real_tile_width,
+                    min(pad + (j + 1) * real_tile_width, w),
+                    pad + i * real_tile_height,
+                    min(pad + (i + 1) * real_tile_height, h),
+                ]
+
+                # if the output bbox is close to the image boundary, we extend it to the image boundary
+                output_bbox = [
+                    input_bbox[0] if input_bbox[0] > pad else 0,
+                    input_bbox[1] if input_bbox[1] < w - pad else w,
+                    input_bbox[2] if input_bbox[2] > pad else 0,
+                    input_bbox[3] if input_bbox[3] < h - pad else h,
+                ]
+
+                # scale to get the final output bbox
+                scale_factor = 8 if self.is_decoder else 1/8
+                output_bbox = [math.ceil(x * scale_factor)
+                               for x in output_bbox]
+                tile_output_bboxes.append(output_bbox)
+
+                # indistinguishable expand the input bbox by pad pixels
+                tile_input_bboxes.append([
+                    max(0, input_bbox[0] - pad),
+                    min(w, input_bbox[1] + pad),
+                    max(0, input_bbox[2] - pad),
+                    min(h, input_bbox[3] + pad),
+                ])
+
+        return tile_input_bboxes, tile_output_bboxes
+
+    @perfcount
     @torch.inference_mode()
     def vae_tile_forward(self, z):
         """
@@ -284,129 +446,57 @@ class VAEHook:
         tile_size = self.tile_size
         is_decoder = self.is_decoder
 
-        height, width = z.shape[2], z.shape[3]
+        N, height, width = z.shape[0], z.shape[2], z.shape[3]
         net.last_z_shape = z.shape
         device = z.device
 
-        # split the input into tiles and build a task queue for each tile
-        tile_input_bboxes = []
-        tile_output_bboxes = []
+        # Split the input into tiles and build a task queue for each tile
+        print(f'[Tiled VAE]: input_size: {z.shape}, tile_size: {tile_size}, padding: {self.pad}')
 
-        # the decoder contains 33 conv2d, some of which is nin short cut (kernel size 1)
-        # we only need to pad 32 pixels to avoid seams for decoder (which is divisible by 8)
-        pad = 32
-        num_height_tiles = math.ceil((height - 2 * pad) / tile_size)
-        num_width_tiles = math.ceil((width - 2 * pad) / tile_size)
-        # If any of the numbers are 0, we let it be 1
-        # This is to avoid the case where the image very long or very high
-        num_height_tiles = max(num_height_tiles, 1)
-        num_width_tiles = max(num_width_tiles, 1)
-
-        for i in range(num_height_tiles):
-            for j in range(num_width_tiles):
-                # bbox: [x1, x2, y1, y2]
-                # the padding is is unnessary for image borders. So we directly start from (32, 32)
-                input_bbox = [
-                    pad + j * tile_size, 
-                    min(pad + (j + 1) * tile_size, width),
-                    pad + i * tile_size, 
-                    min(pad + (i + 1) * tile_size, height),
-                ]
-
-                # if the output bbox is close to the image boundary, we extend it to the image boundary
-                output_bbox = [
-                    input_bbox[0] if input_bbox[0] > pad else 0,
-                    input_bbox[1] if input_bbox[1] < width - pad else width,
-                    input_bbox[2] if input_bbox[2] > pad else 0,
-                    input_bbox[3] if input_bbox[3] < height - pad else height,
-                ]
-
-                # scale to get the final output bbox
-                scale_factor = 8 if is_decoder else 1/8
-                output_bbox = [math.ceil(x * scale_factor) for x in output_bbox]
-                tile_output_bboxes.append(output_bbox)
-
-                # indistinguishable expand the input bbox by pad pixels
-                tile_input_bboxes.append([
-                    max(0, input_bbox[0] - pad), 
-                    min(width, input_bbox[1] + pad),
-                    max(0, input_bbox[2] - pad), 
-                    min(height, input_bbox[3] + pad),
-                ])
+        in_bboxes, out_bboxes = self.split_tiles(height, width)
 
         # Prepare tiles by split the input latents
         tiles = []
-        for input_bbox in tile_input_bboxes:
-            tile = z[:, :, input_bbox[2]:input_bbox[3], input_bbox[0]:input_bbox[1]].cpu()
+        for input_bbox in in_bboxes:
+            tile = z[:, :, input_bbox[2]:input_bbox[3],
+                     input_bbox[0]:input_bbox[1]].cpu()
             tiles.append(tile)
-            # DEBUG:
-            # print('tile shape: ', tile.shape, 'input bbox: ', input_bbox, 'output bbox: ', tile_output_bboxes[len(completed_tiles)])
+
         num_tiles = len(tiles)
-        completed = [None] * num_tiles
         num_completed = 0
-        
+
         # Free memory of input latent tensor
         del z
-        devices.torch_gc()
+        result = None
 
         # Build task queues
-        task_queues = [build_task_queue(net, is_decoder).copy() for _ in range(num_tiles)]
-        
+        task_queues = [build_task_queue(net, is_decoder).copy()
+                       for _ in range(num_tiles)]
+
         # Task queue execution
-        desc = f"Executing Tiled VAE {'Decoder' if is_decoder else 'Encoder'} Task Queue: "
+        desc = f"[Tiled VAE]: Executing {'Decoder' if is_decoder else 'Encoder'} Task Queue: "
         pbar = tqdm(total=num_tiles * len(task_queues[0]), desc=desc)
-        
+
         # execute the task back and forth when switch tiles so that we always
         # keep one tile on the GPU to reduce unnecessary data transfer
         forward = True
         while True:
-            if state.interrupted: return
-
-            group_norm_var_list = []
-            group_norm_mean_list = []
-            group_norm_pixel_list = []
-            group_norm_tmp_weight = None
-            group_norm_tmp_bias = None
-
+            group_norm_param = GroupNormParam()
             for i in range(num_tiles) if forward else reversed(range(num_tiles)):
                 if state.interrupted: return
-            
+
                 tile = tiles[i].to(device)
-                input_bbox = tile_input_bboxes[i]
+                input_bbox = in_bboxes[i]
                 task_queue = task_queues[i]
 
                 while len(task_queue) > 0:
-                    if state.interrupted: return
-                    
+                    if state.interrupted:
+                        return
                     # DEBUG: current task
                     # print('Running task: ', task_queue[0][0], ' on tile ', i, '/', num_tiles, ' with shape ', tile.shape)
                     task = task_queue.pop(0)
                     if task[0] == 'pre_norm':
-                        var, mean = get_var_mean(tile, 32)
-                        # For giant images, the variance can be larger than max float16
-                        # In this case we create a copy to float32
-                        if var.dtype == torch.float16 and var.isinf().any():
-                            fp32_tile = tile.float()
-                            var, mean = get_var_mean(fp32_tile, 32)
-                        
-                        # ============= DEBUG: test for infinite =============
-                        # if torch.isinf(var).any():
-                        #    print('var: ', var)
-                        # if torch.isinf(mean).any():
-                        #    print('mean: ', mean)
-                        # if torch.isinf(var).any() or torch.isinf(mean).any():
-                        #    print('Running task: ', task[0], ' on tile ', i, '/', num_tiles, ' with shape ', tile.shape)
-                        #    print('pixel: ', (tile.shape[2]), 'x', (tile.shape[3]))
-                        # ====================================================
-                        group_norm_var_list.append(var)
-                        group_norm_mean_list.append(mean)
-                        group_norm_pixel_list.append(tile.shape[2]*tile.shape[3])
-                        if hasattr(task[1], 'weight'):
-                            group_norm_tmp_weight = task[1].weight
-                            group_norm_tmp_bias = task[1].bias
-                        else:
-                            group_norm_tmp_weight = None
-                            group_norm_tmp_bias = None
+                        group_norm_param.add_tile(tile, task[1])
                         break
                     elif task[0] == 'store_res':
                         task_id = 0
@@ -420,16 +510,25 @@ class VAEHook:
                     else:
                         tile = task[1](tile)
                     pbar.update(1)
-                
+
                 # check for NaNs in the tile.
                 # If there are NaNs, we abort the process to save user's time
                 try:
                     devices.test_for_nans(tile, "vae")
                 except:
-                    print("Detected NaNs in the VAE output. Please use VAE with proper weights.")
+                    print("Detected NaNs in the VAE output. Please try --no-half-vae")
                     raise
 
-                if i == num_tiles - 1 and forward:
+                if len(task_queue) == 0:
+                    del tiles[i]
+                    num_completed += 1
+                    if result is None:
+                        scale_factor = 8 if self.is_decoder else 1/8
+                        result = torch.zeros((N, tile.shape[1], math.ceil(height * scale_factor), math.ceil(width * scale_factor)), device=device)
+                    result[:,:,out_bboxes[i][2]:out_bboxes[i][3],out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], 
+                                                     out_bboxes[i], 8 if is_decoder else 1/8)
+                    del tile
+                elif i == num_tiles - 1 and forward:
                     forward = False
                     tiles[i] = tile
                 elif i == 0 and not forward:
@@ -438,111 +537,70 @@ class VAEHook:
                 else:
                     tiles[i] = tile.cpu()
                     del tile
-                    devices.torch_gc()
-
-                if len(task_queue) == 0:
-                    completed[i] = tiles[i].cpu()
-                    num_completed += 1
 
             if num_completed == num_tiles:
                 break
 
-            # aggregate the mean and var for the group norm calculation
-            if len(group_norm_mean_list) > 0:
-                group_norm_var = torch.vstack(group_norm_var_list)
-                group_norm_mean = torch.vstack(group_norm_mean_list)
-                max_value = max(group_norm_pixel_list)
-                group_norm_pixels = torch.tensor(group_norm_pixel_list, dtype=torch.float32, device=device) / max_value
-                sum_group_norm_pixels = torch.sum(group_norm_pixels)
-                group_norm_pixels = group_norm_pixels.unsqueeze(1) / sum_group_norm_pixels
-                group_norm_var = torch.sum(group_norm_var * group_norm_pixels, dim=0)
-                group_norm_mean = torch.sum(group_norm_mean * group_norm_pixels, dim=0)
-                current_group_norm_weight = group_norm_tmp_weight
-                current_group_norm_bias = group_norm_tmp_bias
-                
-                # insert the group norm task to the head of each task queue
+            # insert the group norm task to the head of each task queue
+            group_norm_func = group_norm_param.summary()
+            if group_norm_func is not None:
                 for i in range(num_tiles):
                     task_queue = task_queues[i]
-                    task_queue.insert(0, ('apply_norm', lambda x: custom_group_norm(
-                        x, 32, group_norm_mean, group_norm_var, current_group_norm_weight, current_group_norm_bias)))
-                
-                # cleanup group norm parameters
-                group_norm_mean_list.clear()
-                group_norm_var_list.clear()
-                group_norm_pixel_list.clear()
-                group_norm_tmp_weight = None
-                group_norm_tmp_bias = None
+                    task_queue.insert(0, ('apply_norm', group_norm_func))
 
         # Done!
         pbar.close()
-
-        # crop tiles
-        for i in range(num_tiles):
-            completed[i] = crop_valid_region(completed[i], tile_input_bboxes[i], tile_output_bboxes[i], 8 if is_decoder else 1/8)
-
-        # directly merge tiles on the cpu
-        result = []
-        for i in range(num_height_tiles):
-            tile_w = []
-            for j in range(num_width_tiles):
-                tile_w.append(completed[i*num_width_tiles+j])
-            result.append(torch.cat(tile_w, dim=3))
-        result = torch.cat(result, dim=2)
-        
-        # if the model is a encoder, we send it back to the gpu
-        if not is_decoder:
-            result = result.to(device)
-        
-        if torch.cuda.is_available():
-            print(f"Max memory allocated: {torch.cuda.max_memory_allocated(device)/2**20} MB")
-            torch.cuda.reset_peak_memory_stats(device)
-        devices.torch_gc()
-
         return result
 
 
 class Script(scripts.Script):
 
     def title(self):
-        return "VAE Tiling"
+        return "Tiled VAE"
 
     def show(self, is_img2img):
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
-        with gr.Accordion('VAE Tiling', open=True):
+        with gr.Accordion('Tiled VAE', open=False):
             with gr.Row():
-                enabled = gr.Checkbox(label='Enable', value=lambda: DEFAULT_ENABLED)
+                enabled = gr.Checkbox(
+                    label='Enable', value=lambda: DEFAULT_ENABLED)
                 reset = gr.Button(value="Reset Tile Size")
-            
-            info = gr.HTML('<p style="margin-bottom:1.0em">Please use smaller tile size when see CUDA error: out of memory.</p>')
-            
-            with gr.Row():
-                encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256, maximum=3088, step=16, value=lambda: DEFAULT_ENCODER_TILE_SIZE)
-                decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,  maximum=256,  step=16, value=lambda: DEFAULT_DECODER_TILE_SIZE)
 
-                reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[encoder_tile_size, decoder_tile_size])
-        
+            info = gr.HTML(
+                '<p style="margin-bottom:0.8em">Please use smaller tile size when see CUDA error: out of memory.</p>')
+
+            with gr.Row():
+                encoder_tile_size = gr.Slider(
+                    label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=lambda: DEFAULT_ENCODER_TILE_SIZE)
+                decoder_tile_size = gr.Slider(
+                    label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=lambda: DEFAULT_DECODER_TILE_SIZE)
+
+                reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[
+                            encoder_tile_size, decoder_tile_size])
+
         return enabled, encoder_tile_size, decoder_tile_size
 
     def process(self, p, enabled, encoder_tile_size, decoder_tile_size):
         vae = p.sd_model.first_stage_model
         if vae.device == torch.device('cpu'):
-            print("VAE Tiling is not supported on CPU")
+            print("[Tiled VAE] Tiled VAE is not needed as your VAE is in CPU RAM. ")
+            print("[Tiled VAE] If you want to enable, please DON'T USE --lowvram or --medvram on webui startup.")
             return
-        
+
         # for shorthand
         encoder = vae.encoder
         decoder = vae.decoder
 
         # save original forward (only once)
-        if not hasattr(encoder, 'origin_forward'): setattr(encoder, 'origin_forward', encoder.forward)
-        if not hasattr(decoder, 'origin_forward'): setattr(decoder, 'origin_forward', decoder.forward)
+        if not hasattr(encoder, 'original_forward'): setattr(encoder, 'original_forward', encoder.forward)
+        if not hasattr(decoder, 'original_forward'): setattr(decoder, 'original_forward', decoder.forward)
 
         # undo hijack if disabled
         if not enabled:
-            encoder.forward = encoder.origin_forward
-            decoder.forward = decoder.origin_forward
+            encoder.forward = encoder.original_forward
+            decoder.forward = decoder.original_forward
             return
 
         # do hijack
