@@ -1,42 +1,42 @@
 # MultiDiffusion with Tiled VAE
 
-This repository contains two scripts that enable the processing of **ultra-large images** using the [MultiDiffusion](multidiffusion.github.io) and Tiled VAE
+This repository contains two scripts that enable the processing of **ultra large images** using the [MultiDiffusion](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/multidiffusion.github.io) and Tiled VAE
 
 ## MultiDiffusion
 
 ### Features
 
-- **Wide Image Generation**
+- **Wide Image Generation (txt2img)**
   - txt2img panorama generation, as mentioned in MultiDiffusion.
     - All tiles shares the same prompt currently.
     - **So please use simple positive prompts to get good results**, otherwise the result will be pool.
-    - We are urgently working on the rectangular & fine-grained prompt control and is about to complete.
+    - We are urgently working on the rectangular & fine-grained prompt control.
 
   - Example - mastepiece, best quality, highres, city skyline, night.
-  - ![panorama](imgs/city_panorama.jpeg)
+  - ![panorama](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/city_panorama.jpeg?raw=true)
 
 - **Compatible with ControlNet**, produces wide images with controlled content.
   - Currently, though you cannot use complex prompts, you can use ControlNet to fully control the contents.
     - Canny edge seems to be the best as it provides sufficient local controls.
   - Example: 22020 x 1080 ultra wide image conversion 
     - Masterpiece, best quality, highres, ultra detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
-    - Before: [click for raw image](imgs/ancient_city_origin.jpeg)
-    - ![ancient city origin](imgs/ancient_city_origin.jpeg)
-    - After: [click for raw image](imgs/ancient_city.jpeg)
-    - ![ancient city](imgs/ancient_city.jpeg)
+    - Before: [click for raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
+    - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg?raw=true)
+    - After: [click for raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg)
+    - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg?raw=true)
   - Example: 2560 * 1280 large image drawing with controlnet
     - ControlNet canny edge
-    - ![Your Name](imgs/yourname_canny.jpeg)
-    - ![yourname](imgs/yourname.jpeg)
-- **img2img for ultra-large images redraw**
+    - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname_canny.jpeg?raw=true)
+    - ![yourname](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname.jpeg?raw=true)
+- **Ultra-large images refine (img2img)**
   - **MultiDiffusion is especially good at adding details to upscaled images.**
   - We combine it with upscalers and obtain much finer results than SD Upscalers, and higher speed than highres.
   - It is more robust to larger denoise strength (e.g., 0.4-0.6) compare to SD Upscaler and Ultimate SD Upscaler
   - Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, DPM++ SDE Karras
     - Before: 
-    - ![lowres](imgs/lowres.jpg)
+    - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
     - After:
-    - ![highres](imgs/highres.jpeg)
+    - ![highres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/highres.jpeg?raw=true)
 
 ### Advantages
 
@@ -86,9 +86,9 @@ The `vae_optimize.py` script is a wild hack that splits the image into tiles, en
 ## Installation
 
 - Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Install from URL" -> type in the link of this repo -> Click "Install" 
-- ![installation](imgs/installation.png)
+- ![installation](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/installation.png?raw=true)
 - After restart your WebUI, you shall see the following two tabs:
-- ![Tabs](imgs/tabs.png)
+- ![Tabs](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tabs.png?raw=true)
 
 
 
