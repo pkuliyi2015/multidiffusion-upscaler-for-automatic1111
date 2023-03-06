@@ -2,7 +2,7 @@
 
 English｜[中文](README_CN.md)
 
-This repository contains two scripts that enable **ultra large image generation**.
+This repository contains two scripts that enable **ultra-large image generation**.
 
 - The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/multidiffusion.github.io)
 - The Tiled VAE is my original algorithm, which is **very powerful** in VRAM saving
@@ -10,14 +10,14 @@ This repository contains two scripts that enable **ultra large image generation*
 ## Update on 2023.3.7
 
 - Added Fast Mode for Tiled VAE, which increase the speed by 5X and eliminated the need for extra RAM.
-- Now you can use 16GB GPU for 8K images, and the encoding/decoding process will be around 25 seconds. For 4k images, the process completed almost instantly.
+- Now you can use 16GB GPU for 8K images, and the encoding/decoding process will be around 25 seconds. For 4k images, the process completes almost instantly.
 - If you encountered VAE NaN or black image output:
-  - Use the OpenAI provided 840000 VAE weights usually solve the problem
+  - Use the OpenAI provided 840000 VAE weights. This usually solves the problem.
   - Use --no-half-vae on startup is also effective.
 
-**Note: [A latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve better results. We will integrate that sampler into our extension.**
-
 ## MultiDiffusion
+
+**Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve better results than MultiDiffusion. We will integrate that sampler into our extension.**
 
 ****
 
@@ -43,22 +43,22 @@ This repository contains two scripts that enable **ultra large image generation*
   - **Please use simple positive prompts to get good results**, otherwise the result will be pool.
   - We are urgently working on the rectangular & fine-grained prompt control.
 
-- Example - mastepiece, best quality, highres, city skyline, night.
+- Example - masterpiece, best quality, highres, city skyline, night.
 - ![panorama](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/city_panorama.jpeg?raw=true)
 
 ****
 
-**It can cooperate with ControlNet** to produce wide images with controll.
+**It can cooperate with ControlNet** to produce wide images with control.
 
-- You cannot use complex positive prompt currently. However, you can use ControlNet.
+- You cannot use complex positive prompts currently. However, you can use ControlNet.
 - Canny edge seems to be the best as it provides sufficient local controls.
-- Example: 22020 x 1080 ultra wide image conversion 
-  - Masterpiece, best quality, highres, ultra detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
-  - Before: [click for raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
+- Example: 22020 x 1080 ultra-wide image conversion 
+  - Masterpiece, best quality, highres, ultra-detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
+  - Before: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
   - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg?raw=true)
-  - After: [click for raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg)
+  - After: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg)
   - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg?raw=true)
-- Example: 2560 * 1280 large image drawing with controlnet
+- Example: 2560 * 1280 large image drawing
   - ControlNet canny edge
   - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname_canny.jpeg?raw=true)
   - ![yourname](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname.jpeg?raw=true)
@@ -72,16 +72,16 @@ This repository contains two scripts that enable **ultra large image generation*
 
 ### Drawbacks
 
-- We haven't optimize it much, so it can be **slow especially for very large images** (8k) and with controlnet.
-- **Prompt control is weak.** It will produce repeated patterns with strong positive prompt, and the result may not be usable.
+- We haven't optimized it much, so it can be **slow especially for very large images** (8k) and with ControlNet.
+- **Prompt control is weak.** It will produce repeated patterns with strong positive prompts, and the result may not be usable.
 - The gradient calculation is not compatible with this hack. It will break any backward() or torch.autograd.grad() that passes UNet.
 
 ### How it works (so simple!)
 
 1. The latent image is split into tiles.
 2. The tiles are denoised by the original sampler for one time step.
-3. The tiles are added together, but divided by how many times each pixel is added.
-4. Repeat 2-3 untile all timesteps completed.
+3. The tiles are added together but divided by how many times each pixel is added.
+4. Repeat 2-3 until all timesteps are completed.
 
 ****
 
@@ -95,27 +95,27 @@ Remove --lowvram and --medvram to enjoy!
 
 ### Advantages
 
-- The tiled VAE work with giant images on limited VRAM (~12 GB for 8K images!), eliminate your need for --lowvram and --medvram.
-- Unlike [my friend's implementation](https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer) and huggingface diffuser's VAE tiling options that averages the tile borders, this VAE tiling removed attention blocks and use padding tricks.  The decoding results mathematically identical to that of not tiling, i.e., **it will not produce seams at all.**
+- The tiled VAE work with giant images on limited VRAM (~12 GB for 8K images!)
+- Unlike [my friend's implementation](https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer) and the HuggingFace diffuser's VAE tiling options that averages the tile borders, this VAE tiling removed attention blocks and use padding tricks.  The decoding results are mathematically identical to that of not tiling, i.e., **it will not produce seams at all.**
 - The script is extremely optimized with tons of tricks. Cannot be faster!
 
 ### Drawbacks
 
-- NaNs ocassionally appear in.  We are figure out the root cause and trying to fix.
+- NaNs occassionally appear.  We are figuring out the root cause and trying to fix.
 - Similarly, the gradient calculation is not compatible with this hack. It will break any backward() or torch.autograd.grad() that passes VAE.
 
 ### How it works
 
-1. The image is split into tiles and equiped with 11/32 pixels' padding in decoder/encoder.
+1. The image is split into tiles and padded with 11/32 pixels' in decoder/encoder.
 2. When Fast Mode is disabled:
-   1. The original VAE forward is decomposed into a task queue and a task worker. The task queue start to execute for one tile.
-   2. When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to cpu, and turns to the next tile.
-   3. After all GroupNorm mean and var parameters are summarized, it applies group norm to tiles and continue. 
+   1. The original VAE forward is decomposed into a task queue and a task worker, which start to process each tile.
+   2. When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to RAM, and turns to the next tile.
+   3. After all GroupNorm mean and var parameters are summarized, it applies group norm to tiles and continues. 
    4. A zigzag execution order is used to reduce unnecessary data transfer.
 
 3. When Fast Mode is enabled:
-   1. The original input is downsampled and pass a separate task queue.
-   2. Its group norm parameters are recorded and used by all small tiles' task queue.
+   1. The original input is downsampled and passed to a separate task queue.
+   2. Its group norm parameters are recorded and used by all tiles' task queues.
    3. Each tile is separately processed without any RAM-VRAM data transfer.
 
 4. After all tiles are processed, tiles are written to a result buffer and returned.
@@ -131,18 +131,17 @@ Remove --lowvram and --medvram to enjoy!
 
 ### MultiDiffusion Params
 
-- Latent tile width & height: Basically, multidiffusion draws images tile by tile and each tile is a rectangle. Hence, this controls how large is the latent rectangle, each is 1/8 size of the actual image. Shouldn't be too large or too small (normally 64-128 is OK. but you can try other values.)
-- Latent tile overlap: MultiDiffusion uses overlapping to prevent seams and fuses two latents. So this controls how long should two tiles be overlapped at one side. The larger this value is, the slower the process, but the result will contain less seams  and more natural.
+- Latent tile width & height: Basically, MultiDiffusion draws images tile by tile and each tile is a rectangle. Hence, this controls how large is the latent rectangle, each is 1/8 size of the actual image. Shouldn't be too large or too small (normally 64-128 is OK. but you can try other values.)
+- Latent tile overlap: MultiDiffusion uses overlapping to prevent seams and fuses two latent images. So this controls how long should two tiles be overlapped at one side. The larger this value is, the slower the process, but the result will contain fewer seams  and be more natural.
 - Latent tile batch size: allow UNet to process tiles in a batched manner. Larger values can speed up the UNet at the cost of more VRAM.
 
 ### Tiled VAE param
 
-- **Fast Mode**: By default it is enabled. Not recommend to disable. If you disable it, though the result becomes more accurate, large amount of CPU RAM and time will be consumed.
+- **Fast Mode**: By default, it is enabled. Not recommend to disable it. If you disable it, though the result becomes more accurate, a large amount of CPU RAM and time will be consumed.
 - **Move to GPU**: when you are running under --lowvram or medvram, this option will help to move the VAE to GPU temporarily and move it back later. It needs several seconds.
-- **The two tile size params** control how large tile should we split the image for VAE encoder and decoder.
-  - Basically, larger size, faster speed, but more VRAM use.
-  - You don't need to change the params when first time to use it. It will recommend a set of parameters to you based on hand-crafted rules.
-  - However, the recommended params may not be good to fit your device. 
+- **The two tile size params** control how large the tile should be we split for VAE encoder and decoder.
+  - Basically, larger size brings faster speed at the cost of more VRAM usage. We will dynamicly shrink the size to make it faster.
+  - You don't need to change the params at the first time of using. It will recommend a set of parameters based on hand-crafted rules. However, the recommended params may not be good to fit your device. 
   - Please adjust according to the GPU used in the console output. If you have more VRAM, turn it larger, or vice versus.
 
 
@@ -152,13 +151,15 @@ Remove --lowvram and --medvram to enjoy!
 
 ## Current Progress
 
-- Local prompt control is in progress.
-- Automatic prompting is in plan.
-- Video translation via MultiDiffusion frame interpolation is under proof-of-concept.
+- We are investigating Google's latest sampler (which seems to yield better results than MultiDiffusion? We are not sure.)
+- Local prompt control is in progress. Automatic regional prompting is in consideration.
+- Video translation via MultiDiffusion frame interpolation still need proof-of-concept.
 
 ****
 
 ## License
 
-These scripts are licensed under the MIT License. If you find them useful, please give the author a star.
+These scripts are licensed under the MIT License. If you find them useful, please give me a star.
+
+Thank you!
 
