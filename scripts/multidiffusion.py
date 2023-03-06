@@ -261,8 +261,9 @@ class MultiDiffusionDelegate(object):
                         self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
             finally:
                 # controlnet restore.
-                for i in range(len(self.control_tensors)):
-                    self.control_params[i].hint_cond = self.control_tensors[i]
+                if self.control_tensors is not None:
+                    for i in range(len(self.control_tensors)):
+                        self.control_params[i].hint_cond = self.control_tensors[i]
 
             # update progress bar
             if self.pbar.n >= self.pbar.total:
