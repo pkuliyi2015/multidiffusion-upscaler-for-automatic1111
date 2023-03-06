@@ -33,7 +33,7 @@
 #   1) The image is split into tiles.
 #       - To ensure perfect results, each tile is padded with 32 pixels
 #           on each side.
-#       - Then the conv2d/silu/upsample/downsample can produce identical 
+#       - Then the conv2d/silu/upsample/downsample can produce identical
 #           results to the original image without splitting.
 #   2) The original forward is decomposed into a task queue and a task worker.
 #       - The task queue is a list of functions that will be executed in order.
@@ -109,6 +109,8 @@ def get_recommend_decoder_tile_size():
 
 if 'global const':
     DEFAULT_ENABLED = True
+    DEFAULT_MOVE_TO_GPU = False
+    DEFAULT_FAST_MODE = True
     DEFAULT_ENCODER_TILE_SIZE = get_recommend_encoder_tile_size()
     DEFAULT_DECODER_TILE_SIZE = get_recommend_decoder_tile_size()
 
@@ -202,6 +204,15 @@ def build_task_queue(net, is_decoder):
     return task_queue
 
 
+def clone_task_queue(task_queue):
+    """
+    Clone a task queue
+    @param task_queue: the task queue to be cloned
+    @return: the cloned task queue
+    """
+    return [[item for item in task] for task in task_queue]
+
+
 def get_var_mean(input, num_groups, eps=1e-6):
     """
     Get mean and var for group norm
@@ -279,7 +290,8 @@ def perfcount(fn):
         if torch.cuda.is_available():
             vram = torch.cuda.max_memory_allocated(devices.device) / 2**20
             torch.cuda.reset_peak_memory_stats(devices.device)
-            print(f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
+            print(
+                f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
         else:
             print(f'[Tiled VAE]: Done in {time() - ts:.3f}s')
 
@@ -296,7 +308,7 @@ class GroupNormParam:
         self.pixel_list = []
         self.weight = None
         self.bias = None
-    
+
     def add_tile(self, tile, layer):
         var, mean = get_var_mean(tile, 32)
         # For giant images, the variance can be larger than max float16
@@ -339,25 +351,32 @@ class GroupNormParam:
         mean = torch.sum(
             mean * pixels, dim=0)
         return lambda x:  custom_group_norm(x, 32, mean, var, self.weight, self.bias)
-    
 
 
 class VAEHook:
 
-    def __init__(self, net, tile_size, is_decoder):
+    def __init__(self, net, tile_size, is_decoder, fast_mode=True, to_gpu=False):
         self.net = net                  # encoder | decoder
         self.tile_size = tile_size
         self.is_decoder = is_decoder
+        self.fast_mode = fast_mode
+        self.to_gpu = to_gpu
         self.pad = 11 if is_decoder else 32
 
     def __call__(self, x):
         B, C, H, W = x.shape
-        if max(H, W) <= self.pad * 2 + self.tile_size:
-            print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
-            return self.net.original_forward(x)
-        else:
-            return self.vae_tile_forward(x)
-    
+        original_device = next(self.net.parameters()).device
+        try:
+            if self.to_gpu:
+                self.net.to(devices.get_optimal_device())
+            if max(H, W) <= self.pad * 2 + self.tile_size:
+                print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
+                return self.net.original_forward(x)
+            else:
+                return self.vae_tile_forward(x)
+        finally:
+            self.net.to(original_device)
+
     def get_best_tile_size(self, lowerbound, upperbound):
         """
         Get the best tile size for GPU memory
@@ -372,7 +391,7 @@ class VAEHook:
                 return candidate
             divider //= 2
         return lowerbound
-        
+
     def split_tiles(self, h, w):
         """
         Tool function to split the image into tiles
@@ -396,7 +415,7 @@ class VAEHook:
         real_tile_height = self.get_best_tile_size(real_tile_height, tile_size)
         real_tile_width = self.get_best_tile_size(real_tile_width, tile_size)
 
-        print(f'[Tiled VAE]: split to {num_height_tiles}x{num_width_tiles} = {num_height_tiles*num_width_tiles} tiles. ' + \
+        print(f'[Tiled VAE]: split to {num_height_tiles}x{num_width_tiles} = {num_height_tiles*num_width_tiles} tiles. ' +
               f'Optimal tile size {real_tile_width}x{real_tile_height}, original tile size {tile_size}x{tile_size}')
 
         for i in range(num_height_tiles):
@@ -434,6 +453,58 @@ class VAEHook:
 
         return tile_input_bboxes, tile_output_bboxes
 
+    @torch.inference_mode()
+    def estimate_group_norm(self, z, task_queue):
+        device = z.device
+        tile = z
+        last_id = len(task_queue) - 1
+        while last_id >= 0 and task_queue[last_id][0] != 'pre_norm':
+            last_id -= 1
+        if last_id <= 0 or task_queue[last_id][0] != 'pre_norm':
+            raise ValueError('No group norm found in the task queue')
+        # estimate until the last group norm
+        for i in range(last_id + 1):
+            task = task_queue[i]
+            if task[0] == 'pre_norm':
+                var, mean = get_var_mean(tile, 32)
+                if var.dtype == torch.float16 and var.isinf().any():
+                    fp32_tile = tile.float()
+                    var, mean = get_var_mean(fp32_tile, 32)
+                norm = task[1]
+                if hasattr(norm, 'weight'):
+                    weight = norm.weight
+                    bias = norm.bias
+                else:
+                    weight = None
+                    bias = None
+                def group_norm_func(x, mean=mean, var=var, weight=weight, bias=bias): 
+                    return custom_group_norm(x, 32, mean, var, weight, bias, 1e-6)
+                task_queue[i] = ('apply_norm', group_norm_func)
+                if i == last_id:
+                    return True
+                tile = group_norm_func(tile)
+            elif task[0] == 'store_res':
+                task_id = i + 1
+                while task_id < last_id and task_queue[task_id][0] != 'add_res':
+                    task_id += 1
+                if task_id >= last_id:
+                    continue
+                task_queue[task_id][1] = task[1](tile)
+            elif task[0] == 'add_res':
+                tile = tile + task[1].to(device)
+                task[1] = None
+            elif task[0] == 'temb':
+                pass
+            else:
+                tile = task[1](tile)
+            try:
+                devices.test_for_nans(tile, "vae")
+            except:
+                print(f'Nan detected in fast mode estimation. Fast mode disabled.')
+                return False
+
+        raise IndexError('Should not reach here')
+
     @perfcount
     @torch.inference_mode()
     def vae_tile_forward(self, z):
@@ -442,16 +513,17 @@ class VAEHook:
         @param z: latent vector
         @return: image
         """
+        device = next(self.net.parameters()).device
         net = self.net
         tile_size = self.tile_size
         is_decoder = self.is_decoder
 
         N, height, width = z.shape[0], z.shape[2], z.shape[3]
         net.last_z_shape = z.shape
-        device = z.device
 
         # Split the input into tiles and build a task queue for each tile
-        print(f'[Tiled VAE]: input_size: {z.shape}, tile_size: {tile_size}, padding: {self.pad}')
+        print(
+            f'[Tiled VAE]: input_size: {z.shape}, tile_size: {tile_size}, padding: {self.pad}')
 
         in_bboxes, out_bboxes = self.split_tiles(height, width)
 
@@ -465,13 +537,27 @@ class VAEHook:
         num_tiles = len(tiles)
         num_completed = 0
 
+        single_task_queue = build_task_queue(net, is_decoder)
+
+        if self.fast_mode:
+            # Fast mode: downsample the input image to the tile size,
+            # then estimate the group norm parameters on the downsampled image
+            scale_factor = tile_size / max(height, width)
+            downsampled_z = F.interpolate(
+                z, scale_factor=scale_factor, mode='nearest')
+            print(
+                f'[Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
+            estimate_task_queue = clone_task_queue(single_task_queue)
+            if self.estimate_group_norm(downsampled_z.to(device), estimate_task_queue):
+                single_task_queue = estimate_task_queue
+
+        task_queues = [clone_task_queue(single_task_queue)
+                       for _ in range(num_tiles)]
         # Free memory of input latent tensor
         del z
         result = None
 
         # Build task queues
-        task_queues = [build_task_queue(net, is_decoder).copy()
-                       for _ in range(num_tiles)]
 
         # Task queue execution
         desc = f"[Tiled VAE]: Executing {'Decoder' if is_decoder else 'Encoder'} Task Queue: "
@@ -483,7 +569,8 @@ class VAEHook:
         while True:
             group_norm_param = GroupNormParam()
             for i in range(num_tiles) if forward else reversed(range(num_tiles)):
-                if state.interrupted: return
+                if state.interrupted:
+                    return
 
                 tile = tiles[i].to(device)
                 input_bbox = in_bboxes[i]
@@ -500,11 +587,16 @@ class VAEHook:
                         break
                     elif task[0] == 'store_res':
                         task_id = 0
+                        res = task[1](tile)
+                        if not self.fast_mode:
+                            res = res.cpu()
                         while task_queue[task_id][0] != 'add_res':
                             task_id += 1
-                        task_queue[task_id][1] = task[1](tile).cpu()
+                        task_queue[task_id][1] = res
+                        task[1] = None
                     elif task[0] == 'add_res':
-                        tile = tile + task[1].to(device)
+                        res = task[1].to(device)
+                        tile += res
                     elif task[0] == 'temb':
                         pass
                     else:
@@ -520,13 +612,14 @@ class VAEHook:
                     raise
 
                 if len(task_queue) == 0:
-                    del tiles[i]
+                    tiles[i] = None
                     num_completed += 1
                     if result is None:
                         scale_factor = 8 if self.is_decoder else 1/8
-                        result = torch.zeros((N, tile.shape[1], math.ceil(height * scale_factor), math.ceil(width * scale_factor)), device=device)
-                    result[:,:,out_bboxes[i][2]:out_bboxes[i][3],out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], 
-                                                     out_bboxes[i], 8 if is_decoder else 1/8)
+                        result = torch.zeros((N, tile.shape[1], math.ceil(
+                            height * scale_factor), math.ceil(width * scale_factor)), device=device)
+                    result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i],
+                                                                                                                           out_bboxes[i], 8 if is_decoder else 1/8)
                     del tile
                 elif i == num_tiles - 1 and forward:
                     forward = False
@@ -566,6 +659,12 @@ class Script(scripts.Script):
             with gr.Row():
                 enabled = gr.Checkbox(
                     label='Enable', value=lambda: DEFAULT_ENABLED)
+                vae_to_gpu = gr.Checkbox(
+                    label='Move VAE to GPU', value=lambda: DEFAULT_MOVE_TO_GPU)
+
+            with gr.Row():
+                fast_mode = gr.Checkbox(
+                    label='Fast Mode', value=lambda: DEFAULT_FAST_MODE)
                 reset = gr.Button(value="Reset Tile Size")
 
             info = gr.HTML(
@@ -580,22 +679,27 @@ class Script(scripts.Script):
                 reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[
                             encoder_tile_size, decoder_tile_size])
 
-        return enabled, encoder_tile_size, decoder_tile_size
+        return [enabled, vae_to_gpu, fast_mode, encoder_tile_size, decoder_tile_size]
 
-    def process(self, p, enabled, encoder_tile_size, decoder_tile_size):
+    def process(self, p, enabled, vae_to_gpu, fast_mode, encoder_tile_size, decoder_tile_size):
+
         vae = p.sd_model.first_stage_model
-        if vae.device == torch.device('cpu'):
-            print("[Tiled VAE] Tiled VAE is not needed as your VAE is in CPU RAM. ")
-            print("[Tiled VAE] If you want to enable, please DON'T USE --lowvram or --medvram on webui startup.")
+        if devices.get_optimal_device == torch.device('cpu'):
+            print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
             return
-
+        if vae.device == torch.device('cpu') and not vae_to_gpu:
+            print(
+                "[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
+            return
         # for shorthand
         encoder = vae.encoder
         decoder = vae.decoder
 
         # save original forward (only once)
-        if not hasattr(encoder, 'original_forward'): setattr(encoder, 'original_forward', encoder.forward)
-        if not hasattr(decoder, 'original_forward'): setattr(decoder, 'original_forward', decoder.forward)
+        if not hasattr(encoder, 'original_forward'):
+            setattr(encoder, 'original_forward', encoder.forward)
+        if not hasattr(decoder, 'original_forward'):
+            setattr(decoder, 'original_forward', decoder.forward)
 
         # undo hijack if disabled
         if not enabled:
@@ -604,5 +708,7 @@ class Script(scripts.Script):
             return
 
         # do hijack
-        encoder.forward = VAEHook(encoder, encoder_tile_size, is_decoder=False)
-        decoder.forward = VAEHook(decoder, decoder_tile_size, is_decoder=True)
+        encoder.forward = VAEHook(
+            encoder, encoder_tile_size, is_decoder=False, fast_mode=fast_mode, to_gpu=vae_to_gpu)
+        decoder.forward = VAEHook(
+            decoder, decoder_tile_size, is_decoder=True, fast_mode=fast_mode, to_gpu=vae_to_gpu)

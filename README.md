@@ -5,8 +5,17 @@ English｜[中文](README_CN.md)
 This repository contains two scripts that enable **ultra large image generation**.
 
 - The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/multidiffusion.github.io)
-- The Tiled VAE is my original algorithm, which is **very powerful** in VRAM optimization.
-  - With the algorithm, **you no longer need --lowvram or --medvram** once you have >=6G GPU.
+- The Tiled VAE is my original algorithm, which is **very powerful** in VRAM saving
+
+## Update on 2023.3.7
+
+- Added Fast Mode for Tiled VAE, which increase the speed by 5X and eliminated the need for extra RAM.
+- Now you can use 16GB GPU for 8K images, and the encoding/decoding process will be around 25 seconds. For 4k images, the process completed almost instantly.
+- If you encountered VAE NaN or black image output:
+  - Use the OpenAI provided 840000 VAE weights usually solve the problem
+  - Use --no-half-vae on startup is also effective.
+
+**Note: [A latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve better results. We will integrate that sampler into our extension.**
 
 ## MultiDiffusion
 
@@ -92,24 +101,24 @@ Remove --lowvram and --medvram to enjoy!
 
 ### Drawbacks
 
-- Large RAM (e.g., 20 GB for a 4096*4096 image and 50GB for a 8k image) is still needed to store the intermediate results. If you use --no-half-vae the usage doubles.
-- For >=8k images NaNs ocassionally appear in.  The 840000 VAE weights effectively solve most problems . You may use --no-half-vae to disable half VAE for that giant image. **We are figure out the root cause and trying to fix**
-- The speed is limited by both your GPU and your CPU. So if any of them is not good, the speed will be affected.
+- NaNs ocassionally appear in.  We are figure out the root cause and trying to fix.
 - Similarly, the gradient calculation is not compatible with this hack. It will break any backward() or torch.autograd.grad() that passes VAE.
 
 ### How it works
 
 1. The image is split into tiles and equiped with 11/32 pixels' padding in decoder/encoder.
+2. When Fast Mode is disabled:
+   1. The original VAE forward is decomposed into a task queue and a task worker. The task queue start to execute for one tile.
+   2. When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to cpu, and turns to the next tile.
+   3. After all GroupNorm mean and var parameters are summarized, it applies group norm to tiles and continue. 
+   4. A zigzag execution order is used to reduce unnecessary data transfer.
 
-2. The original VAE forward is decomposed into a task queue and a task worker. 
+3. When Fast Mode is enabled:
+   1. The original input is downsampled and pass a separate task queue.
+   2. Its group norm parameters are recorded and used by all small tiles' task queue.
+   3. Each tile is separately processed without any RAM-VRAM data transfer.
 
-   - The task queue start to execute for one tile.
-
-   - When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to cpu, and turns to the next tile.
-   - After all GroupNorm mean and var parameters are summarized, it applies group norm to tiles and continue. 
-   - A zigzag execution order is used to reduce unnecessary data transfer.
-
-3. After all tiles are processed, tiles are written to a result buffer and returned.
+4. After all tiles are processed, tiles are written to a result buffer and returned.
 
 ****
 
@@ -128,11 +137,11 @@ Remove --lowvram and --medvram to enjoy!
 
 ### Tiled VAE param
 
-- The two params control how large tile should we split the image for VAE encoder and decoder.
-  - Larger size, faster speed, but more VRAM use.
-
-- You don't need to change the params when first time to use it.
-  - It will recommend a set of parameters to you based on hand-crafted rules.
+- **Fast Mode**: By default it is enabled. Not recommend to disable. If you disable it, though the result becomes more accurate, large amount of CPU RAM and time will be consumed.
+- **Move to GPU**: when you are running under --lowvram or medvram, this option will help to move the VAE to GPU temporarily and move it back later. It needs several seconds.
+- **The two tile size params** control how large tile should we split the image for VAE encoder and decoder.
+  - Basically, larger size, faster speed, but more VRAM use.
+  - You don't need to change the params when first time to use it. It will recommend a set of parameters to you based on hand-crafted rules.
   - However, the recommended params may not be good to fit your device. 
   - Please adjust according to the GPU used in the console output. If you have more VRAM, turn it larger, or vice versus.
 
