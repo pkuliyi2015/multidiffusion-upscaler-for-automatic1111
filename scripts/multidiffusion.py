@@ -89,6 +89,10 @@ class MultiDiffusionDelegate(object):
 
         # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
+        if tile_w > self.w:
+            tile_w = self.w
+        if tile_h > self.h:
+            tile_h = self.h
         min_tile_size = min(tile_w, tile_h)
         if overlap >= min_tile_size:
             overlap = min_tile_size - 4
