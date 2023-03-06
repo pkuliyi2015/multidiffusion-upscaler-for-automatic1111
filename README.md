@@ -8,7 +8,7 @@ This repository contains two scripts that enable the processing of **ultra large
 
 - **Wide Image Generation (txt2img)**
   - txt2img panorama generation, as mentioned in MultiDiffusion.
-    - All tiles shares the same prompt currently.
+    - All tiles share the same prompt currently.
     - **So please use simple positive prompts to get good results**, otherwise the result will be pool.
     - We are urgently working on the rectangular & fine-grained prompt control.
 
@@ -17,7 +17,7 @@ This repository contains two scripts that enable the processing of **ultra large
 
 - **Compatible with ControlNet**, produces wide images with controlled content.
   - Currently, though you cannot use complex prompts, you can use ControlNet to fully control the contents.
-    - Canny edge seems to be the best as it provides sufficient local controls.
+  - Canny edge seems to be the best as it provides sufficient local controls.
   - Example: 22020 x 1080 ultra wide image conversion 
     - Masterpiece, best quality, highres, ultra detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
     - Before: [click for raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
@@ -71,7 +71,7 @@ The `vae_optimize.py` script is a wild hack that splits the image into tiles, en
 ### Drawbacks
 
 - Large RAM (e.g., 20 GB for a 4096*4096 image and 50GB for a 8k image) is still needed to store the intermediate results. If you use --no-half-vae the usage doubles.
-- For >=8k images NaNs ocassionally appear in.  The 840000 VAE weights effectively save the . You may use --no-half-vae to disable half VAE for that giant image. **We are figure out the root cause and trying to fix**
+- For >=8k images NaNs ocassionally appear in.  The 840000 VAE weights effectively solve most problems . You may use --no-half-vae to disable half VAE for that giant image. **We are figure out the root cause and trying to fix**
 - The speed is limited by both your GPU and your CPU. So if any of them is not good, the speed will be affected.
 - Similarly, the gradient calculation is not compatible with this hack. It will break any backward() or torch.autograd.grad() that passes VAE.
 
@@ -94,8 +94,8 @@ The `vae_optimize.py` script is a wild hack that splits the image into tiles, en
 
 ### MultiDiffusion Params
 
-- Latent tile width & height: Basically, multidiffusion draw images tile by tile and each tile is a rectangle. Hence, this controls how large is the latent rectangle, each is 1/8 size of the actual image. Shouldn't be too large or too small (normally 64-128 is OK. but you can try other values.)
-- Latent tile overlap: MultiDiffusion use overlapping to prevent seams and fuse two latents. So this controls how long should two tiles be overlapped at one side. The larger this value is, the slower the process, but the result will contain less seams  and more natural.
+- Latent tile width & height: Basically, multidiffusion draws images tile by tile and each tile is a rectangle. Hence, this controls how large is the latent rectangle, each is 1/8 size of the actual image. Shouldn't be too large or too small (normally 64-128 is OK. but you can try other values.)
+- Latent tile overlap: MultiDiffusion uses overlapping to prevent seams and fuses two latents. So this controls how long should two tiles be overlapped at one side. The larger this value is, the slower the process, but the result will contain less seams  and more natural.
 - Latent tile batch size: allow UNet to process tiles in a batched manner. Speed up the UNet but will consumes more VRAM.
 
 ### Tiled VAE param
