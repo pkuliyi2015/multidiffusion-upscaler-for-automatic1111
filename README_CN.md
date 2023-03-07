@@ -23,17 +23,22 @@
 
 - **MultiDiffusion 特别擅长于大图像添加细节。**
   - **速度比Highres快一倍**，只要参数调整合适
-  - 比SD Upscaler和Ultimate Upscaler产生更多的细节
-  - 你可以通过去噪强度0.1-0.6控制细节数量。越低越接近原图，越高细节越丰富
-- **与SD Upscaler和Ultimate SD Upscaler一样，请不要使用复杂的正面prompt**
-- **与SD Upscaler和Ultimate SD Upscaler不同，你不需要大量的步数来添加细节。20-30步通常足够**
+  - 参数合适时，比SD Upscaler和Ultimate Upscaler产生更多的细节
+- 食用提示：
+  - 与SD Upscaler和Ultimate SD Upscaler一样，**请不要使用含有具体物体的正面prompt**
+    - 可以用类似这样的：masterpiece, best quality, highres, extremely clear, ultra-detailed unity 8k wallpaper
+  - 你不需要大量的步数来添加细节，overlap也不宜过大，否则速度将会很慢。
+    - overlap=32，20-25步通常足够
+  - **更高的CFG Scale（提示强度）可以显著地使图像更尖锐并添加更多细节**。需要配合合适的采样器。
+    - 比如CFG=14，sampler=DPM++ SDE Karras
+  - 你可以通过去噪强度0.1-0.6控制修改的幅度。越低越接近原图，越高差异越大。
 - 示例：
   - 参数：masterpiece, best quality, highres, extremely detailed, clear background, 去噪=0.4，步数=20，采样器=DPM++ SDE Karras，放大器=RealESRGAN, Tile size=96, Overlap=48, Tile batch size=8.
   - 处理前
   - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
   - 处理后：4x放大，NVIDIA Tesla V100,
-    - 总耗时 2分11秒，其中1分钟用于VAE编解码。
-    - 如果是2x放大仅需25秒
+    - 总耗时 1分55秒，其中30秒用于VAE编解码。
+    - 如果是2x放大仅需20秒
   - ![highres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/highres.jpeg?raw=true)
 
 ****

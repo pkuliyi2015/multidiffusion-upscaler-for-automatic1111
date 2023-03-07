@@ -17,7 +17,7 @@ This repository contains two scripts that enable **ultra-large image generation*
 
 ## MultiDiffusion
 
-**Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve better results than MultiDiffusion. We will integrate that sampler into our extension.**
+Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve **theoretically** better results in local control than MultiDiffusion. We are investigating their differences and may provide an implementation in this repo.
 
 ****
 
@@ -26,7 +26,18 @@ This repository contains two scripts that enable **ultra-large image generation*
 - **MultiDiffusion is especially good at adding details to upscaled images.**
   - **Nearly 2x faster than highres.fix ** with proper params
   - Much finer results than SD Upscaler & Ultimate SD Upscaler
-  - You can control how many details you want to add, using **denoising strength from 0.1 - 0.6**
+- **How to use:**
+  - You don't need large overlap and many denoising steps, otherwise it can be slow.
+    - Overlap=32 and steps=20~25 is usually enough. 
+
+  - **CFG scale can significantly affect the details**, together with a **proper sampler.**
+    - A large CFG scale (e.g., 14) gives you much more details. For samplers,I personally prefer DPM++ SDE Karras.
+
+  - Similar to other upscalers, **don't include concrete objects in your positive prompts.** 
+    - Just use something like "highres, masterpiece, best quality, ultra-detailed unity 8k wallpaper, extremely clear".
+
+  - You can control how much you want to change the original image with **denoising strength from 0.1 - 0.6**.
+
 - Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, Sampler=DPM++ SDE Karras, Upscaler=RealESRGAN++
   - Before: 
   - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
