@@ -593,10 +593,9 @@ class VAEHook:
                         while task_queue[task_id][0] != 'add_res':
                             task_id += 1
                         task_queue[task_id][1] = res
-                        task[1] = None
                     elif task[0] == 'add_res':
-                        res = task[1].to(device)
-                        tile += res
+                        tile += task[1].to(device)
+                        task[1] = None
                     elif task[0] == 'temb':
                         pass
                     else:
