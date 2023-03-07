@@ -42,7 +42,7 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
   - Before: 
   - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
   - After: 4x upscale.
-  - 2min30s on NVIDIA Testla V100. 1:00 used by MultiDiffusion + 1:30s used by Tiled VAE). 2x only needs 20s
+  - 1min12s on NVIDIA Testla V100. (If 2x, it completes in 10s)
   - ![highres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/highres.jpeg?raw=true)
 
 ****
