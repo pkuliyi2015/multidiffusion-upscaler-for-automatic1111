@@ -45,6 +45,8 @@
 #   Please give me a star if you like this project!
 #
 # -------------------------------------------------------------------------
+
+
 import math
 
 import torch
@@ -53,8 +55,8 @@ import gradio as gr
 
 from modules import sd_samplers, images, devices, shared, scripts, prompt_parser, sd_samplers_common
 from modules.shared import opts, state
-from modules.script_callbacks import cfg_denoiser_callback
 from modules.sd_samplers_kdiffusion import CFGDenoiserParams
+
 
 
 class MultiDiffusionDelegate(object):
@@ -133,8 +135,6 @@ class MultiDiffusionDelegate(object):
         min_tile_size = min(tile_w, tile_h)
         if overlap >= min_tile_size:
             overlap = min_tile_size - 4
-        if overlap == 0:
-            raise ValueError("Overlap must be greater than 0")
         non_overlap_width = tile_w - overlap
         non_overlap_height = tile_h - overlap
         cols = math.ceil((w - overlap) / non_overlap_width)
@@ -261,8 +261,9 @@ class MultiDiffusionDelegate(object):
                         self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
             finally:
                 # controlnet restore.
-                for i in range(len(self.control_tensors)):
-                    self.control_params[i].hint_cond = self.control_tensors[i]
+                if self.control_tensors is not None:
+                    for i in range(len(self.control_tensors)):
+                        self.control_params[i].hint_cond = self.control_tensors[i]
 
             # update progress bar
             if self.pbar.n >= self.pbar.total:
@@ -275,73 +276,6 @@ class MultiDiffusionDelegate(object):
             x_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
             return x_out, x_pred
         return x_out
-    
-    def kdiff_tile_prompt(delegate_self, self, x, sigma, uncond, cond, cond_scale, image_cond):
-        '''
-            Hijack into the CFGDenoiser forward function to support per tile prompt control
-            This is because the K-Diffusion sampler may deal with prompt differently
-            Also, we want to eliminate the overhead of reconstructing the useless overall prompt
-        '''
-
-        if state.interrupted or state.skipped:
-            raise sd_samplers_common.InterruptedException
-
-        conds_list, tensor = prompt_parser.reconstruct_multicond_batch(cond, self.step)
-        uncond = prompt_parser.reconstruct_cond_batch(uncond, self.step)
-
-        batch_size = len(conds_list)
-        repeats = [len(conds_list[i]) for i in range(batch_size)]
-
-        x_in = torch.cat([torch.stack([x[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [x])
-        image_cond_in = torch.cat([torch.stack([image_cond[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [image_cond])
-        sigma_in = torch.cat([torch.stack([sigma[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [sigma])
-
-        denoiser_params = CFGDenoiserParams(x_in, image_cond_in, sigma_in, state.sampling_step, state.sampling_steps)
-        cfg_denoiser_callback(denoiser_params)
-        x_in = denoiser_params.x
-        image_cond_in = denoiser_params.image_cond
-        sigma_in = denoiser_params.sigma
-
-        # TODO: start multi tile processing here
-
-        if tensor.shape[1] == uncond.shape[1]:
-            cond_in = torch.cat([tensor, uncond])
-
-            if shared.batch_cond_uncond:
-                x_out = self.inner_model(x_in, sigma_in, cond={"c_crossattn": [cond_in], "c_concat": [image_cond_in]})
-            else:
-                x_out = torch.zeros_like(x_in)
-                for batch_offset in range(0, x_out.shape[0], batch_size):
-                    a = batch_offset
-                    b = a + batch_size
-                    x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [cond_in[a:b]], "c_concat": [image_cond_in[a:b]]})
-        else:
-            x_out = torch.zeros_like(x_in)
-            batch_size = batch_size*2 if shared.batch_cond_uncond else batch_size
-            for batch_offset in range(0, tensor.shape[0], batch_size):
-                a = batch_offset
-                b = min(a + batch_size, tensor.shape[0])
-                x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [tensor[a:b]], "c_concat": [image_cond_in[a:b]]})
-
-            x_out[-uncond.shape[0]:] = self.inner_model(x_in[-uncond.shape[0]:], sigma_in[-uncond.shape[0]:], cond={"c_crossattn": [uncond], "c_concat": [image_cond_in[-uncond.shape[0]:]]})
-
-        # TODO: end multi tile processing here
-
-        devices.test_for_nans(x_out, "unet")
-
-        if opts.live_preview_content == "Prompt":
-            sd_samplers_common.store_latent(x_out[0:uncond.shape[0]])
-        elif opts.live_preview_content == "Negative prompt":
-            sd_samplers_common.store_latent(x_out[-uncond.shape[0]:])
-
-        denoised = self.combine_denoised(x_out, conds_list, uncond, cond_scale)
-
-        if self.mask is not None:
-            denoised = self.init_latent * self.mask + self.nmask * denoised
-
-        self.step += 1
-
-        return denoised
 
 
 class Script(scripts.Script):
@@ -453,7 +387,7 @@ class Script(scripts.Script):
                     print("ControlNet found. MultiDiffusion ControlNet support is enabled.")
                     break                  
         except ImportError:
-            print("ControlNet not found. MultiDiffusion Control support is disabled.")
+            pass
 
         def create_sampler(name, model):
             # create the sampler with the original function
@@ -465,5 +399,4 @@ class Script(scripts.Script):
             print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x", tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
             return sampler
         sd_samplers.create_sampler = create_sampler
-        
         return p

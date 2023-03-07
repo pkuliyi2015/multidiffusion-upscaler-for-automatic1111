@@ -108,7 +108,7 @@ def get_recommend_decoder_tile_size():
 
 
 if 'global const':
-    DEFAULT_ENABLED = True
+    DEFAULT_ENABLED = False
     DEFAULT_MOVE_TO_GPU = False
     DEFAULT_FAST_MODE = True
     DEFAULT_ENCODER_TILE_SIZE = get_recommend_encoder_tile_size()

@@ -26,6 +26,7 @@
   - 比SD Upscaler和Ultimate Upscaler产生更多的细节
   - 你可以通过去噪强度0.1-0.6控制细节数量。越低越接近原图，越高细节越丰富
 - **与SD Upscaler和Ultimate SD Upscaler一样，请不要使用复杂的正面prompt**
+- **与SD Upscaler和Ultimate SD Upscaler不同，你不需要大量的步数来添加细节。20-30步通常足够**
 - 示例：
   - 参数：masterpiece, best quality, highres, extremely detailed, clear background, 去噪=0.4，步数=20，采样器=DPM++ SDE Karras，放大器=RealESRGAN, Tile size=96, Overlap=48, Tile batch size=8.
   - 处理前
