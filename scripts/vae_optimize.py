@@ -683,13 +683,6 @@ class Script(scripts.Script):
     def process(self, p, enabled, vae_to_gpu, fast_mode, encoder_tile_size, decoder_tile_size):
 
         vae = p.sd_model.first_stage_model
-        if devices.get_optimal_device == torch.device('cpu'):
-            print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
-            return
-        if vae.device == torch.device('cpu') and not vae_to_gpu:
-            print(
-                "[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
-            return
         # for shorthand
         encoder = vae.encoder
         decoder = vae.decoder
@@ -704,6 +697,14 @@ class Script(scripts.Script):
         if not enabled:
             encoder.forward = encoder.original_forward
             decoder.forward = decoder.original_forward
+            return
+        
+        if devices.get_optimal_device == torch.device('cpu'):
+            print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
+            return
+        if vae.device == torch.device('cpu') and not vae_to_gpu:
+            print(
+                "[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
             return
 
         # do hijack
