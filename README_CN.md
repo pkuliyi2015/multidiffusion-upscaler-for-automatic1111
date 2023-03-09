@@ -133,7 +133,7 @@
 - 打开 Automatic1111 WebUI->单击选项卡“扩展”->单击选项卡“从 URL 安装”->输入此存储库的链接->单击“安装”
 - ![installation](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/installation.png?raw=true)
 - 重启您的 WebUI 后，您应该会看到以下两个选项卡：
-- ![Tabs](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tabs.png?raw=true)
+- ![Tab](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tab.png?raw=true)
 
 ### MultiDiffusion 参数
 
