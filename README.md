@@ -24,7 +24,7 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
 **Fast ultra-large images refinement (img2img)**
 
 - **MultiDiffusion is especially good at adding details to upscaled images.**
-  - **Nearly 2x faster than highres.fix ** with proper params
+  - **Faster than highres.fix** with proper params
   - Much finer results than SD Upscaler & Ultimate SD Upscaler
 - **How to use:**
   - You don't need large overlap and many denoising steps, otherwise it can be slow.
@@ -38,7 +38,7 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
 
   - You can control how much you want to change the original image with **denoising strength from 0.1 - 0.6**.
 
-- Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, Sampler=DPM++ SDE Karras, Upscaler=RealESRGAN++
+- Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, Sampler=DPM++ SDE Karras, Upscaler=RealESRGAN++, Negative Prompts=EasyNegative
   - Before: 
   - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
   - After: 4x upscale.
@@ -138,7 +138,7 @@ Remove --lowvram and --medvram to enjoy!
 - Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Install from URL" -> type in the link of this repo -> Click "Install" 
 - ![installation](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/installation.png?raw=true)
 - After restart your WebUI, you shall see the following two tabs:
-- ![Tabs](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tabs.png?raw=true)
+- ![Tab](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tab.png?raw=true)
 
 ### MultiDiffusion Params
 
@@ -148,13 +148,14 @@ Remove --lowvram and --medvram to enjoy!
 
 ### Tiled VAE param
 
-- **Fast Mode**: By default, it is enabled. Not recommend to disable it. If you disable it, though the result becomes more accurate, a large amount of CPU RAM and time will be consumed.
 - **Move to GPU**: when you are running under --lowvram or medvram, this option will help to move the VAE to GPU temporarily and move it back later. It needs several seconds.
 - **The two tile size params** control how large the tile should be we split for VAE encoder and decoder.
   - Basically, larger size brings faster speed at the cost of more VRAM usage. We will dynamicly shrink the size to make it faster.
   - You don't need to change the params at the first time of using. It will recommend a set of parameters based on hand-crafted rules. However, the recommended params may not be good to fit your device. 
   - Please adjust according to the GPU used in the console output. If you have more VRAM, turn it larger, or vice versus.
-
+- **Fast Decoder**: We use a small latent image to estimate the decoder params and then comput very fast. By default, it is enabled. Not recommend to disable it. If you disable it, a large amount of CPU RAM and time will be consumed.
+- **Fast Encoder**: We use a small image to estimate the encoder params; However, this is not accurate when your tile is very small and is further compressed by the encoder. Hence, it may do harm to your image's quality, especially colors.
+- **Encoder Color Fix**: To fix the above problem, we provide a semi-fast mode that only estimate the params before downsampling. When you enable this, the slowest steps will be done in fast mode, and the remaining steps will run in legacy mode. Only enable this when you see visible color artifacts in pictures.
 
 **Enjoy!**
 
