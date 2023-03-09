@@ -64,11 +64,19 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 import gradio as gr
 
 import modules.scripts as scripts
 import modules.devices as devices
 from modules.shared import state
+from ldm.modules.diffusionmodules.model import AttnBlock, MemoryEfficientAttnBlock
+
+try:
+    import xformers
+    import xformers.ops
+except ImportError:
+    pass
 
 
 def get_recommend_encoder_tile_size():
@@ -110,7 +118,9 @@ def get_recommend_decoder_tile_size():
 if 'global const':
     DEFAULT_ENABLED = False
     DEFAULT_MOVE_TO_GPU = False
-    DEFAULT_FAST_MODE = True
+    DEFAULT_FAST_ENCODER = True
+    DEFAULT_FAST_DECODER = True
+    DEFAULT_COLOR_FIX = 0
     DEFAULT_ENCODER_TILE_SIZE = get_recommend_encoder_tile_size()
     DEFAULT_DECODER_TILE_SIZE = get_recommend_decoder_tile_size()
 
@@ -119,6 +129,79 @@ if 'global const':
 def inplace_nonlinearity(x):
     # Test: fix for Nans
     return F.silu(x, inplace=True)
+
+# extracted from ldm.modules.diffusionmodules.model
+
+
+def attn_forward(self, h_):
+    q = self.q(h_)
+    k = self.k(h_)
+    v = self.v(h_)
+
+    # compute attention
+    b, c, h, w = q.shape
+    q = q.reshape(b, c, h*w)
+    q = q.permute(0, 2, 1)   # b,hw,c
+    k = k.reshape(b, c, h*w)  # b,c,hw
+    w_ = torch.bmm(q, k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+    w_ = w_ * (int(c)**(-0.5))
+    w_ = torch.nn.functional.softmax(w_, dim=2)
+
+    # attend to values
+    v = v.reshape(b, c, h*w)
+    w_ = w_.permute(0, 2, 1)   # b,hw,hw (first hw of k, second of q)
+    # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+    h_ = torch.bmm(v, w_)
+    h_ = h_.reshape(b, c, h, w)
+
+    h_ = self.proj_out(h_)
+
+    return h_
+
+
+def xformer_attn_forward(self, h_):
+    q = self.q(h_)
+    k = self.k(h_)
+    v = self.v(h_)
+
+    # compute attention
+    B, C, H, W = q.shape
+    q, k, v = map(lambda x: rearrange(x, 'b c h w -> b (h w) c'), (q, k, v))
+
+    q, k, v = map(
+        lambda t: t.unsqueeze(3)
+        .reshape(B, t.shape[1], 1, C)
+        .permute(0, 2, 1, 3)
+        .reshape(B * 1, t.shape[1], C)
+        .contiguous(),
+        (q, k, v),
+    )
+    out = xformers.ops.memory_efficient_attention(
+        q, k, v, attn_bias=None, op=self.attention_op)
+
+    out = (
+        out.unsqueeze(0)
+        .reshape(B, 1, out.shape[1], C)
+        .permute(0, 2, 1, 3)
+        .reshape(B, out.shape[1], C)
+    )
+    out = rearrange(out, 'b (h w) c -> b c h w', b=B, h=H, w=W, c=C)
+    out = self.proj_out(out)
+    return out
+
+
+def attn2task(task_queue, net):
+    if isinstance(net, AttnBlock):
+        task_queue.append(('store_res', lambda x: x))
+        task_queue.append(('pre_norm', net.norm))
+        task_queue.append(('attn', lambda x, net=net: attn_forward(net, x)))
+        task_queue.append(['add_res', None])
+    elif isinstance(net, MemoryEfficientAttnBlock):
+        task_queue.append(('store_res', lambda x: x))
+        task_queue.append(('pre_norm', net.norm))
+        task_queue.append(
+            ('attn', lambda x, net=net: xformer_attn_forward(net, x)))
+        task_queue.append(['add_res', None])
 
 
 def resblock2task(queue, block):
@@ -139,8 +222,6 @@ def resblock2task(queue, block):
     queue.append(('pre_norm', block.norm1))
     queue.append(('silu', inplace_nonlinearity))
     queue.append(('conv1', block.conv1))
-    queue.append(('temb', lambda h, temb: h +
-                 block.temb_proj(inplace_nonlinearity(temb))[:, :, None, None]))
     queue.append(('pre_norm', block.norm2))
     queue.append(('silu', inplace_nonlinearity))
     queue.append(('conv2', block.conv2))
@@ -156,6 +237,7 @@ def build_sampling(task_queue, net, is_decoder):
     """
     if is_decoder:
         resblock2task(task_queue, net.mid.block_1)
+        attn2task(task_queue, net.mid.attn_1)
         resblock2task(task_queue, net.mid.block_2)
         resolution_iter = reversed(range(net.num_resolutions))
         block_ids = net.num_res_blocks + 1
@@ -177,6 +259,7 @@ def build_sampling(task_queue, net, is_decoder):
 
     if not is_decoder:
         resblock2task(task_queue, net.mid.block_1)
+        attn2task(task_queue, net.mid.attn_1)
         resblock2task(task_queue, net.mid.block_2)
 
 
@@ -352,14 +435,36 @@ class GroupNormParam:
             mean * pixels, dim=0)
         return lambda x:  custom_group_norm(x, 32, mean, var, self.weight, self.bias)
 
+    @staticmethod
+    def from_tile(tile, norm):
+        """
+        create a function from a single tile without summary
+        """
+        var, mean = get_var_mean(tile, 32)
+        if var.dtype == torch.float16 and var.isinf().any():
+            fp32_tile = tile.float()
+            var, mean = get_var_mean(fp32_tile, 32)
+        if hasattr(norm, 'weight'):
+            weight = norm.weight
+            bias = norm.bias
+        else:
+            weight = None
+            bias = None
+
+        def group_norm_func(x, mean=mean, var=var, weight=weight, bias=bias):
+            return custom_group_norm(x, 32, mean, var, weight, bias, 1e-6)
+        return group_norm_func
+
 
 class VAEHook:
 
-    def __init__(self, net, tile_size, is_decoder, fast_mode=True, to_gpu=False):
+    def __init__(self, net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu=False):
         self.net = net                  # encoder | decoder
         self.tile_size = tile_size
         self.is_decoder = is_decoder
-        self.fast_mode = fast_mode
+        self.fast_mode = (fast_encoder and not is_decoder) or (
+            fast_decoder and is_decoder)
+        self.color_fix = color_fix and not is_decoder
         self.to_gpu = to_gpu
         self.pad = 11 if is_decoder else 32
 
@@ -454,7 +559,7 @@ class VAEHook:
         return tile_input_bboxes, tile_output_bboxes
 
     @torch.inference_mode()
-    def estimate_group_norm(self, z, task_queue):
+    def estimate_group_norm(self, z, task_queue, color_fix):
         device = z.device
         tile = z
         last_id = len(task_queue) - 1
@@ -466,19 +571,7 @@ class VAEHook:
         for i in range(last_id + 1):
             task = task_queue[i]
             if task[0] == 'pre_norm':
-                var, mean = get_var_mean(tile, 32)
-                if var.dtype == torch.float16 and var.isinf().any():
-                    fp32_tile = tile.float()
-                    var, mean = get_var_mean(fp32_tile, 32)
-                norm = task[1]
-                if hasattr(norm, 'weight'):
-                    weight = norm.weight
-                    bias = norm.bias
-                else:
-                    weight = None
-                    bias = None
-                def group_norm_func(x, mean=mean, var=var, weight=weight, bias=bias): 
-                    return custom_group_norm(x, 32, mean, var, weight, bias, 1e-6)
+                group_norm_func = GroupNormParam.from_tile(tile, task[1])
                 task_queue[i] = ('apply_norm', group_norm_func)
                 if i == last_id:
                     return True
@@ -491,10 +584,13 @@ class VAEHook:
                     continue
                 task_queue[task_id][1] = task[1](tile)
             elif task[0] == 'add_res':
-                tile = tile + task[1].to(device)
+                tile += task[1].to(device)
                 task[1] = None
-            elif task[0] == 'temb':
-                pass
+            elif color_fix and task[0] == 'downsample':
+                for j in range(i, last_id + 1):
+                    if task_queue[j][0] == 'store_res':
+                        task_queue[j] = ('store_res_cpu', task_queue[j][1])
+                return True
             else:
                 tile = task[1](tile)
             try:
@@ -543,12 +639,26 @@ class VAEHook:
             # Fast mode: downsample the input image to the tile size,
             # then estimate the group norm parameters on the downsampled image
             scale_factor = tile_size / max(height, width)
+            z = z.to(device)
             downsampled_z = F.interpolate(
-                z, scale_factor=scale_factor, mode='nearest')
+                z, scale_factor=scale_factor, mode='nearest-exact')
+            # use nearest-exact to keep statictics as close as possible
             print(
                 f'[Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
+
+            # ======= Special thanks to @Kahsolt for distribution shift issue ======= #
+            # The downsampling will heavily distort its mean and std, so we need to recover it.
+            std_old, mean_old = torch.std_mean(z, dim=[0, 2, 3], keepdim=True)
+            std_new, mean_new = torch.std_mean(
+                downsampled_z, dim=[0, 2, 3], keepdim=True)
+            downsampled_z = (downsampled_z - mean_new) / \
+                std_new * std_old + mean_old
+            # occasionally the std_new is too small or too large, which exceeds the range of float16
+            # so we need to clamp it to max z's range.
+            downsampled_z = torch.clamp_(
+                downsampled_z, min=z.min(), max=z.max())
             estimate_task_queue = clone_task_queue(single_task_queue)
-            if self.estimate_group_norm(downsampled_z.to(device), estimate_task_queue):
+            if self.estimate_group_norm(downsampled_z, estimate_task_queue, color_fix=self.color_fix):
                 single_task_queue = estimate_task_queue
 
         task_queues = [clone_task_queue(single_task_queue)
@@ -585,10 +695,10 @@ class VAEHook:
                     if task[0] == 'pre_norm':
                         group_norm_param.add_tile(tile, task[1])
                         break
-                    elif task[0] == 'store_res':
+                    elif task[0] == 'store_res' or task[0] == 'store_res_cpu':
                         task_id = 0
                         res = task[1](tile)
-                        if not self.fast_mode:
+                        if not self.fast_mode or task[0] == 'store_res_cpu':
                             res = res.cpu()
                         while task_queue[task_id][0] != 'add_res':
                             task_id += 1
@@ -596,19 +706,13 @@ class VAEHook:
                     elif task[0] == 'add_res':
                         tile += task[1].to(device)
                         task[1] = None
-                    elif task[0] == 'temb':
-                        pass
                     else:
                         tile = task[1](tile)
                     pbar.update(1)
 
                 # check for NaNs in the tile.
                 # If there are NaNs, we abort the process to save user's time
-                try:
-                    devices.test_for_nans(tile, "vae")
-                except:
-                    print("Detected NaNs in the VAE output. Please try --no-half-vae")
-                    raise
+                devices.test_for_nans(tile, "vae")
 
                 if len(task_queue) == 0:
                     tiles[i] = None
@@ -661,26 +765,41 @@ class Script(scripts.Script):
                 vae_to_gpu = gr.Checkbox(
                     label='Move VAE to GPU', value=lambda: DEFAULT_MOVE_TO_GPU)
 
-            with gr.Row():
-                fast_mode = gr.Checkbox(
-                    label='Fast Mode', value=lambda: DEFAULT_FAST_MODE)
-                reset = gr.Button(value="Reset Tile Size")
-
-            info = gr.HTML(
+            encoder_size_tips = gr.HTML(
                 '<p style="margin-bottom:0.8em">Please use smaller tile size when see CUDA error: out of memory.</p>')
-
             with gr.Row():
                 encoder_tile_size = gr.Slider(
                     label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=lambda: DEFAULT_ENCODER_TILE_SIZE)
                 decoder_tile_size = gr.Slider(
                     label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=lambda: DEFAULT_DECODER_TILE_SIZE)
+            reset = gr.Button(value="Reset Tile Size")
+            reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[
+                encoder_tile_size, decoder_tile_size])
 
-                reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[
-                            encoder_tile_size, decoder_tile_size])
+            with gr.Row():
+                fast_encoder = gr.Checkbox(
+                    label='Fast Encoder', value=lambda: DEFAULT_FAST_ENCODER)
+                fast_decoder = gr.Checkbox(
+                    label='Fast Decoder', value=lambda: DEFAULT_FAST_DECODER)
 
-        return [enabled, vae_to_gpu, fast_mode, encoder_tile_size, decoder_tile_size]
+            with gr.Row():
+                fast_encoder_tips = gr.HTML(
+                    '<p style="margin-bottom:0.8em">Fast Encoder may change colors; Can fix it with more RAM and lower speed.</p>')
+                color_fix = gr.Checkbox(
+                    label='Encoder Color Fix', value=lambda: DEFAULT_COLOR_FIX)
 
-    def process(self, p, enabled, vae_to_gpu, fast_mode, encoder_tile_size, decoder_tile_size):
+            def on_fast_encoder(value):
+                if value:
+                    return gr.update(visible=True, interactive=True), gr.update(visible=True)
+                else:
+                    return gr.update(visible=False, interactive=False), gr.update(visible=False)
+
+            fast_encoder.change(fn=on_fast_encoder, inputs=[fast_encoder], outputs=[
+                                color_fix, fast_encoder_tips])
+
+        return [enabled, vae_to_gpu, fast_decoder, fast_encoder, color_fix, encoder_tile_size, decoder_tile_size]
+
+    def process(self, p, enabled, vae_to_gpu, fast_decoder, fast_encoder, color_fix, encoder_tile_size, decoder_tile_size):
 
         vae = p.sd_model.first_stage_model
         # for shorthand
@@ -698,7 +817,7 @@ class Script(scripts.Script):
             encoder.forward = encoder.original_forward
             decoder.forward = decoder.original_forward
             return
-        
+
         if devices.get_optimal_device == torch.device('cpu'):
             print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
             return
@@ -709,6 +828,6 @@ class Script(scripts.Script):
 
         # do hijack
         encoder.forward = VAEHook(
-            encoder, encoder_tile_size, is_decoder=False, fast_mode=fast_mode, to_gpu=vae_to_gpu)
+            encoder, encoder_tile_size, is_decoder=False, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
         decoder.forward = VAEHook(
-            decoder, decoder_tile_size, is_decoder=True, fast_mode=fast_mode, to_gpu=vae_to_gpu)
+            decoder, decoder_tile_size, is_decoder=True, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
