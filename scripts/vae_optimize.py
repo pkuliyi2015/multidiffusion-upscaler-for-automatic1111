@@ -341,7 +341,7 @@ def custom_group_norm(input, num_groups, mean, var, weight=None, bias=None, eps=
     return out
 
 
-def crop_valid_region(x, input_bbox, target_bbox, scale):
+def crop_valid_region(x, input_bbox, target_bbox, is_decoder):
     """
     Crop the valid region from the tile
     @param x: input tile
@@ -350,7 +350,7 @@ def crop_valid_region(x, input_bbox, target_bbox, scale):
     @param scale: scale factor
     @return: cropped tile
     """
-    padded_bbox = [math.ceil(i*scale) for i in input_bbox]
+    padded_bbox = [i * 8 if is_decoder else i//8 for i in input_bbox]
     margin = [target_bbox[i] - padded_bbox[i] for i in range(4)]
     return x[:, :, margin[2]:x.size(2)+margin[3], margin[0]:x.size(3)+margin[1]]
 
@@ -543,9 +543,7 @@ class VAEHook:
                 ]
 
                 # scale to get the final output bbox
-                scale_factor = 8 if self.is_decoder else 1/8
-                output_bbox = [math.ceil(x * scale_factor)
-                               for x in output_bbox]
+                output_bbox = [x * 8 if self.is_decoder else x // 8 for x in output_bbox]
                 tile_output_bboxes.append(output_bbox)
 
                 # indistinguishable expand the input bbox by pad pixels
@@ -718,11 +716,9 @@ class VAEHook:
                     tiles[i] = None
                     num_completed += 1
                     if result is None:
-                        scale_factor = 8 if self.is_decoder else 1/8
-                        result = torch.zeros((N, tile.shape[1], math.ceil(
-                            height * scale_factor), math.ceil(width * scale_factor)), device=device)
-                    result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i],
-                                                                                                                           out_bboxes[i], 8 if is_decoder else 1/8)
+                        scale_factor = 8 if is_decoder else 1/8
+                        result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device)
+                    result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], is_decoder)
                     del tile
                 elif i == num_tiles - 1 and forward:
                     forward = False
