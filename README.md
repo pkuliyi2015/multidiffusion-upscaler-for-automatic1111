@@ -27,16 +27,15 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
   - **Faster than highres.fix** with proper params
   - Much finer results than SD Upscaler & Ultimate SD Upscaler
 - **How to use:**
-  - You don't need large overlap and many denoising steps, otherwise it can be slow.
-    - Overlap=32 and steps=20~25 is usually enough. 
-
+  - **Don't include any concrete objects in your positive prompts.**  Otherwise the results get ruined.
+      - Just use something like "highres, masterpiece, best quality, ultra-detailed unity 8k wallpaper, extremely clear".
+  - You don't need too large tile size, large overlap and many denoising steps, or it can be slow.
+    - Tile size=64~96, Overlap=32~48, and steps=20~25 are recommended.
   - **CFG scale can significantly affect the details**, together with a **proper sampler.**
-    - A large CFG scale (e.g., 14) gives you much more details. For samplers,I personally prefer DPM++ SDE Karras.
-
-  - Similar to other upscalers, **don't include concrete objects in your positive prompts.** 
-    - Just use something like "highres, masterpiece, best quality, ultra-detailed unity 8k wallpaper, extremely clear".
-
+    - A large CFG scale (e.g., 14) gives you much more details. For samplers,I personally prefer Euler a and DPM++ SDE Karras.
+  - Some friends have found that using a **full checkpoint** instead of a pruned one yields much finer results. You may have a try.
   - You can control how much you want to change the original image with **denoising strength from 0.1 - 0.6**.
+  - If your results are still not as satisfying as mine, [see our discussions here.](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/issues/3)
 
 - Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, Sampler=DPM++ SDE Karras, Upscaler=RealESRGAN++, Negative Prompts=EasyNegative
   - Before: 

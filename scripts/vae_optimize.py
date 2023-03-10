@@ -716,7 +716,6 @@ class VAEHook:
                     tiles[i] = None
                     num_completed += 1
                     if result is None:
-                        scale_factor = 8 if is_decoder else 1/8
                         result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device)
                     result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], is_decoder)
                     del tile
