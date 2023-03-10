@@ -241,7 +241,10 @@ class MultiDiffusionDelegate(object):
                 for i in range(len(self.control_tensors)):
                     control_tensor = self.control_tensors[i]
                     for _, _, bbox in bboxes:
-                        control_tile = control_tensor[:, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
+                        if len(control_tensor.shape) == 3:
+                            control_tile = control_tensor[:, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
+                        else:
+                            control_tile = control_tensor[:, :, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
                         control_tile_list.append(control_tile)
                     if self.is_kdiff:
                         control_tile = torch.cat([t for t in control_tile_list for _ in range(2)], dim=0)
@@ -271,7 +274,6 @@ class MultiDiffusionDelegate(object):
             else:
                 self.pbar.update()
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
-        
         if not self.is_kdiff:
             x_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
             return x_out, x_pred
