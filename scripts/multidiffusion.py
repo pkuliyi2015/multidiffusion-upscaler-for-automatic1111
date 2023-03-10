@@ -290,7 +290,7 @@ class Script(scripts.Script):
 
     def ui(self, is_img2img):
         with gr.Group():
-            with gr.Accordion('MultiDiffusion', open=True):
+            with gr.Accordion('MultiDiffusion', open=False):
                 with gr.Row():
                     enabled = gr.Checkbox(
                         label='Enable MultiDiffusion', value=False)
