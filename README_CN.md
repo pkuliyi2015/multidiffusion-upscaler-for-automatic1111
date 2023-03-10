@@ -28,7 +28,7 @@
   - **请不要使用含有具体物体的正面prompt**, 否则结果会被毁坏
     - 可以用类似这样的：masterpiece, best quality, highres, extremely clear, ultra-detailed unity 8k wallpaper
   - 你不需要太大的Tile尺寸否则结果会不精细，也不需要大量的步数，overlap也不宜过大，否则速度将会很慢。
-    - Tile size=64～96, overlap=32~48，20-25步通常足够. 如果结果中出现缝隙再调大overlap
+    - Tile size=64 - 96, overlap=32 - 48，20 - 25步通常足够. 如果结果中出现缝隙再调大overlap
   - **更高的CFG Scale（提示强度）可以显著地使图像更尖锐并添加更多细节**。需要配合合适的采样器。
     - 比如CFG=14，sampler=DPM++ SDE Karras或者Eular a
   - 一些朋友发现使用完整的checkpoint而不是pruned（修剪版）会产生更好的结果。推荐尝试。

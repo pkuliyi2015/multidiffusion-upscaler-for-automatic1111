@@ -30,7 +30,7 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
   - **Don't include any concrete objects in your positive prompts.**  Otherwise the results get ruined.
       - Just use something like "highres, masterpiece, best quality, ultra-detailed unity 8k wallpaper, extremely clear".
   - You don't need too large tile size, large overlap and many denoising steps, or it can be slow.
-    - Tile size=64~96, Overlap=32~48, and steps=20~25 are recommended.
+    - Tile size=64 - 96, Overlap=32 - 48, and steps=20 - 25 are recommended.
   - **CFG scale can significantly affect the details**, together with a **proper sampler.**
     - A large CFG scale (e.g., 14) gives you much more details. For samplers,I personally prefer Euler a and DPM++ SDE Karras.
   - Some friends have found that using a **full checkpoint** instead of a pruned one yields much finer results. You may have a try.
