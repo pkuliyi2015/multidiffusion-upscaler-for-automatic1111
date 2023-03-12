@@ -226,12 +226,13 @@ class MultiDiffusionDelegate(object):
         Crop the control tensor into tiles and cache them
         """
         if self.control_tensor_batch is not None: return
-        self.control_tensor_batch = []
         if self.controlnet_script is None or self.control_params is not None: return
         latest_network = self.controlnet_script.latest_network
         if latest_network is None or not hasattr(latest_network, 'control_params'): return
         self.control_params = latest_network.control_params
         tensors = [param.hint_cond for param in latest_network.control_params]
+        if len(tensors) == 0: return
+        self.control_tensor_batch = []
         for bboxes in self.batched_bboxes:
             single_batch_tensors = []
             for i in range(len(tensors)):
