@@ -444,6 +444,12 @@ class GroupNormParam:
         if var.dtype == torch.float16 and var.isinf().any():
             fp32_tile = tile.float()
             var, mean = get_var_mean(fp32_tile, 32)
+            # if it is a macbook, we need to convert back to float16
+            if var.device.type == 'mps':
+                # clamp to avoid overflow
+                var = torch.clamp(var, 0, 60000)
+                var = var.half()
+                mean = mean.half()
         if hasattr(norm, 'weight'):
             weight = norm.weight
             bias = norm.bias
