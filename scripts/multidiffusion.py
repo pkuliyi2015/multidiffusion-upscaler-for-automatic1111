@@ -50,6 +50,7 @@
 import math
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 import gradio as gr
 
@@ -58,18 +59,21 @@ from modules.shared import opts, state
 from modules.sd_samplers_kdiffusion import CFGDenoiserParams
 
 
-
 class MultiDiffusionDelegate(object):
     """
     Hijack the original sampler into MultiDiffusion samplers
     """
 
-    def __init__(self, sampler, is_kdiff, steps, w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1, tile_prompt=False, prompt=[], neg_prompt=[], controlnet_script=None):
- 
+    def __init__(self, sampler, sampler_name, steps, 
+                 w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1, 
+                 tile_prompt=False, prompt=[], neg_prompt=[], 
+                 controlnet_script=None, control_tensor_cpu=False):
+
         self.steps = steps
         # record the steps for progress bar
         # hook the sampler
-        if is_kdiff:
+        self.is_kdiff = sampler_name not in ['DDIM', 'PLMS', 'UniPC']
+        if self.is_kdiff:
             self.sampler = sampler.model_wrap_cfg
             if tile_prompt:
                 self.sampler_func = self.sampler.forward
@@ -87,7 +91,6 @@ class MultiDiffusionDelegate(object):
             else:
                 self.sampler_func = sampler.orig_p_sample_ddim
                 self.sampler.orig_p_sample_ddim = self.ddim_repeat
-        self.is_kdiff = is_kdiff
 
         # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
@@ -107,6 +110,8 @@ class MultiDiffusionDelegate(object):
         self.batched_conds = []
         self.batched_unconds = []
         self.num_batches = math.ceil(len(bboxes) / tile_batch_size)
+        optimal_batch_size = math.ceil(len(bboxes) / self.num_batches)
+        self.tile_batch_size = optimal_batch_size
         self.tile_prompt = tile_prompt
         for i in range(self.num_batches):
             start = i * tile_batch_size
@@ -114,9 +119,11 @@ class MultiDiffusionDelegate(object):
             self.batched_bboxes.append(bboxes[start:end])
             # TODO: deal with per tile prompt
             if tile_prompt:
-                self.batched_conds.append(prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompt[start:end], self.steps))
-                self.batched_unconds.append(prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompt[start:end], self.steps))
-        
+                self.batched_conds.append(prompt_parser.get_multicond_learned_conditioning(
+                    shared.sd_model, prompt[start:end], self.steps))
+                self.batched_unconds.append(prompt_parser.get_learned_conditioning(
+                    shared.sd_model, neg_prompt[start:end], self.steps))
+
         # Avoid the overhead of creating a new tensor for each batch
         # And avoid the overhead of weight summing
         self.weights = weights.unsqueeze(0).unsqueeze(0)
@@ -125,9 +132,11 @@ class MultiDiffusionDelegate(object):
         self.x_buffer_pred = None
         self.pbar = None
 
+        # For controlnet
         self.controlnet_script = controlnet_script
-        self.control_tensors = None
+        self.control_tensor_batch = None
         self.control_params = None
+        self.control_tensor_cpu = control_tensor_cpu
 
     @staticmethod
     def splitable(w, h, tile_w, tile_h, overlap):
@@ -164,7 +173,7 @@ class MultiDiffusionDelegate(object):
                 bbox.append((row, col, [x, y, x + tile_w, y + tile_h]))
                 count[y:y+tile_h, x:x+tile_w] += 1
         return bbox, count
-    
+
     def repeat_con_dict(self, cond_input, bboxes):
         cond = cond_input['c_crossattn'][0]
         # repeat the condition on its first dim
@@ -174,47 +183,85 @@ class MultiDiffusionDelegate(object):
         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
             image_cond_list = []
             for _, _, bbox in bboxes:
-                image_cond_list.append(image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                image_cond_list.append(
+                    image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             image_cond_tile = torch.cat(image_cond_list, dim=0)
         else:
             image_cond_shape = image_cond.shape
-            image_cond_tile = image_cond.repeat((len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
+            image_cond_tile = image_cond.repeat(
+                (len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
         return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
-    
+
     def kdiff_repeat(self, x_in, sigma_in, cond):
         def func(x_tile, bboxes):
             sigma_in_tile = sigma_in.repeat(len(bboxes))
             new_cond = self.repeat_con_dict(cond, bboxes)
-            x_tile_out = self.sampler_func(x_tile, sigma_in_tile, cond=new_cond)
+            x_tile_out = self.sampler_func(
+                x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
         return self.compute_x_tile(x_in, func)
-                
+
     def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
         def func(x_tile, bboxes):
             if isinstance(cond_in, dict):
                 ts_tile = ts.repeat(len(bboxes))
                 cond_tile = self.repeat_con_dict(cond_in, bboxes)
-                ucond_tile = self.repeat_con_dict(unconditional_conditioning, bboxes)
+                ucond_tile = self.repeat_con_dict(
+                    unconditional_conditioning, bboxes)
             else:
                 ts_tile = ts.repeat(len(bboxes))
                 cond_shape = cond_in.shape
-                cond_tile = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
+                cond_tile = cond_in.repeat(
+                    (len(bboxes),) + (1,) * (len(cond_shape) - 1))
                 ucond_shape = unconditional_conditioning.shape
-                ucond_tile = unconditional_conditioning.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
-            x_tile_out, x_pred = self.sampler_func(x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
+                ucond_tile = unconditional_conditioning.repeat(
+                    (len(bboxes),) + (1,) * (len(ucond_shape) - 1))
+            x_tile_out, x_pred = self.sampler_func(
+                x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out, x_pred
         return self.compute_x_tile(x_in, func)
     
+    def prepare_control_tensors(self):
+        """
+        Crop the control tensor into tiles and cache them
+        """
+        if self.control_tensor_batch is not None: return
+        self.control_tensor_batch = []
+        if self.controlnet_script is None or self.control_params is not None: return
+        latest_network = self.controlnet_script.latest_network
+        if latest_network is None or not hasattr(latest_network, 'control_params'): return
+        self.control_params = latest_network.control_params
+        tensors = [param.hint_cond for param in latest_network.control_params]
+        for bboxes in self.batched_bboxes:
+            single_batch_tensors = []
+            for i in range(len(tensors)):
+                control_tile_list = []
+                control_tensor = tensors[i]
+                for _, _, bbox in bboxes:
+                    if len(control_tensor.shape) == 3:
+                        control_tile = control_tensor[:, bbox[1] *
+                                                    8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
+                    else:
+                        control_tile = control_tensor[:, :,
+                                                    bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
+                    control_tile_list.append(control_tile)
+                if self.is_kdiff:
+                    control_tile = torch.cat(
+                        [t for t in control_tile_list for _ in range(2)], dim=0)
+                else:
+                    control_tile = torch.cat(control_tile_list*2, dim=0)
+                if self.control_tensor_cpu:
+                    control_tile = control_tile.cpu()
+                single_batch_tensors.append(control_tile)
+            self.control_tensor_batch.append(single_batch_tensors)
+
+
     def compute_x_tile(self, x_in, func):
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
-
+        
         # ControlNet support
-        if self.controlnet_script is not None and self.control_params is None:
-            latest_network = self.controlnet_script.latest_network
-            if latest_network is not None and hasattr(latest_network, 'control_params'):
-                self.control_tensors = [param.hint_cond for param in latest_network.control_params]
-                self.control_params = latest_network.control_params
+        self.prepare_control_tensors()
 
         if self.x_buffer is None:
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
@@ -226,48 +273,31 @@ class MultiDiffusionDelegate(object):
             else:
                 self.x_buffer_pred.zero_()
         if self.pbar is None:
-            self.pbar = tqdm(total=self.num_batches * (state.job_count * state.sampling_steps), desc="MultiDiffusion Sampling: ")
-        
-        for bboxes in self.batched_bboxes:
+            self.pbar = tqdm(total=self.num_batches * (state.job_count *
+                             state.sampling_steps), desc="MultiDiffusion Sampling: ")
+        for batch_id, bboxes in enumerate(self.batched_bboxes):
             if state.interrupted:
                 return x_in
             x_tile_list = []
             for _, _, bbox in bboxes:
-                x_tile_list.append(x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                x_tile_list.append(
+                    x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             x_tile = torch.cat(x_tile_list, dim=0)
             # controlnet tiling
-            if self.control_tensors is not None:
-                control_tile_list = []
-                for i in range(len(self.control_tensors)):
-                    control_tensor = self.control_tensors[i]
-                    for _, _, bbox in bboxes:
-                        if len(control_tensor.shape) == 3:
-                            control_tile = control_tensor[:, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
-                        else:
-                            control_tile = control_tensor[:, :, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
-                        control_tile_list.append(control_tile)
-                    if self.is_kdiff:
-                        control_tile = torch.cat([t for t in control_tile_list for _ in range(2)], dim=0)
-                    else:
-                        control_tile = torch.cat(control_tile_list*2, dim=0)
-                    self.control_params[i].hint_cond = control_tile
+            if self.control_tensor_batch is not None:
+                single_batch_tensors = self.control_tensor_batch[batch_id]
+                for i in range(len(single_batch_tensors)):
+                    self.control_params[i].hint_cond = single_batch_tensors[i].to(x_in.device)
             # compute tiles
-            try:
-                if self.is_kdiff:
-                    x_tile_out = func(x_tile, bboxes)
-                    for i, (_, _, bbox) in enumerate(bboxes):
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
-                else:
-                    x_tile_out, x_tile_pred = func(x_tile, bboxes)
-                    for i, (_, _, bbox) in enumerate(bboxes):
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
-                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
-            finally:
-                # controlnet restore.
-                if self.control_tensors is not None:
-                    for i in range(len(self.control_tensors)):
-                        self.control_params[i].hint_cond = self.control_tensors[i]
-
+            if self.is_kdiff:
+                x_tile_out = func(x_tile, bboxes)
+                for i, (_, _, bbox) in enumerate(bboxes):
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+            else:
+                x_tile_out, x_tile_pred = func(x_tile, bboxes)
+                for i, (_, _, bbox) in enumerate(bboxes):
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                    self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
             # update progress bar
             if self.pbar.n >= self.pbar.total:
                 self.pbar.close()
@@ -321,6 +351,9 @@ class Script(scripts.Script):
                                                      value="None", elem_id=self.elem_id("upscaler_index"), visible=is_img2img)
                         scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
                                                  elem_id=self.elem_id("scale_factor"), visible=is_img2img)
+                control_tensor_cpu = gr.Checkbox(
+                    label='Move ControlNet images to CPU (if applicable)', value=False)
+
         if not is_img2img:
             def on_override_image_size(value):
                 if value:
@@ -331,9 +364,9 @@ class Script(scripts.Script):
             override_image_size.change(fn=on_override_image_size, inputs=[
                                        override_image_size], outputs=[image_width, image_height])
 
-        return [enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, batch_size, upscaler_index, scale_factor]
+        return [enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, batch_size, upscaler_index, scale_factor, control_tensor_cpu]
 
-    def process(self, p, enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor):
+    def process(self, p, enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor, control_tensor_cpu):
         if not enabled:
             return p
         if isinstance(upscaler_index, str):
@@ -375,19 +408,22 @@ class Script(scripts.Script):
         try:
             from scripts.cldm import ControlNet
             # fix controlnet multi-batch issue
+
             def align(self, hint, h, w):
-                if(len(hint.shape) == 3):
+                if (len(hint.shape) == 3):
                     hint = hint.unsqueeze(0)
                 _, _, h1, w1 = hint.shape
                 if h != h1 or w != w1:
-                    hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
+                    hint = torch.nn.functional.interpolate(
+                        hint, size=(h, w), mode="nearest")
                 return hint
             ControlNet.align = align
             for script in p.scripts.scripts + p.scripts.alwayson_scripts:
                 if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
-                    controlnet_script = script   
-                    print("ControlNet found. MultiDiffusion ControlNet support is enabled.")
-                    break                  
+                    controlnet_script = script
+                    print(
+                        "ControlNet found. MultiDiffusion ControlNet support is enabled.")
+                    break
         except ImportError:
             pass
 
@@ -396,9 +432,9 @@ class Script(scripts.Script):
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            delegate = MultiDiffusionDelegate(sampler, p.sampler_name not in [
-                                   'DDIM', 'PLMS'], p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False, controlnet_script=controlnet_script)
-            print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x", tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
+            delegate = MultiDiffusionDelegate(sampler, p.sampler_name, p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False, controlnet_script=controlnet_script, control_tensor_cpu=control_tensor_cpu)
+            print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x",
+                  tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
             return sampler
         sd_samplers.create_sampler = create_sampler
         return p
