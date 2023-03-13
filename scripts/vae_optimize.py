@@ -619,7 +619,7 @@ class VAEHook:
         is_decoder = self.is_decoder
 
         z = z.detach() # detach the input to avoid backprop
-        
+
         N, height, width = z.shape[0], z.shape[2], z.shape[3]
         net.last_z_shape = z.shape
 
