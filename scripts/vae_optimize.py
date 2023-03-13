@@ -618,6 +618,8 @@ class VAEHook:
         tile_size = self.tile_size
         is_decoder = self.is_decoder
 
+        z = z.detach() # detach the input to avoid backprop
+        
         N, height, width = z.shape[0], z.shape[2], z.shape[3]
         net.last_z_shape = z.shape
 
@@ -722,7 +724,7 @@ class VAEHook:
                     tiles[i] = None
                     num_completed += 1
                     if result is None:
-                        result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device)
+                        result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device, requires_grad=False)
                     result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], is_decoder)
                     del tile
                 elif i == num_tiles - 1 and forward:
