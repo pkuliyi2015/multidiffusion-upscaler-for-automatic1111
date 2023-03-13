@@ -59,7 +59,20 @@ from modules.shared import opts, state
 from modules.sd_samplers_kdiffusion import CFGDenoiserParams
 from modules.ui import gr_show
 
+from gradio import Slider, Text, Group
+from typing import Tuple, List
 from modules.processing import StableDiffusionProcessing
+
+BBox = Tuple[int, int, int, int]    # (x, y, w, h)
+BBoxControl = Tuple[Slider, Slider, Slider, Slider, Text]
+
+if 'global const':
+    BBOX_MAX_NUM = 8
+
+if 'global var':
+    bbox_ip: int = 0                        # counter of the activated bboxes
+    bbox_controls: List[BBoxControl] = []   # control set for each bbox
+    bbox_control_groups: List[Group] = []   # ui show/hide a group
 
 
 class MultiDiffusionDelegate(object):
@@ -259,7 +272,6 @@ class MultiDiffusionDelegate(object):
                 single_batch_tensors.append(control_tile)
             self.control_tensor_batch.append(single_batch_tensors)
 
-
     def compute_x_tile(self, x_in, func):
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
@@ -324,10 +336,14 @@ class Script(scripts.Script):
 
     def ui(self, is_img2img):
         with gr.Accordion('MultiDiffusion', open=False):
-            with gr.Row():
+            with gr.Row(variant='compact'):
                 enabled = gr.Checkbox(label='Enable MultiDiffusion', value=False)
                 override_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=(is_img2img))
+
+                enable_bbox_control = gr.Checkbox(label='Draw bboxes', value=False, visible=is_img2img)
+                btn_bbox_new = gr.Button(value='+', variant='tool', visible=False)
+                btn_bbox_del = gr.Button(value='-', variant='tool', visible=False)
 
             with gr.Row(visible=False) as tab_size:
                 image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, 
@@ -355,6 +371,44 @@ class Script(scripts.Script):
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
                                          elem_id=self.elem_id("scale_factor"))
 
+            if is_img2img and 'bbox_control':
+                with gr.Group(visible=False, variant='panel', elem_id='MD-bbox-control') as tab_bbox:
+                    global bbox_control_groups, bbox_controls, bbox_ip
+
+                    gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id='MD-bbox-ref')
+
+                    for i in range(BBOX_MAX_NUM):
+                        with gr.Group(visible=i==0) as tab_bbox_grp:
+                            with gr.Row(variant='compact'):
+                                x = gr.Slider(label=f'x{i}', value=lambda: 0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
+                                y = gr.Slider(label=f'y{i}', value=lambda: 0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
+                                w = gr.Slider(label=f'w{i}', value=lambda: 0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-w-{i}')
+                                h = gr.Slider(label=f'h{i}', value=lambda: 0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-h-{i}')
+                            with gr.Row(variant='compact'):
+                                t = gr.Text(label=f'prompt{i}', max_lines=1, elem_id=f'MD-p-{i}')
+                        bbox_controls.append((x, y, w, h, t))
+                        bbox_control_groups.append(tab_bbox_grp)
+
+                    def bbox_new_click():
+                        global bbox_ip
+                        if bbox_ip < BBOX_MAX_NUM - 1: bbox_ip += 1
+                        return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
+
+                    def bbox_del_click():
+                        global bbox_ip
+                        if bbox_ip > 0: bbox_ip -= 1
+                        return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
+
+                    btn_bbox_new.click(fn=bbox_new_click, outputs=bbox_control_groups)
+                    btn_bbox_del.click(fn=bbox_del_click, outputs=bbox_control_groups, _js='btn_bbox_del_click')
+
+                enable_bbox_control.change(
+                    fn=lambda x: [gr_show(x), gr_show(x), gr_show(x)], 
+                    inputs=enable_bbox_control, 
+                    outputs=[tab_bbox, btn_bbox_new, btn_bbox_del],
+                    _js='enable_bbox_control_change',
+                )
+
             control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
         return [
@@ -363,6 +417,7 @@ class Script(scripts.Script):
             tile_width, tile_height, overlap, batch_size, 
             upscaler_index, scale_factor,
             control_tensor_cpu,
+            enable_bbox_control,
         ]
 
     def process(self, p:StableDiffusionProcessing, 
@@ -371,6 +426,7 @@ class Script(scripts.Script):
             tile_width:int, tile_height:int, overlap:int, tile_batch_size:int, 
             upscaler_index:str, scale_factor:float,
             control_tensor_cpu:bool,
+            enable_user_bbox:bool,
         ):
 
         if not enabled: return
