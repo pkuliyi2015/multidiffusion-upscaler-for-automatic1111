@@ -57,6 +57,9 @@ import gradio as gr
 from modules import sd_samplers, images, devices, shared, scripts, prompt_parser, sd_samplers_common
 from modules.shared import opts, state
 from modules.sd_samplers_kdiffusion import CFGDenoiserParams
+from modules.ui import gr_show
+
+from modules.processing import StableDiffusionProcessing
 
 
 class MultiDiffusionDelegate(object):
@@ -320,92 +323,95 @@ class Script(scripts.Script):
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
-        with gr.Group():
-            with gr.Accordion('MultiDiffusion', open=False):
+        with gr.Accordion('MultiDiffusion', open=False):
+            with gr.Row():
+                enabled = gr.Checkbox(label='Enable MultiDiffusion', value=False)
+                override_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
+                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=(is_img2img))
+
+            with gr.Row(visible=False) as tab_size:
+                image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, 
+                                        elem_id=self.elem_id("image_width"))
+                image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, 
+                                         elem_id=self.elem_id("image_height"))
+            if not is_img2img:
+                override_image_size.change(fn=lambda x: gr_show(x), inputs=override_image_size, outputs=tab_size)
+
+            with gr.Group():
                 with gr.Row():
-                    enabled = gr.Checkbox(
-                        label='Enable MultiDiffusion', value=False)
-                    override_image_size = gr.Checkbox(
-                        label='Overwrite image size', value=False, visible=(not is_img2img))
-                    keep_input_size = gr.Checkbox(
-                        label='Keep input image size', value=True, visible=(is_img2img))
+                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=64,
+                                            elem_id=self.elem_id("latent_tile_width"))
+                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=64,
+                                            elem_id=self.elem_id("latent_tile_height"))
+
                 with gr.Row():
-                    image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024,
-                                            elem_id=self.elem_id("image_width"), visible=False)
-                    image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024,
-                                             elem_id=self.elem_id("image_height"), visible=False)
-                with gr.Group():
-                    with gr.Row():
-                        tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=64,
-                                               elem_id=self.elem_id("latent_tile_width"))
-                        tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=64,
-                                                elem_id=self.elem_id("latent_tile_height"))
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=32,
+                                        elem_id=self.elem_id("latent_overlap"))
+                    batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1)
 
-                    with gr.Row():
-                        overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=32,
-                                            elem_id=self.elem_id("latent_overlap"))
-                        batch_size = gr.Slider(
-                            minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1)
-                with gr.Group():
-                    with gr.Row():
-                        upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers],
-                                                     value="None", elem_id=self.elem_id("upscaler_index"), visible=is_img2img)
-                        scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
-                                                 elem_id=self.elem_id("scale_factor"), visible=is_img2img)
-                control_tensor_cpu = gr.Checkbox(
-                    label='Move ControlNet images to CPU (if applicable)', value=False)
+            with gr.Row(visible=is_img2img):
+                upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None", 
+                                             elem_id=self.elem_id("upscaler_index"))
+                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
+                                         elem_id=self.elem_id("scale_factor"))
 
-        if not is_img2img:
-            def on_override_image_size(value):
-                if value:
-                    return gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True)
-                else:
-                    return gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False)
+            control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
-            override_image_size.change(fn=on_override_image_size, inputs=[
-                                       override_image_size], outputs=[image_width, image_height])
+        return [
+            enabled, 
+            override_image_size, keep_input_size, image_width, image_height, 
+            tile_width, tile_height, overlap, batch_size, 
+            upscaler_index, scale_factor,
+            control_tensor_cpu,
+        ]
 
-        return [enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, batch_size, upscaler_index, scale_factor, control_tensor_cpu]
+    def process(self, p:StableDiffusionProcessing, 
+            enabled:bool, 
+            override_image_size:bool, keep_input_size:bool, image_width:int, image_height:int, 
+            tile_width:int, tile_height:int, overlap:int, tile_batch_size:int, 
+            upscaler_index:str, scale_factor:float,
+            control_tensor_cpu:bool,
+        ):
 
-    def process(self, p, enabled, override_image_size, image_width, image_height, keep_input_size, tile_width, tile_height, overlap, tile_batch_size, upscaler_index, scale_factor, control_tensor_cpu):
-        if not enabled:
-            return p
-        if isinstance(upscaler_index, str):
-            upscaler_index = [x.name.lower() for x in shared.sd_upscalers].index(
-                upscaler_index.lower())
-        if hasattr(p, "init_images") and len(p.init_images) > 0:
+        if not enabled: return
+
+        ''' upscale '''
+        if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
+            upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
+
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
-            upscaler = shared.sd_upscalers[upscaler_index]
+            upscaler = shared.sd_upscalers[upscaler_name]
             if upscaler.name != "None":
-                print(f"Upscaling image with {upscaler.name}...")
-                image = upscaler.scaler.upscale(
-                    init_img, scale_factor, upscaler.data_path)
+                print(f"[MultiDiffusion] upscaling image with {upscaler.name}...")
+                image = upscaler.scaler.upscale(init_img, scale_factor, upscaler.data_path)
                 p.extra_generation_params["MultiDiffusion upscaler"] = upscaler.name
                 p.extra_generation_params["MultiDiffusion scale factor"] = scale_factor
             else:
                 image = init_img
             p.init_images[0] = image
+
             if keep_input_size:
                 p.width = image.width
                 p.height = image.height
             elif upscaler.name != "None":
                 p.width *= scale_factor
                 p.height *= scale_factor
-        elif override_image_size:
+        elif override_image_size:       # txt2img
             p.width = image_width
             p.height = image_height
+
+        ''' sanitiy check '''
         if not MultiDiffusionDelegate.splitable(p.width, p.height, tile_width, tile_height, overlap):
-            print(
-                "MultiDiffusion is disabled because the image is too small or the tile size is too large.")
-            return p
+            print("[MultiDiffusion] ignore due to image too small or tile size too large.")
+            return
         p.extra_generation_params["MultiDiffusion tile width"] = tile_width
         p.extra_generation_params["MultiDiffusion tile height"] = tile_height
         p.extra_generation_params["MultiDiffusion overlap"] = overlap
-        # hack the create_sampler function to get the created sampler
-        old_create_sampler = sd_samplers.create_sampler
-        controlnet_script = None
+
+        ''' ControlNet hackin '''
         # try to hook into controlnet tensors
+        controlnet_script = None
         try:
             from scripts.cldm import ControlNet
             # fix controlnet multi-batch issue
@@ -422,20 +428,30 @@ class Script(scripts.Script):
             for script in p.scripts.scripts + p.scripts.alwayson_scripts:
                 if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
                     controlnet_script = script
-                    print(
-                        "ControlNet found. MultiDiffusion ControlNet support is enabled.")
+                    print("[MultiDiffusion] ControlNet found, MultiDiffusion-ControlNet support is enabled.")
                     break
         except ImportError:
             pass
 
+        ''' sampler hijack '''
+        # hack the create_sampler function to get the created sampler
+        old_create_sampler = sd_samplers.create_sampler
         def create_sampler(name, model):
             # create the sampler with the original function
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            delegate = MultiDiffusionDelegate(sampler, p.sampler_name, p.steps, p.width, p.height, tile_width, tile_height, overlap, tile_batch_size, False, controlnet_script=controlnet_script, control_tensor_cpu=control_tensor_cpu)
-            print("MultiDiffusion hooked into", p.sampler_name, "sampler. Tile size:", tile_width, "x",
-                  tile_height, "Tile batches:", len(delegate.batched_bboxes), "Batch size:", tile_batch_size)
+            delegate = MultiDiffusionDelegate(
+                sampler, 
+                p.sampler_name, p.steps, p.width, p.height, 
+                tile_width, tile_height, overlap, tile_batch_size, 
+                tile_prompt=False, 
+                controlnet_script=controlnet_script, 
+                control_tensor_cpu=control_tensor_cpu
+            )
+            print(f"[MultiDiffusion] hooked into {p.sampler_name} sampler. " + 
+                  f"Tile size: {tile_width}x{tile_height}, " + 
+                  f"Tile batches: {len(delegate.batched_bboxes)}, " +
+                  f"Batch size:", tile_batch_size)
             return sampler
         sd_samplers.create_sampler = create_sampler
-        return p
