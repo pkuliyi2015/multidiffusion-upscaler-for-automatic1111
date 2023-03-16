@@ -367,11 +367,9 @@ class Script(scripts.Script):
 
             if is_img2img and 'bbox_control':
                 with gr.Group(visible=False, variant='panel', elem_id='MD-bbox-control') as tab_bbox:
-                    
-                    bbox_ip = gr.State(value=0, elem_id='MD-bbox-ip')
-                    BBoxControl = Tuple[Slider, Slider, Slider, Slider, Slider, Text]                       # counter of the activated bboxes
-                    bbox_controls: List[BBoxControl] = []   # control set for each bbox
-                    bbox_control_groups: List[Group] = []   # ui show/hide a group
+                    bbox_ip = gr.State(value=0, elem_id='MD-bbox-ip')  # counter of the activated bboxes
+                    bbox_controls = gr.State([])  # control set for each bbox
+                    bbox_control_groups = gr.State([])  # ui show/hide a group
 
                     gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id='MD-bbox-ref')
 
@@ -388,18 +386,16 @@ class Script(scripts.Script):
                         bbox_controls.append((x, y, w, h, m, t))
                         bbox_control_groups.append(tab_bbox_grp)
 
-                    def bbox_new_click():
-                        global bbox_ip
+                    def bbox_new_click(bbox_ip):
                         if bbox_ip < BBOX_MAX_NUM - 1: bbox_ip += 1
                         return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
 
-                    def bbox_del_click():
-                        global bbox_ip
+                    def bbox_del_click(bbox_ip):
                         if bbox_ip > 0: bbox_ip -= 1
                         return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
 
-                    btn_bbox_new.click(fn=bbox_new_click, outputs=bbox_control_groups)
-                    btn_bbox_del.click(fn=bbox_del_click, outputs=bbox_control_groups, _js='btn_bbox_del_click')
+                    btn_bbox_new.click(fn=bbox_new_click, inputs=[bbox_ip], outputs=bbox_control_groups)
+                    btn_bbox_del.click(fn=bbox_del_click, inputs=[bbox_ip], outputs=bbox_control_groups, _js='btn_bbox_del_click')
 
                 enable_bbox_control.change(
                     fn=lambda x: [gr_show(x), gr_show(x), gr_show(x)], 
