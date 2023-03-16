@@ -758,6 +758,9 @@ class Script(scripts.Script):
         return "Tiled VAE"
 
     def show(self, is_img2img):
+        if devices.get_optimal_device_name() == 'mps':
+            print(f'[Tiled VAE]: Tiled VAE is not needed on Mac. Skip loading...')
+            return False
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
