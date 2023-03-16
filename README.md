@@ -4,7 +4,7 @@ English｜[中文](README_CN.md)
 
 This repository contains two scripts that enable **ultra-large image generation**.
 
-- The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/multidiffusion.github.io)
+- The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://multidiffusion.github.io)
 - The Tiled VAE is my original algorithm, which is **very powerful** in VRAM saving
 
 ## Update on 2023.3.7
@@ -16,8 +16,6 @@ This repository contains two scripts that enable **ultra-large image generation*
   - Use --no-half-vae on startup is also effective.
 
 ## MultiDiffusion
-
-Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce-reuse-recycle/) seems to achieve **theoretically** better results in local control than MultiDiffusion. We are investigating their differences and may provide an implementation in this repo.
 
 ****
 
@@ -42,10 +40,10 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
 
 - Example: 1024 * 800 -> 4096 * 3200 image, denoise=0.4, steps=20, Sampler=DPM++ SDE Karras, Upscaler=RealESRGAN++, Negative Prompts=EasyNegative
   - Before: 
-  - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
+  - ![lowres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/lowres.jpg?raw=true)
   - After: 4x upscale.
   - 1min12s on NVIDIA Testla V100. (If 2x, it completes in 10s)
-  - ![highres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/highres.jpeg?raw=true)
+  - ![highres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/highres.jpeg?raw=true)
 
 ****
 
@@ -57,7 +55,7 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
   - We are urgently working on the rectangular & fine-grained prompt control.
 
 - Example - masterpiece, best quality, highres, city skyline, night.
-- ![panorama](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/city_panorama.jpeg?raw=true)
+- ![panorama](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/city_panorama.jpeg?raw=true)
 
 ****
 
@@ -67,14 +65,14 @@ Note: [The latest sampler by Google](https://energy-based-model.github.io/reduce
 - Canny edge seems to be the best as it provides sufficient local controls.
 - Example: 22020 x 1080 ultra-wide image conversion 
   - Masterpiece, best quality, highres, ultra-detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
-  - Before: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
-  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg?raw=true)
-  - After: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg)
-  - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg?raw=true)
+  - Before: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg)
+  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg?raw=true)
+  - After: [click for the raw image](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg)
+  - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg?raw=true)
 - Example: 2560 * 1280 large image drawing
   - ControlNet canny edge
-  - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname_canny.jpeg?raw=true)
-  - ![yourname](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname.jpeg?raw=true)
+  - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname_canny.jpeg?raw=true)
+  - ![yourname](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
 
 ****
 
@@ -138,9 +136,9 @@ Remove --lowvram and --medvram to enjoy!
 ## Installation
 
 - Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Install from URL" -> type in the link of this repo -> Click "Install" 
-- ![installation](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/installation.png?raw=true)
+- ![installation](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/installation.png?raw=true)
 - After restart your WebUI, you shall see the following two tabs:
-- ![Tab](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tab.png?raw=true)
+- ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Tab.png?raw=true)
 
 ### MultiDiffusion Params
 

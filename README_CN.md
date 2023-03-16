@@ -1,8 +1,8 @@
 # MultiDiffusion + Tiled VAE
 
-[English](readme.md) | 中文
+[English](README.md) | 中文
 
-本存储库包含两个脚本，使用 [MultiDiffusion](multidiffusion.github.io) 和Tiled VAE（**原创方法**）处理**超大图片**。
+本存储库包含两个脚本，使用 [MultiDiffusion](https://multidiffusion.github.io) 和Tiled VAE（**原创方法**）处理**超大图片**。
 
 - 第一个是前人已有的优秀工作。请参考他们的论文和网页。
 - 第二个是我的原创算法。尽管原理上很简单，但非常强力，**让6G显存跑高清大图成为可能**
@@ -10,7 +10,7 @@
 ##  2023.3.7 更新
 
 - Tiled VAE 添加了快速模式，**提升了五倍以上的速度并不再有额外的内存负担**
-- 现在在16GB设备上只需要25秒左右就能编码+解码8K大图。4K图片时间几乎是立即完成。
+- 现在在12GB设备上只需要25秒左右就能编码+解码8K大图。4K图片时间几乎是立即完成。
 - **如果您遇到VAE NaN 或者输出图像纯黑色：**
   - 使用官方提供的840000 VAE权重常常可以解决问题
   - 并且可以使用 --no-half-vae 禁用半精度 VAE
@@ -40,11 +40,11 @@
 - 示例：
   - 参数：masterpiece, best quality, highres, extremely detailed, clear background, 去噪=0.4，步数=20，采样器=DPM++ SDE Karras，放大器=RealESRGAN, Tile size=96, Overlap=48, Tile batch size=8.
   - 处理前
-  - ![lowres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/lowres.jpg?raw=true)
+  - ![lowres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/lowres.jpg?raw=true)
   - 处理后：4x放大，NVIDIA Tesla V100,
     - 总耗时 1分55秒，其中30秒用于VAE编解码。
     - 如果是2x放大仅需20秒
-  - ![highres](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/highres.jpeg?raw=true)
+  - ![highres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/highres.jpeg?raw=true)
 
 ****
 
@@ -57,7 +57,7 @@
   - 我们正在加急处理矩形和细粒度prompt控制。
 - 示例 - mastepiece, best quality, highres, city skyline, night
 
-- ![panorama](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/city_panorama.jpeg?raw=true)
+- ![panorama](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/city_panorama.jpeg?raw=true)
 
 ****
 
@@ -67,14 +67,14 @@
 - Canny edge似乎是最好用的，因为它提供足够的局部控制。
 - 示例：22020 x 1080 超宽图像转换 - 清明上河图
   - Masterpiece, best quality, highres, ultra detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
-  - 转换前：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg)
-  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city_origin.jpeg?raw=true)
-  - 转换后：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg)
-  - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/ancient_city.jpeg?raw=true)
+  - 转换前：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg)
+  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg?raw=true)
+  - 转换后：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg)
+  - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg?raw=true)
 - 示例：2560 * 1280 大型图像绘制
   - ControlNet Canny 边缘
-  - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname_canny.jpeg?raw=true)
-  - ![yourname](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/yourname.jpeg?raw=true)
+  - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname_canny.jpeg?raw=true)
+  - ![yourname](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
 
 ****
 
@@ -136,9 +136,9 @@
 ## 安装
 
 - 打开 Automatic1111 WebUI->单击选项卡“扩展”->单击选项卡“从 URL 安装”->输入此存储库的链接->单击“安装”
-- ![installation](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/installation.png?raw=true)
+- ![installation](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/installation.png?raw=true)
 - 重启您的 WebUI 后，您应该会看到以下两个选项卡：
-- ![Tab](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/blob/docs/imgs/Tab.png?raw=true)
+- ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Tab.png?raw=true)
 
 ### MultiDiffusion 参数
 
