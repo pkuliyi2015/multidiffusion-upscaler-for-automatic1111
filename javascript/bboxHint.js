@@ -215,14 +215,21 @@ function onBoxMouseDown(e, idx) {
         } else {
             if (resizeLeft || resizeRight) {
                 if (x < horizontalPivot){
-                    x = x + dx;
-                    w = w - dx;
-                } else if(w + dx < 0){
-                    x = horizontalPivot + w + dx;
-                    w = - dx - w;
+                    if (dx <= w){
+                        x = x + dx;
+                        w = w - dx;
+                    } else {
+                        w = dx - w;
+                        x = horizontalPivot;
+                    }
                 } else {
-                    x = horizontalPivot;
-                    w = w + dx;
+                    if(w + dx < 0){
+                        x = horizontalPivot + w + dx;
+                        w = - dx - w;
+                    } else {
+                        x = horizontalPivot;
+                        w = w + dx;
+                    }
                 }
                 if (x < 0) {
                     w = w + x;
@@ -232,15 +239,22 @@ function onBoxMouseDown(e, idx) {
                 }
             }
             if (resizeTop || resizeBottom) {
-                if (y < verticalPivot) {
-                    y = y + dy;
-                    h = h - dy;
-                } else if (h + dy < 0) {
-                    y = verticalPivot + h + dy;
-                    h = - dy - h;
+                if (y < verticalPivot){
+                    if (dy <= h){
+                        y = y + dy;
+                        h = h - dy;
+                    } else {
+                        h = dy - h;
+                        y = verticalPivot;
+                    }
                 } else {
-                    y = verticalPivot;
-                    h = h + dy;
+                    if(h + dy < 0){
+                        y = verticalPivot + h + dy;
+                        h = - dy - h;
+                    } else {
+                        y = verticalPivot;
+                        h = h + dy;
+                    }
                 }
                 if (y < 0) {
                     h = h + y;
