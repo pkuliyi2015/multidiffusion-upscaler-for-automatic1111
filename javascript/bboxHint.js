@@ -153,8 +153,14 @@ function updateCallback(idx) {
 }
 
 function onBoxMouseDown(e, idx) {
+    // Get the bounding box
     if (!bboxes[idx]) return;
     let [div, bbox] = bboxes[idx];
+    // Get the canvas element
+    let canvas = gradioApp().querySelector('#MD-bbox-ref img');
+    if (!canvas) {
+        return;
+    }
 
     // Check if the click is inside the bounding box
     let boxRect = div.getBoundingClientRect();
@@ -176,61 +182,74 @@ function onBoxMouseDown(e, idx) {
     const horizontalPivot = resizeLeft ? bbox[0] + bbox[2] : bbox[0];
     const verticalPivot = resizeTop ? bbox[1] + bbox[3] : bbox[1];
 
+    // Canvas can be regarded as invariant during the drag operation
+    // Calculate in advance to reduce overhead
+
+    // Calculate viewport scale based on the current canvas size and the natural image size
+    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+    let vpOffset = canvas.getBoundingClientRect();
+
+    // Calculate scaled dimensions of the canvas
+    let scaledX = canvas.naturalWidth * vpScale;
+    let scaledY = canvas.naturalHeight * vpScale;
+
+    // Calculate the canvas center and view rectangle coordinates
+    let canvasCenterX = (vpOffset.left + window.scrollX) + canvas.clientWidth / 2;
+    let canvasCenterY = (vpOffset.top + window.scrollY) + canvas.clientHeight / 2;
+    let viewRectLeft = canvasCenterX - scaledX / 2 - window.scrollX;
+    let viewRectRight = canvasCenterX + scaledX / 2 - window.scrollX;
+    let viewRectTop = canvasCenterY - scaledY / 2 - window.scrollY;
+    let viewRectDown = canvasCenterY + scaledY / 2 - window.scrollY;
+
     // Move or resize the bounding box on mousemove
     function onMouseMove(e) {
-        let [div, bbox] = bboxes[idx];
-        let canvas = gradioApp().querySelector('#MD-bbox-ref img');
-        if (!canvas) { return; }
-        // prevent selection anything irrelevant
+    
+        // Prevent selecting anything irrelevant
         e.preventDefault();
+    
+        // Get the new mouse position
         let newMouseX = e.clientX;
         let newMouseY = e.clientY;
 
-        let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-        let vpOffset = canvas.getBoundingClientRect();
-
-        let scaledX = canvas.naturalWidth * vpScale;
-        let scaledY = canvas.naturalHeight * vpScale;
-
-        let canvasCenterX = (vpOffset.left + window.scrollX) + canvas.clientWidth / 2;
-        let canvasCenterY = (vpOffset.top + window.scrollY) + canvas.clientHeight / 2;
-        let viewRectLeft = canvasCenterX - scaledX / 2 - window.scrollX;
-        let viewRectRight = canvasCenterX + scaledX / 2 - window.scrollX;
-        let viewRectTop = canvasCenterY - scaledY / 2 - window.scrollY;
-        let viewRectDown = canvasCenterY + scaledY / 2 - window.scrollY;
-
-        let [x, y, w, h] = bbox;
-
+        // Calculate the mouse movement delta
         let dx = (newMouseX - mouseX) / scaledX;
         let dy = (newMouseY - mouseY) / scaledY;
 
-        if (newMouseX < viewRectLeft && dx > 0) dx = 0;
-        if (newMouseX > viewRectRight && dx < 0) dx = 0;
-        if (newMouseY < viewRectTop && dy > 0) dy = 0;
-        if (newMouseY > viewRectDown && dy < 0) dy = 0;
+        // Prevent moving the bounding box outside the view rectangle
+        if (newMouseX < viewRectLeft && dx > 0 || newMouseX > viewRectRight && dx < 0) dx = 0;
+        if (newMouseY < viewRectTop && dy > 0 || newMouseY > viewRectDown && dy < 0) dy = 0;
 
+        // Update the mouse position
+        let [x, y, w, h] = bbox;
         if (moveHorizontal && moveVertical) {
+            // If moving the bounding box
             x = Math.min(Math.max(x + dx, 0), 1 - w);
             y = Math.min(Math.max(y + dy, 0), 1 - h);
         } else {
+            // If resizing the bounding box
             if (resizeLeft || resizeRight) {
                 if (x < horizontalPivot){
                     if (dx <= w){
+                        // If still within the left side of the pivot
                         x = x + dx;
                         w = w - dx;
                     } else {
+                        // If crossing the pivot
                         w = dx - w;
                         x = horizontalPivot;
                     }
                 } else {
                     if(w + dx < 0){
+                        // If still within the right side of the pivot
                         x = horizontalPivot + w + dx;
                         w = - dx - w;
                     } else {
+                        // If crossing the pivot
                         x = horizontalPivot;
                         w = w + dx;
                     }
                 }
+                // Clamp the bounding box to the image
                 if (x < 0) {
                     w = w + x;
                     x = 0;
@@ -238,6 +257,7 @@ function onBoxMouseDown(e, idx) {
                     w = 1 - x;
                 }
             }
+            // Same as above, but for the vertical axis
             if (resizeTop || resizeBottom) {
                 if (y < verticalPivot){
                     if (dy <= h){
@@ -264,11 +284,10 @@ function onBoxMouseDown(e, idx) {
                 }
             }
         }
-
+        // Update the bounding box rendering
         updateBox(canvas, div, idx, x, y, w, h);
+        // Click the invisible update button to update the value in Python script.
         gradioApp().querySelector('#md-update-' + idx).click();
-        mouseX = e.clientX;
-        mouseY = e.clientY;
     }
 
     // Remove the mousemove and mouseup event listeners
@@ -283,6 +302,7 @@ function onBoxMouseDown(e, idx) {
 }
 
 function updateCursorStyle(e, idx) {
+    // This function changes the cursor style when hovering over the bounding box
     if (!bboxes[idx]) return;
     let [div, _] = bboxes[idx];
     let boxRect = div.getBoundingClientRect();
@@ -308,6 +328,7 @@ function updateCursorStyle(e, idx) {
 }
 
 function updateAllBoxes() {
+    // This function redraw all bounding boxes
     let canvas = gradioApp().querySelector('#MD-bbox-ref img');
     if (!canvas) {
         return;
