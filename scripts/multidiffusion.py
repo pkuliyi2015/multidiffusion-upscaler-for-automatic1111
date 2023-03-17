@@ -48,7 +48,7 @@
 
 
 import math
-
+import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -364,38 +364,46 @@ class Script(scripts.Script):
             with gr.Row():
                 control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
-            with gr.Group(variant='panel', elem_id='MD-bbox-control'):
+            # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
+            tab = 't2i' if not is_img2img else 'i2i'
+            is_t2i = 'true' if not is_img2img else 'false'
+            with gr.Group(variant='panel', elem_id=f'MD-bbox-control-{tab}'):
                 with gr.Accordion('Region control', open=False):
+                    
                     with gr.Row():
                         enable_bbox_control = gr.Checkbox(label='Enable', value=False)
-                        
-                        create_button = gr.Button(value="Create blank canvas" if not is_img2img else "From img2img")
+                        create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
+
+                        #np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
                     bbox_controls = []  # control set for each bbox
                     with gr.Row():
-                        gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id='MD-bbox-ref')
+                        ref_image = gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}')
                     
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i}', open=False):
                             with gr.Row(variant='compact'):
-                                e = gr.Checkbox(label=f'Enable', value=False, elem_id=f'md-enable-{i}')
-                                m = gr.Slider(label=f'weight', value=0.5, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'md-wt-{i}')
+                                e = gr.Checkbox(label=f'Enable', value=False, elem_id=f'MD-enable-{i}')
+                                e.change(fn=None, inputs=[e], outputs = [e], _js=f'(e)=>onBoxEnableClick({is_t2i},{i}, e)')
+                                m = gr.Slider(label=f'weight', value=0.5, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-wt-{i}')
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
                                 y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
                                 w = gr.Slider(label=f'w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-w-{i}')
                                 h = gr.Slider(label=f'h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-h-{i}')
                                 
-                                x.change(fn=None, inputs=[x], outputs = [x], _js=f'(v)=>onBoxChange({i}, \'x\', v)')
-                                y.change(fn=None, inputs=[y], outputs = [y], _js=f'(v)=>onBoxChange({i}, \'y\', v)')
-                                w.change(fn=None, inputs=[w], outputs = [w], _js=f'(v)=>onBoxChange({i}, \'w\', v)')
-                                h.change(fn=None, inputs=[h], outputs = [h], _js=f'(v)=>onBoxChange({i}, \'h\', v)')
+                                x.change(fn=None, inputs=[x], outputs = [x], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'x\', v)')
+                                y.change(fn=None, inputs=[y], outputs = [y], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'y\', v)')
+                                w.change(fn=None, inputs=[w], outputs = [w], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'w\', v)')
+                                h.change(fn=None, inputs=[h], outputs = [h], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'h\', v)')
 
                             with gr.Row(variant='compact'):
-                                t = gr.Text(show_label=False, placeholder=f'Prompt', max_lines=2, elem_id=f'md-p-{i}')
-                            update_button = gr.Button(value="Update", elem_id=f'md-update-{i}', visible=False)
-                            update_button.click(fn=None, inputs=[], outputs = [x,y,w,h], _js=f'()=>updateCallback({i})')
-                            e.change(fn=None, inputs=[e], outputs = [e], _js=f'(e)=>onBoxEnableClick({i}, e)')
-                        bbox_controls.append((e, x, y, w, h, m, t))
+                                t = gr.Text(show_label=False, placeholder=f'Prompt', max_lines=2, elem_id=f'MD-p-{i}')
+
+                            update_button = gr.Button(value="Update", elem_id=f'MD-update-{tab}-{i}', visible=False)
+                            gr.update
+                            update_button.click(fn=None, inputs=[], outputs = [x,y,w,h], _js=f'()=>updateCallback({is_t2i},{i})')
+
+                        bbox_controls.append((e, m, x, y, w, h, t))
 
                     bbox_control_states = gr.State(bbox_controls)
 
@@ -406,6 +414,7 @@ class Script(scripts.Script):
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control,
+            ref_image,
             bbox_control_states
         ]
 
@@ -415,8 +424,7 @@ class Script(scripts.Script):
             tile_width:int, tile_height:int, overlap:int, tile_batch_size:int, 
             upscaler_index:str, scale_factor:float,
             control_tensor_cpu:bool,
-            enable_user_bbox:bool,
-            bbox_control_states
+            enable_user_bbox:bool, ref_image, bbox_control_states
         ):
 
         if not enabled: return

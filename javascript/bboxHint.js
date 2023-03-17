@@ -4,7 +4,6 @@ const DEFAULT_Y = 0.4;
 const DEFAULT_H = 0.2;
 const DEFAULT_W = 0.2;
 
-const TIMER_FADE = -1;
 const COLOR_MAP = [
     ['#ff0000', 'rgba(255, 0, 0, 0.3)'],          // red
     ['#ff9900', 'rgba(255, 153, 0, 0.3)'],        // orange
@@ -27,12 +26,23 @@ const COLOR_MAP = [
 const RESIZE_BORDER = 5;
 const MOVE_BORDER = 5;
 
-const timers = new Array(BBOX_MAX_NUM).fill(null);
-const bboxes = new Array(BBOX_MAX_NUM).fill(null);
+const t2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
+const i2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 
 
-function onBoxEnableClick(idx, enable) {
-    let canvas = gradioApp().querySelector('#MD-bbox-ref img');
+
+function onBoxEnableClick(is_t2i, idx, enable) {
+    let canvas = null;
+    let bboxes = null;
+    if (is_t2i) {
+        ref_div = gradioApp().querySelector('#MD-bbox-ref-t2i');
+        canvas = gradioApp().querySelector('#MD-bbox-ref-t2i img');
+        bboxes = t2i_bboxes;
+    } else {
+        ref_div = gradioApp().querySelector('#MD-bbox-ref-i2i');
+        canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
+        bboxes = i2i_bboxes;
+    }
     if (!canvas) { return false; }
     if (enable) {
         // Check if the bounding box already exists
@@ -45,7 +55,7 @@ function onBoxEnableClick(idx, enable) {
             const bbox = [x, y, w, h];
             const colorMap = COLOR_MAP[idx % COLOR_MAP.length];
             const div = document.createElement('div');
-            div.id = 'MD-bbox-' + idx;
+            div.id = 'MD-bbox-' + (is_t2i ? 't2i-' : 'i2i-') + idx;
             div.style.left = '0px';
             div.style.top = '0px';
             div.style.width = '0px';
@@ -57,19 +67,19 @@ function onBoxEnableClick(idx, enable) {
             div.style.display = 'none';
             div.addEventListener('mousedown', function (e) {
                 if (e.button === 0) {
-                    onBoxMouseDown(e, idx);
+                    onBoxMouseDown(e, is_t2i, idx);
                 }
             });
             div.addEventListener('mousemove', function (e) {
-                updateCursorStyle(e, idx);
+                updateCursorStyle(e, is_t2i, idx);
             });
-            document.body.appendChild(div);
+            ref_div.appendChild(div);
             bboxes[idx] = [div, bbox];
         }
         // Show the bounding box
         let [div, bbox] = bboxes[idx];
         let [x, y, w, h] = bbox;
-        updateBox(canvas, div, idx, x, y, w, h);
+        displayBox(canvas, div, x, y, w, h);
         return true;
     } else {
         if (!bboxes[idx]) { return false; }
@@ -79,16 +89,14 @@ function onBoxEnableClick(idx, enable) {
     return false;
 }
 
-function updateBox(canvas, div, idx, x, y, w, h) {
-    // update bbox
-    bbox = [x, y, w, h];
-
+function displayBox(canvas, div, x, y, w, h) {
+    // check null input
+    if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
     // client: canvas widget display size
     // natural: content image real size
-    let vpOffset = canvas.getBoundingClientRect();
     let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-    let canvasCenterX = (vpOffset.left + window.scrollX) + canvas.clientWidth / 2;
-    let canvasCenterY = (vpOffset.top + window.scrollY) + canvas.clientHeight / 2;
+    let canvasCenterX = canvas.clientWidth / 2;
+    let canvasCenterY = canvas.clientHeight / 2;
     let scaledX = canvas.naturalWidth * vpScale;
     let scaledY = canvas.naturalHeight * vpScale;
     let viewRectLeft = canvasCenterX - scaledX / 2;
@@ -106,22 +114,20 @@ function updateBox(canvas, div, idx, x, y, w, h) {
     div.style.top = yDiv + 'px';
     div.style.width = wDiv + 'px';
     div.style.height = hDiv + 'px';
-
-    // save
-    bboxes[idx] = [div, bbox];
-
-    // draw <div>
-    if (TIMER_FADE > 0) {
-        if (timers[idx]) clearTimeout(timers[idx]);
-        timers[idx] = setTimeout(function () {
-            div.style.display = 'none';
-        }, TIMER_FADE);
-    }
     div.style.display = 'block';
 }
 
-function onBoxChange(idx, what, v) {
-    if (!bboxes[idx]) {
+function onBoxChange(is_t2i, idx, what, v) {
+    let bboxes = null;
+    let canvas = null;
+    if (is_t2i) {
+        bboxes = t2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-t2i img');
+    } else {
+        bboxes = i2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
+    }
+    if (!bboxes[idx] || !canvas) {
         switch (what) {
             case 'x': return DEFAULT_X;
             case 'y': return DEFAULT_Y;
@@ -132,8 +138,6 @@ function onBoxChange(idx, what, v) {
     let [div, bbox] = bboxes[idx];
     if (div.style.display == 'none') { return v; }
     let [x, y, w, h] = bbox;
-    let canvas = gradioApp().querySelector('#MD-bbox-ref img');
-    if (!canvas) { return; }
     // parse trigger
     switch (what) {
         case 'x': x = v; break;
@@ -142,25 +146,24 @@ function onBoxChange(idx, what, v) {
         case 'h': h = v; break;
     }
     bbox = [x, y, w, h];
-    updateBox(canvas, div, idx, x, y, w, h);
+    displayBox(canvas, div, x, y, w, h);
+    bboxes[idx] = [div, bbox];
     return v
 }
 
-function updateCallback(idx) {
-    if (!bboxes[idx]) { return [DEFAULT_X, DEFAULT_Y, DEFAULT_W, DEFAULT_H]; }
-    let [div, bbox] = bboxes[idx];
-    return bbox;
-}
-
-function onBoxMouseDown(e, idx) {
-    // Get the bounding box
-    if (!bboxes[idx]) return;
-    let [div, bbox] = bboxes[idx];
-    // Get the canvas element
-    let canvas = gradioApp().querySelector('#MD-bbox-ref img');
-    if (!canvas) {
-        return;
+function onBoxMouseDown(e, is_t2i, idx) {
+    let bboxes = null;
+    let canvas = null;
+    if (is_t2i) {
+        bboxes = t2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-t2i img');
+    } else {
+        bboxes = i2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
     }
+    // Get the bounding box
+    if (!canvas || !bboxes[idx]) return;
+    let [div, bbox] = bboxes[idx];
 
     // Check if the click is inside the bounding box
     let boxRect = div.getBoundingClientRect();
@@ -201,23 +204,33 @@ function onBoxMouseDown(e, idx) {
     let viewRectTop = canvasCenterY - scaledY / 2 - window.scrollY;
     let viewRectDown = canvasCenterY + scaledY / 2 - window.scrollY;
 
+    mouseX = Math.min(Math.max(mouseX, viewRectLeft), viewRectRight);
+    mouseY = Math.min(Math.max(mouseY, viewRectTop), viewRectDown);
+
     // Move or resize the bounding box on mousemove
     function onMouseMove(e) {
-    
+
         // Prevent selecting anything irrelevant
         e.preventDefault();
-    
+
         // Get the new mouse position
         let newMouseX = e.clientX;
         let newMouseY = e.clientY;
+
+        // clamp the mouse position to the view rectangle
+        newMouseX = Math.min(Math.max(newMouseX, viewRectLeft), viewRectRight);
+        newMouseY = Math.min(Math.max(newMouseY, viewRectTop), viewRectDown);
 
         // Calculate the mouse movement delta
         let dx = (newMouseX - mouseX) / scaledX;
         let dy = (newMouseY - mouseY) / scaledY;
 
-        // Prevent moving the bounding box outside the view rectangle
-        if (newMouseX < viewRectLeft && dx > 0 || newMouseX > viewRectRight && dx < 0) dx = 0;
-        if (newMouseY < viewRectTop && dy > 0 || newMouseY > viewRectDown && dy < 0) dy = 0;
+        // Update the mouse position
+        mouseX = newMouseX;
+        mouseY = newMouseY;
+
+        // if no move just return
+        if (dx == 0 && dy == 0) return;
 
         // Update the mouse position
         let [x, y, w, h] = bbox;
@@ -228,8 +241,8 @@ function onBoxMouseDown(e, idx) {
         } else {
             // If resizing the bounding box
             if (resizeLeft || resizeRight) {
-                if (x < horizontalPivot){
-                    if (dx <= w){
+                if (x < horizontalPivot) {
+                    if (dx <= w) {
                         // If still within the left side of the pivot
                         x = x + dx;
                         w = w - dx;
@@ -239,7 +252,7 @@ function onBoxMouseDown(e, idx) {
                         x = horizontalPivot;
                     }
                 } else {
-                    if(w + dx < 0){
+                    if (w + dx < 0) {
                         // If still within the right side of the pivot
                         x = horizontalPivot + w + dx;
                         w = - dx - w;
@@ -259,8 +272,8 @@ function onBoxMouseDown(e, idx) {
             }
             // Same as above, but for the vertical axis
             if (resizeTop || resizeBottom) {
-                if (y < verticalPivot){
-                    if (dy <= h){
+                if (y < verticalPivot) {
+                    if (dy <= h) {
                         y = y + dy;
                         h = h - dy;
                     } else {
@@ -268,7 +281,7 @@ function onBoxMouseDown(e, idx) {
                         y = verticalPivot;
                     }
                 } else {
-                    if(h + dy < 0){
+                    if (h + dy < 0) {
                         y = verticalPivot + h + dy;
                         h = - dy - h;
                     } else {
@@ -284,10 +297,16 @@ function onBoxMouseDown(e, idx) {
                 }
             }
         }
-        // Update the bounding box rendering
-        updateBox(canvas, div, idx, x, y, w, h);
+        old_bbox = bboxes[idx][1];
+        if (old_bbox[0] == x && old_bbox[1] == y && old_bbox[2] == w && old_bbox[3] == h) {
+            return;
+        }
+        // Update the bounding box value
+        bbox = [x, y, w, h];
+        bboxes[idx] = [div, bbox];
         // Click the invisible update button to update the value in Python script.
-        gradioApp().querySelector('#md-update-' + idx).click();
+        // This will also trigger the bbox rendering.
+        gradioApp().querySelector('#MD-update-' + (is_t2i ? 't2i-' : 'i2i-') + idx).click();
     }
 
     // Remove the mousemove and mouseup event listeners
@@ -301,8 +320,9 @@ function onBoxMouseDown(e, idx) {
     document.addEventListener('mouseup', onMouseUp);
 }
 
-function updateCursorStyle(e, idx) {
+function updateCursorStyle(e, is_t2i, idx) {
     // This function changes the cursor style when hovering over the bounding box
+    let bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
     if (!bboxes[idx]) return;
     let [div, _] = bboxes[idx];
     let boxRect = div.getBoundingClientRect();
@@ -327,18 +347,46 @@ function updateCursorStyle(e, idx) {
     }
 }
 
-function updateAllBoxes() {
+function updateAllBoxes(is_t2i) {
     // This function redraw all bounding boxes
-    let canvas = gradioApp().querySelector('#MD-bbox-ref img');
-    if (!canvas) {
-        return;
+    let bboxes = null;
+    let canvas = null;
+    if (is_t2i) {
+        bboxes = t2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-t2i img');
+    } else {
+        bboxes = i2i_bboxes;
+        canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
     }
+    if (!canvas) return;
     for (let idx = 0; idx < bboxes.length; idx++) {
         if (!bboxes[idx]) continue;
         let [div, bbox] = bboxes[idx];
+        if (div.style.display == 'none') continue;
         let [x, y, w, h] = bbox;
-        updateBox(canvas, div, idx, x, y, w, h);
+        displayBox(canvas, div, x, y, w, h);
     }
 }
 
 window.addEventListener('resize', updateAllBoxes);
+
+function updateCallback(is_t2i, idx) {
+    let bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
+    if (!bboxes[idx]) return [DEFAULT_X, DEFAULT_Y, DEFAULT_W, DEFAULT_H];
+    let [_, bbox] = bboxes[idx];
+    return bbox;
+}
+
+// function observeCanvasVisibility() {
+//     // This function observes the visibility of the canvas
+//     let canvas = gradioApp().querySelector('#MD-bbox-ref img');
+//     if (!canvas) {
+//         return;
+//     }
+//     let observer = new IntersectionObserver((entries) => {
+//         if (entries[0].isIntersecting) {
+//             updateAllBoxes();
+//         }
+//     });
+//     observer.observe(canvas);
+// }
