@@ -613,7 +613,6 @@ class VAEHook:
         @param z: latent vector
         @return: image
         """
-        z = z.detach()
         device = next(self.net.parameters()).device
         net = self.net
         tile_size = self.tile_size
