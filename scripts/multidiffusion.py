@@ -64,8 +64,8 @@ from typing import Tuple, List
 from modules.processing import StableDiffusionProcessing
 
 
-if 'global const':
-    BBOX_MAX_NUM = 8
+
+BBOX_MAX_NUM = shared.cmd_opts.md_max_region if hasattr(shared.cmd_opts, "md_max_region") else 6
 
 
 
@@ -335,10 +335,6 @@ class Script(scripts.Script):
                 override_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=(is_img2img))
 
-                enable_bbox_control = gr.Checkbox(label='Draw bboxes', value=False, visible=is_img2img)
-                btn_bbox_new = gr.Button(value='+', variant='tool', visible=False)
-                btn_bbox_del = gr.Button(value='-', variant='tool', visible=False)
-
             with gr.Row(visible=False) as tab_size:
                 image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, 
                                         elem_id=self.elem_id("image_width"))
@@ -365,46 +361,43 @@ class Script(scripts.Script):
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
                                          elem_id=self.elem_id("scale_factor"))
 
-            if is_img2img and 'bbox_control':
-                with gr.Group(visible=False, variant='panel', elem_id='MD-bbox-control') as tab_bbox:
-                    bbox_ip = gr.State(value=0, elem_id='MD-bbox-ip')  # counter of the activated bboxes
-                    bbox_controls = gr.State([])  # control set for each bbox
-                    bbox_control_groups = gr.State([])  # ui show/hide a group
+            with gr.Row():
+                control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
-                    gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id='MD-bbox-ref')
-
+            with gr.Group(variant='panel', elem_id='MD-bbox-control'):
+                with gr.Accordion('Region control', open=False):
+                    with gr.Row():
+                        enable_bbox_control = gr.Checkbox(label='Enable', value=False)
+                        
+                        create_button = gr.Button(value="Create blank canvas" if not is_img2img else "From img2img")
+                    bbox_controls = []  # control set for each bbox
+                    with gr.Row():
+                        gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id='MD-bbox-ref')
+                    
                     for i in range(BBOX_MAX_NUM):
-                        with gr.Group(visible=i==0) as tab_bbox_grp:
+                        with gr.Accordion(f'Region {i}', open=False):
                             with gr.Row(variant='compact'):
-                                x = gr.Slider(label=f'x{i}', value=lambda: 0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
-                                y = gr.Slider(label=f'y{i}', value=lambda: 0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
-                                w = gr.Slider(label=f'w{i}', value=lambda: 0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-w-{i}')
-                                h = gr.Slider(label=f'h{i}', value=lambda: 0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-h-{i}')
+                                e = gr.Checkbox(label=f'Enable', value=False, elem_id=f'md-enable-{i}')
+                                m = gr.Slider(label=f'weight', value=0.5, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'md-wt-{i}')
                             with gr.Row(variant='compact'):
-                                m = gr.Slider(label=f'weight{i}', value=lambda: 1.0, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-wt-{i}')
-                                t = gr.Text(show_label=False, placeholder=f'prompt{i}', max_lines=1, elem_id=f'MD-p-{i}')
-                        bbox_controls.append((x, y, w, h, m, t))
-                        bbox_control_groups.append(tab_bbox_grp)
+                                x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
+                                y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
+                                w = gr.Slider(label=f'w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-w-{i}')
+                                h = gr.Slider(label=f'h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-h-{i}')
+                                
+                                x.change(fn=None, inputs=[x], outputs = [x], _js=f'(v)=>onBoxChange({i}, \'x\', v)')
+                                y.change(fn=None, inputs=[y], outputs = [y], _js=f'(v)=>onBoxChange({i}, \'y\', v)')
+                                w.change(fn=None, inputs=[w], outputs = [w], _js=f'(v)=>onBoxChange({i}, \'w\', v)')
+                                h.change(fn=None, inputs=[h], outputs = [h], _js=f'(v)=>onBoxChange({i}, \'h\', v)')
 
-                    def bbox_new_click(bbox_ip):
-                        if bbox_ip < BBOX_MAX_NUM - 1: bbox_ip += 1
-                        return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
+                            with gr.Row(variant='compact'):
+                                t = gr.Text(show_label=False, placeholder=f'Prompt', max_lines=2, elem_id=f'md-p-{i}')
+                            update_button = gr.Button(value="Update", elem_id=f'md-update-{i}', visible=False)
+                            update_button.click(fn=None, inputs=[], outputs = [x,y,w,h], _js=f'()=>updateCallback({i})')
+                            e.change(fn=None, inputs=[e], outputs = [e], _js=f'(e)=>onBoxEnableClick({i}, e)')
+                        bbox_controls.append((e, x, y, w, h, m, t))
 
-                    def bbox_del_click(bbox_ip):
-                        if bbox_ip > 0: bbox_ip -= 1
-                        return [ gr_show(i<=bbox_ip) for i in range(len(bbox_control_groups)) ]
-
-                    btn_bbox_new.click(fn=bbox_new_click, inputs=[bbox_ip], outputs=bbox_control_groups)
-                    btn_bbox_del.click(fn=bbox_del_click, inputs=[bbox_ip], outputs=bbox_control_groups, _js='btn_bbox_del_click')
-
-                enable_bbox_control.change(
-                    fn=lambda x: [gr_show(x), gr_show(x), gr_show(x)], 
-                    inputs=enable_bbox_control, 
-                    outputs=[tab_bbox, btn_bbox_new, btn_bbox_del],
-                    _js='enable_bbox_control_change',
-                )
-
-            control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
+                    bbox_control_states = gr.State(bbox_controls)
 
         return [
             enabled, 
@@ -413,6 +406,7 @@ class Script(scripts.Script):
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control,
+            bbox_control_states
         ]
 
     def process(self, p:StableDiffusionProcessing, 
@@ -422,9 +416,11 @@ class Script(scripts.Script):
             upscaler_index:str, scale_factor:float,
             control_tensor_cpu:bool,
             enable_user_bbox:bool,
+            bbox_control_states
         ):
 
         if not enabled: return
+        print(bbox_control_states)
 
         ''' upscale '''
         if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
