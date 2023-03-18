@@ -22,7 +22,7 @@ This repository contains two scripts that enable **ultra-large image generation*
 **Fast ultra-large images refinement (img2img)**
 
 - **MultiDiffusion is especially good at adding details to upscaled images.**
-  - **Faster than highres.fix** with proper params
+  - **Faster than highres.fix** with proper params (see [here](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/issues/3#issuecomment-1474541273) for performant params).
   - Much finer results than SD Upscaler & Ultimate SD Upscaler
 - **How to use:**
   - **The checkpoint is crucial**. 
