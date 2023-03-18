@@ -1,8 +1,10 @@
 const BBOX_MAX_NUM = 16;
+const BBOX_MAX_SIZE = 1280;
 const DEFAULT_X = 0.4;
 const DEFAULT_Y = 0.4;
 const DEFAULT_H = 0.2;
 const DEFAULT_W = 0.2;
+
 
 const COLOR_MAP = [
     ['#ff0000', 'rgba(255, 0, 0, 0.3)'],          // red
@@ -29,20 +31,34 @@ const MOVE_BORDER = 5;
 const t2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 const i2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 
+function getUpscalerFactor() {
+    let upscalerName = gradioApp().querySelector('#MD-upscaler-index input').value;
+    if (upscalerName !== 'none'){
+        let upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
+        if (!isNaN(upscalerInput)) {
+            return upscalerInput;
+        }
+    }
+    return 1.0;
+}
 
+function updateInput(target){
+	let e = new Event("input", { bubbles: true })
+	Object.defineProperty(e, "target", {value: target})
+	target.dispatchEvent(e);
+}
 
 function onBoxEnableClick(is_t2i, idx, enable) {
     let canvas = null;
     let bboxes = null;
     if (is_t2i) {
         ref_div = gradioApp().querySelector('#MD-bbox-ref-t2i');
-        canvas = gradioApp().querySelector('#MD-bbox-ref-t2i img');
         bboxes = t2i_bboxes;
     } else {
         ref_div = gradioApp().querySelector('#MD-bbox-ref-i2i');
-        canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
         bboxes = i2i_bboxes;
     }
+    canvas = ref_div.querySelector('img');
     if (!canvas) { return false; }
     if (enable) {
         // Check if the bounding box already exists
@@ -79,7 +95,8 @@ function onBoxEnableClick(is_t2i, idx, enable) {
         // Show the bounding box
         let [div, bbox] = bboxes[idx];
         let [x, y, w, h] = bbox;
-        displayBox(canvas, div, x, y, w, h);
+        let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+        displayBox(canvas, vpScale, div, x, y, w, h);
         return true;
     } else {
         if (!bboxes[idx]) { return false; }
@@ -89,12 +106,11 @@ function onBoxEnableClick(is_t2i, idx, enable) {
     return false;
 }
 
-function displayBox(canvas, div, x, y, w, h) {
+function displayBox(canvas, vpScale, div, x, y, w, h) {
     // check null input
     if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
     // client: canvas widget display size
     // natural: content image real size
-    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
     let canvasCenterX = canvas.clientWidth / 2;
     let canvasCenterY = canvas.clientHeight / 2;
     let scaledX = canvas.naturalWidth * vpScale;
@@ -109,7 +125,7 @@ function displayBox(canvas, div, x, y, w, h) {
     let wDiv = Math.min(scaledX * w, viewRectRight - xDiv);
     let hDiv = Math.min(scaledY * h, viewRectDown - yDiv);
 
-    // update <div>
+    // update <div> when not equal
     div.style.left = xDiv + 'px';
     div.style.top = yDiv + 'px';
     div.style.width = wDiv + 'px';
@@ -118,6 +134,8 @@ function displayBox(canvas, div, x, y, w, h) {
 }
 
 function onBoxChange(is_t2i, idx, what, v) {
+    // This function handles all the changes of the bounding box
+    // Including the rendering and python slider update
     let bboxes = null;
     let canvas = null;
     if (is_t2i) {
@@ -139,15 +157,42 @@ function onBoxChange(is_t2i, idx, what, v) {
     if (div.style.display === 'none') { return v; }
     let [x, y, w, h] = bbox;
     // parse trigger
+    let vpScale = null;
     switch (what) {
-        case 'x': x = v; break;
-        case 'y': y = v; break;
-        case 'w': w = v; break;
-        case 'h': h = v; break;
+        case 'x': 
+            x = v; 
+            bboxes[idx][1][0] = x;
+            break;
+        case 'y': 
+            y = v; 
+            bboxes[idx][1][1] = y;
+            break;
+        case 'w':
+        case 'h':
+            vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+            let scaledX = canvas.naturalWidth * vpScale;
+            let scaledY = canvas.naturalHeight * vpScale;
+            // Calculate maximum bbox size
+            let upscalerFactor = 1.0;
+            if (!is_t2i){
+                upscalerFactor = getUpscalerFactor();
+            }
+            let maxSize = BBOX_MAX_SIZE / upscalerFactor * vpScale;
+            let maxW = maxSize / scaledX;
+            let maxH = maxSize / scaledY;
+            if (what === 'w') {
+                w = Math.min(v, maxW);
+                bboxes[idx][1][2] = w;
+            } else {
+                h = Math.min(v, maxH);
+                bboxes[idx][1][3] = h;
+            }
+            break;
     }
-    bbox = [x, y, w, h];
-    displayBox(canvas, div, x, y, w, h);
-    bboxes[idx] = [div, bbox];
+    if (!vpScale) {
+        vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+    }
+    displayBox(canvas, vpScale, div, x, y, w, h);
     return v
 }
 
@@ -207,6 +252,20 @@ function onBoxMouseDown(e, is_t2i, idx) {
     mouseX = Math.min(Math.max(mouseX, viewRectLeft), viewRectRight);
     mouseY = Math.min(Math.max(mouseY, viewRectTop), viewRectDown);
 
+    // Calculate maximum bbox size
+    let upscalerFactor = 1.0;
+    if (!is_t2i){
+        upscalerFactor = getUpscalerFactor();
+    }
+    let maxSize = BBOX_MAX_SIZE / upscalerFactor * vpScale;
+    let maxW = maxSize / scaledX;
+    let maxH = maxSize / scaledY;
+
+    // The querySelector is not very efficient, so we query it once and reuse it
+    const sliderIds = ['x', 'y', 'w', 'h'];
+    const sliderSelectors = sliderIds.map(id => `#MD-${is_t2i ? 't2i' : 'i2i'}-${idx}-${id} input`);
+    const sliderInputs = gradioApp().querySelectorAll(sliderSelectors.join(', '));
+
     // Move or resize the bounding box on mousemove
     function onMouseMove(e) {
 
@@ -262,6 +321,10 @@ function onBoxMouseDown(e, is_t2i, idx) {
                         w = w + dx;
                     }
                 }
+                // Clamp the w to the maximum size
+                if (w > maxW) {
+                    w = maxW;
+                }
                 // Clamp the bounding box to the image
                 if (x < 0) {
                     w = w + x;
@@ -289,6 +352,9 @@ function onBoxMouseDown(e, is_t2i, idx) {
                         h = h + dy;
                     }
                 }
+                if (h > maxH) {
+                    h = maxH;
+                }
                 if (y < 0) {
                     h = h + y;
                     y = 0;
@@ -297,16 +363,18 @@ function onBoxMouseDown(e, is_t2i, idx) {
                 }
             }
         }
-        old_bbox = bboxes[idx][1];
-        if (old_bbox[0] === x && old_bbox[1] === y && old_bbox[2] === w && old_bbox[3] === h) {
-            return;
+        let old_bbox = bboxes[idx][1];
+        // If all the values are the same, just return
+        if (old_bbox[0] === x && old_bbox[1] === y && old_bbox[2] === w && old_bbox[3] === h) return;
+        // else update the bbox
+        let event = new Event('input');
+        let coords = [x, y, w, h];
+        for (let i = 0; i < 4; i++) {
+            if (old_bbox[i] !== coords[i]) {
+                sliderInputs[2*i].value = coords[i];
+                sliderInputs[2*i].dispatchEvent(event);
+            }
         }
-        // Update the bounding box value
-        bbox = [x, y, w, h];
-        bboxes[idx] = [div, bbox];
-        // Click the invisible update button to update the value in Python script.
-        // This will also trigger the bbox rendering.
-        gradioApp().querySelector('#MD-update-' + (is_t2i ? 't2i-' : 'i2i-') + idx).click();
     }
 
     // Remove the mousemove and mouseup event listeners
@@ -364,28 +432,23 @@ function updateAllBoxes(is_t2i) {
         let [div, bbox] = bboxes[idx];
         if (div.style.display === 'none') continue;
         let [x, y, w, h] = bbox;
-        displayBox(canvas, div, x, y, w, h);
+        let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+        displayBox(canvas,vpScale, div, x, y, w, h);
     }
 }
 
 window.addEventListener('resize', updateAllBoxes);
 
-function updateCallback(is_t2i, idx) {
-    let bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
-    if (!bboxes[idx]) return [DEFAULT_X, DEFAULT_Y, DEFAULT_W, DEFAULT_H];
-    let [_, bbox] = bboxes[idx];
-    return bbox;
-}
-
 function onCreateT2IRefClick(overwrite) {
-    let width = null;
-    let height = null;
+    let width, height;
     if (overwrite) {
-        width = parseInt(gradioApp().querySelector('#md-overwrite-width input').value);
-        height = parseInt(gradioApp().querySelector('#md-overwrite-height input').value);
-    }else{
-        width = parseInt(gradioApp().querySelector('#txt2img_width input').value);
-        height = parseInt(gradioApp().querySelector('#txt2img_height input').value);
+      const overwriteInputs = gradioApp().querySelectorAll('#MD-overwrite-width-t2i input, #MD-overwrite-height-t2i input');
+      width = parseInt(overwriteInputs[0].value);
+      height = parseInt(overwriteInputs[2].value);
+    } else {
+      const sizeInputs = gradioApp().querySelectorAll('#txt2img_width input, #txt2img_height input');
+      width = parseInt(sizeInputs[0].value);
+      height = parseInt(sizeInputs[2].value);
     }
     if (isNaN(width)) width = 512;
     if (isNaN(height)) height = 512;

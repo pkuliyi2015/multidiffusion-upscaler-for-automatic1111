@@ -62,7 +62,7 @@ from modules.processing import StableDiffusionProcessing
 
 
 
-BBOX_MAX_NUM = shared.cmd_opts.md_max_region if hasattr(shared.cmd_opts, "md_max_region") else 6
+BBOX_MAX_NUM = math.min(shared.cmd_opts.md_max_regions if hasattr(shared.cmd_opts, "md_max_regions") else 6, 16)
 
 
 
@@ -71,10 +71,11 @@ class MultiDiffusionDelegate(object):
     Hijack the original sampler into MultiDiffusion samplers
     """
 
-    def __init__(self, sampler, sampler_name, steps, 
+    def __init__(self, p, sampler, sampler_name, batch_size, steps, 
                  w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,  
                  controlnet_script=None, control_tensor_cpu=False):
 
+        self.batch_size = batch_size
         self.steps = steps
         # record the steps for progress bar
         # hook the sampler
@@ -82,12 +83,13 @@ class MultiDiffusionDelegate(object):
         if sampler_name == 'UniPC':
             print('[MultiDiffusion] WARNING: UniPC is not supported yet. Please use other samplers instead.')
         if self.is_kdiff:
-            self.sampler = sampler.model_wrap_cfg
+            self.iters = len(sampler.get_sigmas(p, steps))
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
             self.sampler_func = self.sampler.inner_model.forward
             self.sampler.inner_model.forward = self.kdiff_repeat
         else:
+            self.iters = steps
             self.sampler = sampler
             self.sampler_func = sampler.orig_p_sample_ddim
             self.sampler.orig_p_sample_ddim = self.ddim_repeat
@@ -124,6 +126,10 @@ class MultiDiffusionDelegate(object):
         # For ddim sampler we need to cache the pred_x0
         self.x_buffer_pred = None
         self.pbar = None
+
+        # Region prompt control
+        self.custom_bboxes = []
+        self.global_multiplier = 1.0
 
         # For controlnet
         self.controlnet_script = controlnet_script
@@ -167,7 +173,7 @@ class MultiDiffusionDelegate(object):
                 count[y:y+tile_h, x:x+tile_w] += 1
         return bbox, count
 
-    def repeat_con_dict(self, cond_input, bboxes):
+    def repeat_cond_dict(self, cond_input, bboxes):
         cond = cond_input['c_crossattn'][0]
         # repeat the condition on its first dim
         cond_shape = cond.shape
@@ -185,21 +191,79 @@ class MultiDiffusionDelegate(object):
                 (len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
         return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
 
-    def kdiff_repeat(self, x_in, sigma_in, cond):
-        def func(x_tile, bboxes):
+    def kdiff_repeat(self, x_in, sigma_in, old_cond):
+        def repeat_func(x_tile, bboxes):
+            # For kdiff sampler, the dim 0 of input x_in is batch_size * (num_AND + 1) if it is not an edit model;
+            # otherwise, it is batch_size * (num_AND + 2)
             sigma_in_tile = sigma_in.repeat(len(bboxes))
-            new_cond = self.repeat_con_dict(cond, bboxes)
+            new_cond = self.repeat_cond_dict(old_cond, bboxes)
             x_tile_out = self.sampler_func(
                 x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
-        return self.compute_x_tile(x_in, func)
+        
+        def custom_func(x, cond, uncond, bbox):
+            '''
+            Code migrate from modules/sd_samplers_kdiffusion.py
+            '''
+            is_edit_model = self.is_edit_model
+            conds_list, tensor = prompt_parser.reconstruct_multicond_batch(cond, self.sampler.step)
+            uncond = prompt_parser.reconstruct_cond_batch(uncond, self.sampler.step)
+            image_cond = old_cond['c_concat'][0]
+            if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
+                image_cond = image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+            batch_size = len(conds_list)
+            repeats = [len(conds_list[i]) for i in range(batch_size)]
+            if not is_edit_model:
+                x_in = torch.cat([torch.stack([x[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [x])
+                image_cond_in = torch.cat([torch.stack([image_cond[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [image_cond])
+            else:
+                x_in = torch.cat([torch.stack([x[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [x] + [x])
+                image_cond_in = torch.cat([torch.stack([image_cond[i] for _ in range(n)]) for i, n in enumerate(repeats)] + [image_cond] + [torch.zeros_like(self.sampler.init_latent)])
+
+            if tensor.shape[1] == uncond.shape[1]:
+                if not is_edit_model:
+                    cond_in = torch.cat([tensor, uncond])
+                else:
+                    cond_in = torch.cat([tensor, uncond, uncond])
+
+                if shared.batch_cond_uncond:
+                    x_out = self.sampler_func(x_in, sigma_in, cond={"c_crossattn": [cond_in], "c_concat": [image_cond_in]})
+                else:
+                    x_out = torch.zeros_like(x_in)
+                    for batch_offset in range(0, x_out.shape[0], batch_size):
+                        a = batch_offset
+                        b = a + batch_size
+                        x_out[a:b] = self.sampler_func(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [cond_in[a:b]], "c_concat": [image_cond_in[a:b]]})
+            else:
+                x_out = torch.zeros_like(x_in)
+                batch_size = batch_size*2 if shared.batch_cond_uncond else batch_size
+                for batch_offset in range(0, tensor.shape[0], batch_size):
+                    a = batch_offset
+                    b = min(a + batch_size, tensor.shape[0])
+
+                    if not is_edit_model:
+                        c_crossattn = [tensor[a:b]]
+                    else:
+                        c_crossattn = torch.cat([tensor[a:b]], uncond)
+
+                    x_out[a:b] = self.sampler_func(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": c_crossattn, "c_concat": [image_cond_in[a:b]]})
+                x_out[-uncond.shape[0]:] = self.sampler_func(x_in[-uncond.shape[0]:], sigma_in[-uncond.shape[0]:], cond={"c_crossattn": [uncond], "c_concat": [image_cond_in[-uncond.shape[0]:]]})
+            return x_out
+        
+        return self.compute_x_tile(x_in, repeat_func, custom_func)
+    
+    def crop_img_cond(self, cond_input, bbox, prompt):
+        image_cond = cond_input['c_concat'][0]
+        if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
+            image_cond = image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+        return {"c_crossattn": [prompt], "c_concat": [image_cond]}
 
     def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
-        def func(x_tile, bboxes):
+        def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
                 ts_tile = ts.repeat(len(bboxes))
-                cond_tile = self.repeat_con_dict(cond_in, bboxes)
-                ucond_tile = self.repeat_con_dict(
+                cond_tile = self.repeat_cond_dict(cond_in, bboxes)
+                ucond_tile = self.repeat_cond_dict(
                     unconditional_conditioning, bboxes)
             else:
                 ts_tile = ts.repeat(len(bboxes))
@@ -212,12 +276,40 @@ class MultiDiffusionDelegate(object):
             x_tile_out, x_pred = self.sampler_func(
                 x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out, x_pred
-        return self.compute_x_tile(x_in, func)
+        def custom_func(x, cond, uncond, bbox):
+            if isinstance(cond_in, dict):
+                cond = self.crop_img_cond(cond_in, bbox, cond)
+                uncond = self.crop_img_cond(unconditional_conditioning, bbox, uncond)
+            x_tile_out, x_pred = self.sampler_func(
+                x, cond, ts, unconditional_conditioning=uncond, *args, **kwargs)
+            return x_tile_out, x_pred
+        return self.compute_x_tile(x_in, repeat_func, custom_func)
     
-    def prepare_control_tensors(self):
-        """
+    def prepare_custom_bbox(self, global_multiplier, prompt, negative_prompt, bbox_control_states):
+        '''
+        Prepare custom bboxes for region prompt
+        '''
+        self.global_multiplier = global_multiplier
+        c_weights = torch.zeros_like(self.weights)
+        for i in range(len(bbox_control_states) - 8):
+            e, m, x, y, w, h, p, np = bbox_control_states[i:i+8]
+            if not e or m < 1 or w <=0 or h<=0 or p == '': continue
+            bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
+            c_weights[bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
+            c_prompt = prompt + ', ' + p
+            c_negative_prompt = negative_prompt + ', ' + np
+            c_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [c_prompt] * self.batch_size, self.steps)
+            c_negative_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, [c_negative_prompt] * self.batch_size, self.steps)
+            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
+
+        if len(self.custom_bboxes) > 0:
+            self.weights = self.weights * global_multiplier + c_weights
+            
+
+    def prepare_control_tensors(self, batch_size):
+        '''
         Crop the control tensor into tiles and cache them
-        """
+        '''
         if self.control_tensor_batch is not None: return
         if self.controlnet_script is None or self.control_params is not None: return
         latest_network = self.controlnet_script.latest_network
@@ -226,11 +318,11 @@ class MultiDiffusionDelegate(object):
         tensors = [param.hint_cond for param in latest_network.control_params]
         if len(tensors) == 0: return
         self.control_tensor_batch = []
-        for bboxes in self.batched_bboxes:
-            single_batch_tensors = []
-            for i in range(len(tensors)):
-                control_tile_list = []
-                control_tensor = tensors[i]
+        for i in range(len(tensors)):
+            control_tile_list = []
+            control_tensor = tensors[i]
+            for bboxes in self.batched_bboxes:
+                single_batch_tensors = []
                 for bbox in bboxes:
                     if len(control_tensor.shape) == 3:
                         control_tile = control_tensor[:, bbox[1] *
@@ -238,23 +330,30 @@ class MultiDiffusionDelegate(object):
                     else:
                         control_tile = control_tensor[:, :,
                                                     bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
-                    control_tile_list.append(control_tile)
+                    single_batch_tensors.append(control_tile)
                 if self.is_kdiff:
                     control_tile = torch.cat(
-                        [t for t in control_tile_list for _ in range(2)], dim=0)
+                        [t for t in single_batch_tensors for _ in range(batch_size)], dim=0)
                 else:
-                    control_tile = torch.cat(control_tile_list*2, dim=0)
+                    control_tile = torch.cat(single_batch_tensors*batch_size, dim=0)
                 if self.control_tensor_cpu:
                     control_tile = control_tile.cpu()
-                single_batch_tensors.append(control_tile)
-            self.control_tensor_batch.append(single_batch_tensors)
+                control_tile_list.append(control_tile)
+            self.control_tensor_batch.append(control_tile_list)
 
-    def compute_x_tile(self, x_in, func):
+    def compute_x_tile(self, x_in, func, custom_func):
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
+
+        if self.pbar is None:
+            self.pbar = tqdm(total=(self.num_batches+len(self.custom_bboxes)) * self.iters, desc="MultiDiffusion Sampling: ")
+
+        # Kdiff 'AND' support and image editing model support
+        if len(self.custom_bboxes) > 0 and self.is_kdiff and not hasattr(self, 'is_edit_model'):
+            self.is_edit_model = shared.sd_model.cond_stage_key == "edit" and self.sampler.image_cfg_scale is not None and self.sampler.image_cfg_scale != 1.0
         
         # ControlNet support
-        self.prepare_control_tensors()
+        self.prepare_control_tensors(N)
 
         if self.x_buffer is None:
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
@@ -265,9 +364,6 @@ class MultiDiffusionDelegate(object):
                 self.x_buffer_pred = torch.zeros_like(x_in, device=x_in.device)
             else:
                 self.x_buffer_pred.zero_()
-        if self.pbar is None:
-            self.pbar = tqdm(total=self.num_batches * (state.job_count *
-                             state.sampling_steps), desc="MultiDiffusion Sampling: ")
         for batch_id, bboxes in enumerate(self.batched_bboxes):
             if state.interrupted:
                 return x_in
@@ -278,9 +374,11 @@ class MultiDiffusionDelegate(object):
             x_tile = torch.cat(x_tile_list, dim=0)
             # controlnet tiling
             if self.control_tensor_batch is not None:
-                single_batch_tensors = self.control_tensor_batch[batch_id]
-                for i in range(len(single_batch_tensors)):
-                    self.control_params[i].hint_cond = single_batch_tensors[i].to(x_in.device)
+                for i in range(len(self.control_params)):
+                    new_control = self.control_tensor_batch[i][batch_id]
+                    if new_control.shape[0] != x_tile.shape[0]:
+                        new_control = new_control[:x_tile.shape[0],:,:,:]
+                    self.control_params[i].hint_cond = new_control.to(x_in.device)
             # compute tiles
             if self.is_kdiff:
                 x_tile_out = func(x_tile, bboxes)
@@ -296,6 +394,25 @@ class MultiDiffusionDelegate(object):
                 self.pbar.close()
             else:
                 self.pbar.update()
+
+        if len(self.custom_bboxes) > 0:
+            if self.global_multiplier > 1:
+                self.x_buffer *= self.global_multiplier
+            if not self.is_kdiff:
+                self.x_buffer_pred *= self.global_multiplier
+            for bbox, cond, uncond, multiplier in self.custom_bboxes:
+                x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                if self.is_kdiff:
+                    x_tile_out = custom_func(x_tile, cond, uncond, bbox)
+                    x_tile_out *= multiplier
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                else:
+                    x_tile_out, x_tile_pred = custom_func(x_tile, cond, uncond, bbox)
+                    x_tile_out *= multiplier
+                    x_tile_pred *= multiplier
+                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                    self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred
+
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
         if not self.is_kdiff:
             x_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
@@ -312,54 +429,56 @@ class Script(scripts.Script):
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
+        tab = 't2i' if not is_img2img else 'i2i'
+        is_t2i = 'true' if not is_img2img else 'false'
         with gr.Accordion('MultiDiffusion', open=False):
             with gr.Row(variant='compact'):
                 enabled = gr.Checkbox(label='Enable MultiDiffusion', value=False)
                 overwrite_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=(is_img2img))
 
-            with gr.Row(visible=False) as tab_size:
+            with gr.Row(variant='compact',visible=False) as tab_size:
                 image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, 
-                                        elem_id="md-overwrite-width")
+                                        elem_id=f'MD-overwrite-width-{tab}')
                 image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, 
-                                         elem_id="md-overwrite-height")
+                                         elem_id=f'MD-overwrite-height-{tab}')
             if not is_img2img:
                 overwrite_image_size.change(fn=lambda x: gr_show(x), inputs=overwrite_image_size, outputs=tab_size)
 
             with gr.Group():
-                with gr.Row():
+                with gr.Row(variant='compact'):
                     tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96,
                                             elem_id=self.elem_id("latent_tile_width"))
                     tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96,
                                             elem_id=self.elem_id("latent_tile_height"))
 
-                with gr.Row():
+                with gr.Row(variant='compact'):
                     overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48,
                                         elem_id=self.elem_id("latent_overlap"))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1)
 
-            with gr.Row(visible=is_img2img):
+            with gr.Row(variant='compact', visible=is_img2img):
                 upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None", 
-                                             elem_id=self.elem_id("upscaler_index"))
+                                             elem_id='MD-upscaler-index')
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
-                                         elem_id=self.elem_id("scale_factor"))
+                                         elem_id='MD-upscaler-factor')
 
-            with gr.Row():
+            with gr.Row(variant='compact'):
                 control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
-            tab = 't2i' if not is_img2img else 'i2i'
-            is_t2i = 'true' if not is_img2img else 'false'
             with gr.Group(variant='panel', elem_id=f'MD-bbox-control-{tab}'):
-                with gr.Accordion('Region control', open=False):
+                with gr.Accordion('Region Prompt Control', open=False):
                     
-                    with gr.Row():
+                    with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(label='Enable', value=False)
+                        global_multiplier = gr.Slider(minimum=1, maximum=32, step=0.1, label='Global Multiplier', value=1, interactive=True)
+                    with gr.Row(variant='compact'):
                         create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
 
                     bbox_controls = []  # control set for each bbox
-                    with gr.Row():
-                        ref_image = gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}')
+                    with gr.Row(variant='compact'):
+                        ref_image = gr.Image(label='Ref image (for conviently locate regions)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}')
                         if not is_img2img:
                             # gradio has a serious bug: it cannot accept multiple inputs when you use both js and fn.
                             # to workaround this, we concat the inputs into a single string and parse it in js
@@ -374,17 +493,16 @@ class Script(scripts.Script):
                         else:
                             create_button.click(fn=None, inputs=[], outputs=ref_image, _js=f'onCreateI2IRefClick')
                     for i in range(BBOX_MAX_NUM):
-                        with gr.Accordion(f'Region {i}', open=False):
+                        with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label=f'Enable', value=False, elem_id=f'MD-enable-{i}')
                                 e.change(fn=None, inputs=[e], outputs = [e], _js=f'(e)=>onBoxEnableClick({is_t2i},{i}, e)')
-                                m = gr.Slider(label=f'weight', value=0.5, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-wt-{i}')
-                                c = gr.Slider(label=f'CFG scale', value=7.0, minimum=0.0, maximum=30.0, step=0.1, interactive=True, elem_id=f'MD-cfg-{i}')
+                                m = gr.Slider(label=f'Multiplier', value=1, minimum=1, maximum=32, step=0.1, interactive=True, elem_id=f'MD-mt-{i}')
                             with gr.Row(variant='compact'):
-                                x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
-                                y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
-                                w = gr.Slider(label=f'w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-w-{i}')
-                                h = gr.Slider(label=f'h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-h-{i}')
+                                x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-x')
+                                y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-y')
+                                w = gr.Slider(label=f'w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-w')
+                                h = gr.Slider(label=f'h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-h')
                                 
                                 x.change(fn=None, inputs=[x], outputs = [x], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'x\', v)')
                                 y.change(fn=None, inputs=[y], outputs = [y], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'y\', v)')
@@ -392,26 +510,24 @@ class Script(scripts.Script):
                                 h.change(fn=None, inputs=[h], outputs = [h], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'h\', v)')
 
                             with gr.Row(variant='compact'):
-                                t = gr.Text(show_label=False, placeholder=f'Prompt', max_lines=2, elem_id=f'MD-p-{i}')
+                                p = gr.Text(show_label=False, placeholder=f'Prompt, will be appended to your {tab} prompt)', max_lines=1, elem_id=f'MD-p-{i}')
+                                np = gr.Text(show_label=False, placeholder=f'Negative Prompt, will be appended too.', max_lines=1, elem_id=f'MD-p-{i}')
 
-                            update_button = gr.Button(value="Update", elem_id=f'MD-update-{tab}-{i}', visible=False)
-                            gr.update
-                            update_button.click(fn=None, inputs=[], outputs = [x,y,w,h], _js=f'()=>updateCallback({is_t2i},{i})')
+                        bbox_controls.append((e, m, x, y, w, h, p, np))
 
-                        bbox_controls.append((e, m, c, x, y, w, h, t))
-
-                    bbox_control_states = gr.State(bbox_controls)
-
-        return [
+        controls = [
             enabled, 
             overwrite_image_size, keep_input_size, image_width, image_height, 
             tile_width, tile_height, overlap, batch_size, 
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control,
-            ref_image,
-            bbox_control_states
+            global_multiplier
         ]
+        for i in range(BBOX_MAX_NUM):
+            controls.extend(bbox_controls[i])
+        
+        return controls
 
     def process(self, p:StableDiffusionProcessing, 
             enabled:bool, 
@@ -419,12 +535,11 @@ class Script(scripts.Script):
             tile_width:int, tile_height:int, overlap:int, tile_batch_size:int, 
             upscaler_index:str, scale_factor:float,
             control_tensor_cpu:bool,
-            enable_user_bbox:bool, ref_image, bbox_control_states
+            enable_bbox_control:bool, global_multiplier:int, *bbox_control_states
         ):
 
         if not enabled: return
-        print(bbox_control_states)
-
+        
         ''' upscale '''
         if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
             upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
@@ -492,12 +607,16 @@ class Script(scripts.Script):
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
             delegate = MultiDiffusionDelegate(
-                sampler, 
-                p.sampler_name, p.steps, p.width, p.height, 
+                p,sampler, 
+                p.sampler_name, p.batch_size, p.steps, p.width, p.height, 
                 tile_width, tile_height, overlap, tile_batch_size, 
                 controlnet_script=controlnet_script, 
                 control_tensor_cpu=control_tensor_cpu
             )
+            if (enable_bbox_control):
+                # Debug for the AND problem
+                print('prompt: ', p.all_prompts, p.all_negative_prompts)
+                delegate.prepare_custom_bbox(p.all_prompts, p.all_negative_prompts, global_multiplier, bbox_control_states)
 
             print(f"[MultiDiffusion] hooked into {p.sampler_name} sampler. " + 
                   f"Tile size: {tile_width}x{tile_height}, " + 
