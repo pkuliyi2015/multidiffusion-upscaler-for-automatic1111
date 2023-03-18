@@ -136,7 +136,7 @@ function onBoxChange(is_t2i, idx, what, v) {
         }
     }
     let [div, bbox] = bboxes[idx];
-    if (div.style.display == 'none') { return v; }
+    if (div.style.display === 'none') { return v; }
     let [x, y, w, h] = bbox;
     // parse trigger
     switch (what) {
@@ -230,7 +230,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
         mouseY = newMouseY;
 
         // if no move just return
-        if (dx == 0 && dy == 0) return;
+        if (dx === 0 && dy === 0) return;
 
         // Update the mouse position
         let [x, y, w, h] = bbox;
@@ -298,7 +298,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
             }
         }
         old_bbox = bboxes[idx][1];
-        if (old_bbox[0] == x && old_bbox[1] == y && old_bbox[2] == w && old_bbox[3] == h) {
+        if (old_bbox[0] === x && old_bbox[1] === y && old_bbox[2] === w && old_bbox[3] === h) {
             return;
         }
         // Update the bounding box value
@@ -362,7 +362,7 @@ function updateAllBoxes(is_t2i) {
     for (let idx = 0; idx < bboxes.length; idx++) {
         if (!bboxes[idx]) continue;
         let [div, bbox] = bboxes[idx];
-        if (div.style.display == 'none') continue;
+        if (div.style.display === 'none') continue;
         let [x, y, w, h] = bbox;
         displayBox(canvas, div, x, y, w, h);
     }
@@ -377,16 +377,26 @@ function updateCallback(is_t2i, idx) {
     return bbox;
 }
 
-// function observeCanvasVisibility() {
-//     // This function observes the visibility of the canvas
-//     let canvas = gradioApp().querySelector('#MD-bbox-ref img');
-//     if (!canvas) {
-//         return;
-//     }
-//     let observer = new IntersectionObserver((entries) => {
-//         if (entries[0].isIntersecting) {
-//             updateAllBoxes();
-//         }
-//     });
-//     observer.observe(canvas);
-// }
+function onCreateT2IRefClick(overwrite) {
+    let width = null;
+    let height = null;
+    if (overwrite) {
+        width = parseInt(gradioApp().querySelector('#md-overwrite-width input').value);
+        height = parseInt(gradioApp().querySelector('#md-overwrite-height input').value);
+    }else{
+        width = parseInt(gradioApp().querySelector('#txt2img_width input').value);
+        height = parseInt(gradioApp().querySelector('#txt2img_height input').value);
+    }
+    if (isNaN(width)) width = 512;
+    if (isNaN(height)) height = 512;
+    if (width < 8) width = 8;
+    if (height < 8) height = 8;
+    // Concat it to string to bypass the gradio bug
+    // 向黑恶势力低头
+    return width.toString() + 'x' + height.toString();
+}
+
+function onCreateI2IRefClick(){
+    let canvas = gradioApp().querySelector('#img2img_image img');
+    return canvas.src;
+}

@@ -54,13 +54,10 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import gradio as gr
 
-from modules import sd_samplers, images, devices, shared, scripts, prompt_parser, sd_samplers_common
+from modules import sd_samplers, images, devices, shared, scripts, prompt_parser, ui
 from modules.shared import opts, state
-from modules.sd_samplers_kdiffusion import CFGDenoiserParams
 from modules.ui import gr_show
 
-from gradio import Slider, Text, Group
-from typing import Tuple, List
 from modules.processing import StableDiffusionProcessing
 
 
@@ -332,26 +329,26 @@ class Script(scripts.Script):
         with gr.Accordion('MultiDiffusion', open=False):
             with gr.Row(variant='compact'):
                 enabled = gr.Checkbox(label='Enable MultiDiffusion', value=False)
-                override_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
+                overwrite_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=(not is_img2img))
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=(is_img2img))
 
             with gr.Row(visible=False) as tab_size:
                 image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, 
-                                        elem_id=self.elem_id("image_width"))
+                                        elem_id="md-overwrite-width")
                 image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, 
-                                         elem_id=self.elem_id("image_height"))
+                                         elem_id="md-overwrite-height")
             if not is_img2img:
-                override_image_size.change(fn=lambda x: gr_show(x), inputs=override_image_size, outputs=tab_size)
+                overwrite_image_size.change(fn=lambda x: gr_show(x), inputs=overwrite_image_size, outputs=tab_size)
 
             with gr.Group():
                 with gr.Row():
-                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=64,
+                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96,
                                             elem_id=self.elem_id("latent_tile_width"))
-                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=64,
+                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96,
                                             elem_id=self.elem_id("latent_tile_height"))
 
                 with gr.Row():
-                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=32,
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48,
                                         elem_id=self.elem_id("latent_overlap"))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1)
 
@@ -374,17 +371,25 @@ class Script(scripts.Script):
                         enable_bbox_control = gr.Checkbox(label='Enable', value=False)
                         create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
 
-                        #np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
                     bbox_controls = []  # control set for each bbox
                     with gr.Row():
                         ref_image = gr.Image(label='Ref image (for conviently deciding bbox)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}')
-                    
+                        if not is_img2img:
+                            # gradio has a serious bug: it cannot accept multiple inputs when you use both js and fn.
+                            # to workaround this, we concat the inputs into a single string and parse it in js
+                            def create_t2i_ref(string):
+                                w, h = [int(x) for x in string.split('x')]
+                                return np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
+                            create_button.click(fn=create_t2i_ref, inputs=[overwrite_image_size], outputs=ref_image, _js=f'(o)=>onCreateT2IRefClick(o)')
+                        else:
+                            create_button.click(fn=None, inputs=[], outputs=ref_image, _js=f'onCreateI2IRefClick')
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i}', open=False):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label=f'Enable', value=False, elem_id=f'MD-enable-{i}')
                                 e.change(fn=None, inputs=[e], outputs = [e], _js=f'(e)=>onBoxEnableClick({is_t2i},{i}, e)')
                                 m = gr.Slider(label=f'weight', value=0.5, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-wt-{i}')
+                                c = gr.Slider(label=f'CFG scale', value=7.0, minimum=0.0, maximum=30.0, step=0.1, interactive=True, elem_id=f'MD-cfg-{i}')
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-x-{i}')
                                 y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, interactive=True, elem_id=f'MD-y-{i}')
@@ -403,13 +408,13 @@ class Script(scripts.Script):
                             gr.update
                             update_button.click(fn=None, inputs=[], outputs = [x,y,w,h], _js=f'()=>updateCallback({is_t2i},{i})')
 
-                        bbox_controls.append((e, m, x, y, w, h, t))
+                        bbox_controls.append((e, m, c, x, y, w, h, t))
 
                     bbox_control_states = gr.State(bbox_controls)
 
         return [
             enabled, 
-            override_image_size, keep_input_size, image_width, image_height, 
+            overwrite_image_size, keep_input_size, image_width, image_height, 
             tile_width, tile_height, overlap, batch_size, 
             upscaler_index, scale_factor,
             control_tensor_cpu,
@@ -420,7 +425,7 @@ class Script(scripts.Script):
 
     def process(self, p:StableDiffusionProcessing, 
             enabled:bool, 
-            override_image_size:bool, keep_input_size:bool, image_width:int, image_height:int, 
+            overwrite_image_size:bool, keep_input_size:bool, image_width:int, image_height:int, 
             tile_width:int, tile_height:int, overlap:int, tile_batch_size:int, 
             upscaler_index:str, scale_factor:float,
             control_tensor_cpu:bool,
@@ -452,7 +457,7 @@ class Script(scripts.Script):
             elif upscaler.name != "None":
                 p.width *= scale_factor
                 p.height *= scale_factor
-        elif override_image_size:       # txt2img
+        elif overwrite_image_size:       # txt2img
             p.width = image_width
             p.height = image_height
 
