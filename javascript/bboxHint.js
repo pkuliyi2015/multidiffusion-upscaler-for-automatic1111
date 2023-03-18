@@ -389,8 +389,6 @@ function onCreateT2IRefClick(overwrite) {
     }
     if (isNaN(width)) width = 512;
     if (isNaN(height)) height = 512;
-    if (width < 8) width = 8;
-    if (height < 8) height = 8;
     // Concat it to string to bypass the gradio bug
     // 向黑恶势力低头
     return width.toString() + 'x' + height.toString();

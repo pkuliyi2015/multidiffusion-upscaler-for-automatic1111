@@ -72,32 +72,25 @@ class MultiDiffusionDelegate(object):
     """
 
     def __init__(self, sampler, sampler_name, steps, 
-                 w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1, 
-                 tile_prompt=False, prompt=[], neg_prompt=[], 
+                 w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,  
                  controlnet_script=None, control_tensor_cpu=False):
 
         self.steps = steps
         # record the steps for progress bar
         # hook the sampler
         self.is_kdiff = sampler_name not in ['DDIM', 'PLMS', 'UniPC']
+        if sampler_name == 'UniPC':
+            print('[MultiDiffusion] WARNING: UniPC is not supported yet. Please use other samplers instead.')
         if self.is_kdiff:
             self.sampler = sampler.model_wrap_cfg
-            if tile_prompt:
-                self.sampler_func = self.sampler.forward
-                self.sampler.forward = self.kdiff_tile_prompt
-                raise NotImplementedError("Tile prompt is not supported yet")
-            else:
-                # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
-                # Otherwise, the masked-redraw will break due to the init_latent
-                self.sampler_func = self.sampler.inner_model.forward
-                self.sampler.inner_model.forward = self.kdiff_repeat
+            # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
+            # Otherwise, the masked-redraw will break due to the init_latent
+            self.sampler_func = self.sampler.inner_model.forward
+            self.sampler.inner_model.forward = self.kdiff_repeat
         else:
             self.sampler = sampler
-            if tile_prompt:
-                raise NotImplementedError("Tile prompt is not supported yet")
-            else:
-                self.sampler_func = sampler.orig_p_sample_ddim
-                self.sampler.orig_p_sample_ddim = self.ddim_repeat
+            self.sampler_func = sampler.orig_p_sample_ddim
+            self.sampler.orig_p_sample_ddim = self.ddim_repeat
 
         # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
@@ -119,17 +112,10 @@ class MultiDiffusionDelegate(object):
         self.num_batches = math.ceil(len(bboxes) / tile_batch_size)
         optimal_batch_size = math.ceil(len(bboxes) / self.num_batches)
         self.tile_batch_size = optimal_batch_size
-        self.tile_prompt = tile_prompt
         for i in range(self.num_batches):
             start = i * tile_batch_size
             end = min((i + 1) * tile_batch_size, len(bboxes))
             self.batched_bboxes.append(bboxes[start:end])
-            # TODO: deal with per tile prompt
-            if tile_prompt:
-                self.batched_conds.append(prompt_parser.get_multicond_learned_conditioning(
-                    shared.sd_model, prompt[start:end], self.steps))
-                self.batched_unconds.append(prompt_parser.get_learned_conditioning(
-                    shared.sd_model, neg_prompt[start:end], self.steps))
 
         # Avoid the overhead of creating a new tensor for each batch
         # And avoid the overhead of weight summing
@@ -177,7 +163,7 @@ class MultiDiffusionDelegate(object):
                 x = int(col * dx)
                 if x + tile_w >= w:
                     x = w - tile_w
-                bbox.append((row, col, [x, y, x + tile_w, y + tile_h]))
+                bbox.append([x, y, x + tile_w, y + tile_h])
                 count[y:y+tile_h, x:x+tile_w] += 1
         return bbox, count
 
@@ -189,7 +175,7 @@ class MultiDiffusionDelegate(object):
         image_cond = cond_input['c_concat'][0]
         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
             image_cond_list = []
-            for _, _, bbox in bboxes:
+            for bbox in bboxes:
                 image_cond_list.append(
                     image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             image_cond_tile = torch.cat(image_cond_list, dim=0)
@@ -245,7 +231,7 @@ class MultiDiffusionDelegate(object):
             for i in range(len(tensors)):
                 control_tile_list = []
                 control_tensor = tensors[i]
-                for _, _, bbox in bboxes:
+                for bbox in bboxes:
                     if len(control_tensor.shape) == 3:
                         control_tile = control_tensor[:, bbox[1] *
                                                     8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
@@ -286,7 +272,7 @@ class MultiDiffusionDelegate(object):
             if state.interrupted:
                 return x_in
             x_tile_list = []
-            for _, _, bbox in bboxes:
+            for bbox in bboxes:
                 x_tile_list.append(
                     x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
             x_tile = torch.cat(x_tile_list, dim=0)
@@ -298,11 +284,11 @@ class MultiDiffusionDelegate(object):
             # compute tiles
             if self.is_kdiff:
                 x_tile_out = func(x_tile, bboxes)
-                for i, (_, _, bbox) in enumerate(bboxes):
+                for i, bbox in enumerate(bboxes):
                     self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
             else:
                 x_tile_out, x_tile_pred = func(x_tile, bboxes)
-                for i, (_, _, bbox) in enumerate(bboxes):
+                for i, bbox in enumerate(bboxes):
                     self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :]
                     self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred[i*N:(i+1)*N, :, :, :]
             # update progress bar
@@ -379,6 +365,10 @@ class Script(scripts.Script):
                             # to workaround this, we concat the inputs into a single string and parse it in js
                             def create_t2i_ref(string):
                                 w, h = [int(x) for x in string.split('x')]
+                                if w < 8:
+                                    w = 8
+                                if h < 8:
+                                    h = 8
                                 return np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
                             create_button.click(fn=create_t2i_ref, inputs=[overwrite_image_size], outputs=ref_image, _js=f'(o)=>onCreateT2IRefClick(o)')
                         else:
@@ -505,10 +495,10 @@ class Script(scripts.Script):
                 sampler, 
                 p.sampler_name, p.steps, p.width, p.height, 
                 tile_width, tile_height, overlap, tile_batch_size, 
-                tile_prompt=False, 
                 controlnet_script=controlnet_script, 
                 control_tensor_cpu=control_tensor_cpu
             )
+
             print(f"[MultiDiffusion] hooked into {p.sampler_name} sampler. " + 
                   f"Tile size: {tile_width}x{tile_height}, " + 
                   f"Tile batches: {len(delegate.batched_bboxes)}, " +

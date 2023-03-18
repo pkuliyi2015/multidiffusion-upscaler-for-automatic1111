@@ -7,13 +7,9 @@ This repository contains two scripts that enable **ultra-large image generation*
 - The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://multidiffusion.github.io)
 - The Tiled VAE is my original algorithm, which is **very powerful** in VRAM saving
 
-## Update on 2023.3.7
-
-- Added Fast Mode for Tiled VAE, which increase the speed by 5X and eliminated the need for extra RAM.
-- Now you can use 16GB GPU for 8K images, and the encoding/decoding process will be around 25 seconds. For 4k images, the process completes almost instantly.
-- If you encountered VAE NaN or black image output:
-  - Use the OpenAI provided 840000 VAE weights. This usually solves the problem.
-  - Use --no-half-vae on startup is also effective.
+## Update on 2023.3.18
+- Regional Prompt Control UI is ready but it has no function yet. 
+- Will complete the backend in 24 hours.
 
 ## MultiDiffusion
 
@@ -163,8 +159,8 @@ Remove --lowvram and --medvram to enjoy!
 
 ## Current Progress
 
-- We are investigating Google's latest sampler (which seems to yield better results than MultiDiffusion? We are not sure.)
-- Local prompt control is in progress. Automatic regional prompting is in consideration.
+- Local prompt control is about to complete. 
+- Automatic regional prompting is in consideration.
 - Video translation via MultiDiffusion frame interpolation still need proof-of-concept.
 
 ****
