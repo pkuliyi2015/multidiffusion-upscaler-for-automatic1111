@@ -69,11 +69,12 @@ BBOX_MAX_NUM = min(shared.cmd_opts.md_max_regions if hasattr(
     shared.cmd_opts, "md_max_regions") else 8, 16)
 
 class TiledDiffusion(ABC):
-    def __init__(self, batch_size, steps, 
+    def __init__(self, iters, batch_size, steps, 
                  w, h, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
                  controlnet_script=None, control_tensor_cpu=False) -> None:
         self.batch_size = batch_size
         self.steps = steps
+        self.iters = iters
                 # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
         if tile_w > self.w:
@@ -98,11 +99,21 @@ class TiledDiffusion(ABC):
             self.batched_bboxes.append(bboxes[start:end])
         self.weights = weights.unsqueeze(0).unsqueeze(0)
 
+        # Avoid the overhead of creating a new tensor for each batch
+        # And avoid the overhead of weight summing
+        self.x_buffer = None
+        # Region prompt control
+        self.custom_bboxes = []
+        self.global_multiplier = 1.0
+
         # For controlnet
         self.controlnet_script = controlnet_script
         self.control_tensor_batch = None
         self.control_params = None
         self.control_tensor_cpu = control_tensor_cpu
+
+        # Progress bar
+        self.pbar = None
     
     def split_views(self, tile_w, tile_h, overlap):
         non_overlap_width = tile_w - overlap
@@ -143,6 +154,34 @@ class TiledDiffusion(ABC):
         cols = math.ceil((w - overlap) / non_overlap_width)
         rows = math.ceil((h - overlap) / non_overlap_height)
         return cols > 1 or rows > 1
+    
+    def prepare_custom_bbox(self, prompts, negative_prompts, global_multiplier, bbox_control_states):
+        '''
+        Prepare custom bboxes for region prompt
+        '''
+        self.global_multiplier = global_multiplier
+        c_weights = torch.zeros_like(self.weights)
+        for i in range(0, len(bbox_control_states) - 8, 8):
+            e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
+            if not e or m < 1 or w <= 0 or h <= 0 or p == '':
+                continue
+            bbox = [int(x * self.w), int(y * self.h),
+                    int((x + w) * self.w), int((y + h) * self.h)]
+            c_weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
+            c_prompt = [prompt + ', ' + p for prompt in prompts]
+            if neg != '':
+                c_negative_prompt = [prompt + ', ' +
+                                     neg for prompt in negative_prompts]
+            else:
+                c_negative_prompt = negative_prompts
+            c_prompt = prompt_parser.get_multicond_learned_conditioning(
+                shared.sd_model, c_prompt, self.steps)
+            c_negative_prompt = prompt_parser.get_learned_conditioning(
+                shared.sd_model, c_negative_prompt, self.steps)
+            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
+
+        if len(self.custom_bboxes) > 0:
+            self.weights = self.weights * global_multiplier + c_weights
     
     def prepare_control_tensors(self, batch_size):
         '''
@@ -190,14 +229,13 @@ class MultiDiffusion(TiledDiffusion):
     MultiDiffusion Implementation
     Hijack the sampler for latent image tiling and fusion
     """
-    def __init__(self, p, sampler, sampler_name, *args, **kwargs):
+    def __init__(self, sampler, sampler_name, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # record the steps for progress bar
         # hook the sampler
         self.is_kdiff = sampler_name not in ['DDIM', 'PLMS', 'UniPC']
         assert sampler_name is not 'UniPC', 'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
         if self.is_kdiff:
-            self.iters = len(sampler.get_sigmas(p, self.steps))
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
             self.sampler = sampler.model_wrap_cfg
@@ -208,16 +246,8 @@ class MultiDiffusion(TiledDiffusion):
             self.sampler = sampler
             self.sampler_func = sampler.orig_p_sample_ddim
             self.sampler.orig_p_sample_ddim = self.ddim_repeat
-
-        # Avoid the overhead of creating a new tensor for each batch
-        # And avoid the overhead of weight summing
-        self.x_buffer = None
         # For ddim sampler we need to cache the pred_x0
         self.x_buffer_pred = None
-        self.pbar = None
-        # Region prompt control
-        self.custom_bboxes = []
-        self.global_multiplier = 1.0
 
     def repeat_cond_dict(self, cond_input, bboxes):
         cond = cond_input['c_crossattn'][0]
@@ -470,67 +500,98 @@ class MultiDiffusion(TiledDiffusion):
             return x_out, x_pred
         return x_out
 
-    def prepare_custom_bbox(self, prompts, negative_prompts, global_multiplier, bbox_control_states):
-        '''
-        Prepare custom bboxes for region prompt
-        '''
-        self.global_multiplier = global_multiplier
-        c_weights = torch.zeros_like(self.weights)
-        for i in range(0, len(bbox_control_states) - 8, 8):
-            e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
-            if not e or m < 1 or w <= 0 or h <= 0 or p == '':
-                continue
-            bbox = [int(x * self.w), int(y * self.h),
-                    int((x + w) * self.w), int((y + h) * self.h)]
-            c_weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
-            c_prompt = [prompt + ', ' + p for prompt in prompts]
-            if neg != '':
-                c_negative_prompt = [prompt + ', ' +
-                                     neg for prompt in negative_prompts]
-            else:
-                c_negative_prompt = negative_prompts
-            c_prompt = prompt_parser.get_multicond_learned_conditioning(
-                shared.sd_model, c_prompt, self.steps)
-            c_negative_prompt = prompt_parser.get_learned_conditioning(
-                shared.sd_model, c_negative_prompt, self.steps)
-            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
 
-        if len(self.custom_bboxes) > 0:
-            self.weights = self.weights * global_multiplier + c_weights
 
 class MixtureOfDiffusers(TiledDiffusion):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.per_tile_weights = self._gaussian_weights()
     
-    def _gaussian_weights(self):
+    def _gaussian_weights(self, tile_w=None, tile_h=None):
         '''
         Gaussian weights to smooth the noise of each tile
         '''
+        if tile_w is None:
+            tile_w = self.tile_w
+        if tile_h is None:
+            tile_h = self.tile_h
         var = 0.01
-        midpoint = (self.tile_w - 1) / 2  # -1 because index goes from 0 to latent_width - 1
-        x_probs = [exp(-(x-midpoint)*(x-midpoint)/(self.tile_w*self.tile_w)/(2*var)) / sqrt(2*pi*var) for x in range(self.tile_w)]
-        midpoint = self.tile_h / 2
-        y_probs = [exp(-(y-midpoint)*(y-midpoint)/(self.tile_h*self.tile_h)/(2*var)) / sqrt(2*pi*var) for y in range(self.tile_w)]
-        weights = np.outer(y_probs, x_probs)
+        midpoint = (tile_w - 1) / 2  # -1 because index goes from 0 to latent_width - 1
+        x_probs = [exp(-(x-midpoint)*(x-midpoint)/(tile_w*tile_w)/(2*var)) / sqrt(2*pi*var) for x in range(tile_w)]
+        midpoint = tile_h / 2
+        y_probs = [exp(-(y-midpoint)*(y-midpoint)/(tile_h*tile_h)/(2*var)) / sqrt(2*pi*var) for y in range(tile_h)]
+        weights = torch.from_numpy(np.outer(y_probs, x_probs)).to(devices.device)
         return weights
     
     def add_weights(self, input):
-        return input + self.per_tile_weights
-        
+        if not hasattr(self, 'per_tile_weights'):
+            self.per_tile_weights = self._gaussian_weights().to(input.device)
+        input += self.per_tile_weights
     
     def hook(self):
         if not hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.md_org_apply_model = shared.sd_model.apply_model
             shared.sd_model.apply_model = self.apply_model
     
-    def unhook(self):
+    @staticmethod
+    def unhook():
         if hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.apply_model = shared.sd_model.md_org_apply_model
             del shared.sd_model.md_org_apply_model
 
     def apply_model(self, x_in, t_in, c_in):
-        pass
+        '''
+        Hook to UNet when predicting noise
+        '''
+        N, C, H, W = x_in.shape
+        assert H == self.h and W == self.w
+
+        if self.pbar is None:
+            self.pbar = tqdm(total=(self.num_batches+len(self.custom_bboxes))
+                             * self.iters, desc="MixtureofDiffusers Sampling: ")
+        # ControlNet support
+        self.prepare_control_tensors(N)
+
+        if self.x_buffer is None:
+            self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
+        else:
+            self.x_buffer.zero_()
+        for batch_id, bboxes in enumerate(self.batched_bboxes):
+            if state.interrupted:
+                return x_in
+            x_tile_list = []
+            t_tile_list = []
+            c_tile_list = []
+            for bbox in bboxes:
+                x_tile_list.append(
+                    x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                t_tile_list.append(t_in)
+                if c_in is not None:
+                    c_tile_list.append(c_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+            x_tile = torch.cat(x_tile_list, dim=0)
+            t_tile = torch.cat(t_tile_list, dim=0)
+            c_tile = torch.cat(c_tile_list, dim=0) if c_in is not None else None
+            # controlnet tiling
+            if self.control_tensor_batch is not None:
+                for i in range(len(self.control_params)):
+                    new_control = self.control_tensor_batch[i][batch_id]
+                    if new_control.shape[0] != x_tile.shape[0]:
+                        new_control = new_control[:x_tile.shape[0], :, :, :]
+                    self.control_params[i].hint_cond = new_control.to(
+                        x_in.device)
+            x_tile_out = shared.sd_model.md_org_apply_model(
+                x_tile, t_tile, c_tile) # here the x is the noise
+            
+            for i, bbox in enumerate(bboxes):
+                self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :] * self.per_tile_weights
+            
+            # update progress bar
+            if self.pbar.n >= self.pbar.total:
+                self.pbar.close()
+            else:
+                self.pbar.update()
+                
+        x_out = self.x_buffer / self.weights
+        return x_out
 
 
 class Script(scripts.Script):
@@ -676,6 +737,7 @@ class Script(scripts.Script):
                 ):
 
         if not enabled:
+            MixtureOfDiffusers.unhook()
             return
 
         ''' upscale '''
@@ -750,20 +812,31 @@ class Script(scripts.Script):
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            delegate = MultiDiffusion(
-                p, sampler,
-                p.sampler_name, p.batch_size, p.steps, p.width, p.height,
-                tile_width, tile_height, overlap, tile_batch_size,
-                controlnet_script=controlnet_script,
-                control_tensor_cpu=control_tensor_cpu
-            )
+            if name in ['DDIM', 'UniPC', 'PLMS']:
+                iters = p.steps
+            else:
+                iters = len(sampler.get_sigmas(p, p.steps))
+            if method == 'MultiDiffusion':
+                delegate = MultiDiffusion(
+                    sampler, p.sampler_name, 
+                    iters,p.batch_size, p.steps, p.width, p.height,
+                    tile_width, tile_height, overlap, tile_batch_size,
+                    controlnet_script=controlnet_script,
+                    control_tensor_cpu=control_tensor_cpu
+                )
+            elif method == 'Mixture of Diffusers':
+                delegate = MixtureOfDiffusers(
+                    iters, p.batch_size, p.steps, p.width, p.height,
+                    tile_width, tile_height, overlap, tile_batch_size,
+                    controlnet_script=controlnet_script,
+                    control_tensor_cpu=control_tensor_cpu
+                )
+                delegate.hook()
             if (enable_bbox_control):
-                # Debug for the AND problem
-                print('prompt: ', p.all_prompts, p.all_negative_prompts)
                 delegate.prepare_custom_bbox(
                     p.all_prompts, p.all_negative_prompts, global_multiplier, bbox_control_states)
 
-            print(f"MultiDiffusion hooked into {p.sampler_name} sampler. " +
+            print(f"{method} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
                   f"Tile batches: {len(delegate.batched_bboxes)}, " +
                   f"Batch size:", tile_batch_size)
