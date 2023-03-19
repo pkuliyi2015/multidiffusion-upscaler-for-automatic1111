@@ -32,14 +32,10 @@ const t2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 const i2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 
 function getUpscalerFactor() {
-    let upscalerName = gradioApp().querySelector('#MD-upscaler-index input').value;
-    if (upscalerName !== 'none'){
-        let upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
-        if (!isNaN(upscalerInput)) {
-            return upscalerInput;
-        }
+    let upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
+    if (!isNaN(upscalerInput)) {
+        return upscalerInput;
     }
-    return 1.0;
 }
 
 function updateInput(target){
@@ -415,7 +411,7 @@ function updateCursorStyle(e, is_t2i, idx) {
     }
 }
 
-function updateAllBoxes(is_t2i) {
+function updateTabBoxes(is_t2i) {
     // This function redraw all bounding boxes
     let bboxes = null;
     let canvas = null;
@@ -435,6 +431,12 @@ function updateAllBoxes(is_t2i) {
         let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
         displayBox(canvas,vpScale, div, x, y, w, h);
     }
+}
+
+function updateAllBoxes() {
+    // This function redraw all bounding boxes
+    updateTabBoxes(true);
+    updateTabBoxes(false);
 }
 
 window.addEventListener('resize', updateAllBoxes);
