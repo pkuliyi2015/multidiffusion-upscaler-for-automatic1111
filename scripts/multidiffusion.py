@@ -377,7 +377,7 @@ class MultiDiffusionDelegate(object):
             e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
             if not e or m < 1 or w <=0 or h<=0 or p == '': continue
             bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
-            c_weights[bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
+            c_weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
             c_prompt = [prompt + ', ' + p for prompt in prompts]
             if neg != '':
                 c_negative_prompt = [prompt + ', ' + neg for prompt in negative_prompts]
