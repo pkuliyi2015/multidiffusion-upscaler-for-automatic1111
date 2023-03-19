@@ -1,9 +1,11 @@
 # ------------------------------------------------------------------------
 #
-#   MultiDiffusion for Automatic1111 WebUI
+#   MixDiffusors for Automatic1111 WebUI
 #
-#   Introducing a revolutionary large image drawing method - MultiDiffusion!
-#
+#   Introducing a revolutionary large image drawing method - MixDiffusers
+#   MixDiffusers is a technique that allows you to combine multiple diffusers
+#   with different regional text prompts.
+
 #   Techniques is not originally proposed by me, please refer to
 #   Original Project: https://multidiffusion.github.io
 #
