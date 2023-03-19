@@ -63,6 +63,7 @@ import math
 from tqdm import tqdm
 
 import torch
+import torch.version
 import torch.nn.functional as F
 from einops import rearrange
 import gradio as gr
@@ -484,7 +485,12 @@ class VAEHook:
                 print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
                 return self.net.original_forward(x)
             else:
-                return self.vae_tile_forward(x)
+                # compatible with AMD GPU
+                if torch.version.hip:
+                    return self.vae_tile_forward(x)
+                else:
+                    with torch.inference_mode():
+                        return self.vae_tile_forward(x)
         finally:
             self.net.to(original_device)
 
@@ -562,7 +568,7 @@ class VAEHook:
 
         return tile_input_bboxes, tile_output_bboxes
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def estimate_group_norm(self, z, task_queue, color_fix):
         device = z.device
         tile = z
@@ -606,7 +612,7 @@ class VAEHook:
         raise IndexError('Should not reach here')
 
     @perfcount
-    @torch.inference_mode()
+    @torch.no_grad()
     def vae_tile_forward(self, z):
         """
         Decode a latent vector z into an image in a tiled manner.
