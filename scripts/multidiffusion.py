@@ -61,6 +61,7 @@ import gradio as gr
 from modules import sd_samplers, images, devices, shared, scripts, prompt_parser
 from modules.shared import opts, state
 from modules.ui import gr_show
+from modules.script_callbacks import before_image_saved_callback, remove_callbacks_for_function
 
 from modules.processing import StableDiffusionProcessing
 
@@ -270,6 +271,7 @@ class MultiDiffusion(TiledDiffusion):
     def add_weights(self, input):
         input += 1.0
 
+    @torch.no_grad()
     def kdiff_repeat(self, x_in, sigma_in, cond):
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is batch_size * (num_AND + 1) if it is not an edit model;
@@ -341,6 +343,7 @@ class MultiDiffusion(TiledDiffusion):
 
         return self.compute_x_tile(x_in, repeat_func, custom_func)
 
+    @torch.no_grad()
     def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
 
         def repeat_func(x_tile, bboxes):
@@ -491,6 +494,12 @@ class MultiDiffusion(TiledDiffusion):
                                   bbox[0]:bbox[2]] += x_tile_out
                     self.x_buffer_pred[:, :, bbox[1]:bbox[3],
                                        bbox[0]:bbox[2]] += x_tile_pred
+                
+                # update progress bar
+                if self.pbar.n >= self.pbar.total:
+                    self.pbar.close()
+                else:
+                    self.pbar.update()
 
         x_out = torch.where(self.weights > 1, self.x_buffer /
                             self.weights, self.x_buffer)
@@ -531,17 +540,24 @@ class MixtureOfDiffusers(TiledDiffusion):
         if not hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.md_org_apply_model = shared.sd_model.apply_model
             shared.sd_model.apply_model = self.apply_model
-    
+        def remove_hook(_):
+            MixtureOfDiffusers.unhook()
+            remove_callbacks_for_function(MixtureOfDiffusers.unhook)
+        before_image_saved_callback(remove_hook)
+        
     @staticmethod
     def unhook():
         if hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.apply_model = shared.sd_model.md_org_apply_model
             del shared.sd_model.md_org_apply_model
 
-    def apply_model(self, x_in, t_in, c_in):
+    @torch.no_grad()
+    def apply_model(self, x_in, t_in, cond):
         '''
         Hook to UNet when predicting noise
         '''
+        # KDiffusion Compatibility
+        c_in = cond
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
 
@@ -560,16 +576,26 @@ class MixtureOfDiffusers(TiledDiffusion):
                 return x_in
             x_tile_list = []
             t_tile_list = []
-            c_tile_list = []
+            attn_tile_list = []
+            image_cond_list = []
             for bbox in bboxes:
                 x_tile_list.append(
                     x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
                 t_tile_list.append(t_in)
-                if c_in is not None:
-                    c_tile_list.append(c_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                if c_in is not None and isinstance(cond, dict):
+                    image_cond = cond['c_concat'][0]
+                    if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
+                        image_cond = image_cond[:, :,
+                                                bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                    image_cond_list.append(image_cond)
+                    attn_tile = cond['c_crossattn'][0]
+                    attn_tile_list.append(attn_tile)
+
             x_tile = torch.cat(x_tile_list, dim=0)
             t_tile = torch.cat(t_tile_list, dim=0)
-            c_tile = torch.cat(c_tile_list, dim=0) if c_in is not None else None
+            attn_tile = torch.cat(attn_tile_list, dim=0)
+            image_cond_tile = torch.cat(image_cond_list, dim=0)
+            c_tile = {'c_concat': [image_cond_tile], 'c_crossattn': [attn_tile]}
             # controlnet tiling
             if self.control_tensor_batch is not None:
                 for i in range(len(self.control_params)):
@@ -735,10 +761,9 @@ class Script(scripts.Script):
                 control_tensor_cpu: bool,
                 enable_bbox_control: bool, global_multiplier: int, *bbox_control_states
                 ):
-
-        if not enabled:
-            MixtureOfDiffusers.unhook()
-            return
+        
+        MixtureOfDiffusers.unhook()
+        if not enabled: return
 
         ''' upscale '''
         if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
