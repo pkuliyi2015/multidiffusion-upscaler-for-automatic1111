@@ -133,8 +133,8 @@ class TiledDiffusion(ABC):
         '''
         Prepare custom bboxes for region prompt
         '''
-        for i in range(0, len(bbox_control_states) - 8, 8):
-            e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
+        for i in range(0, len(bbox_control_states) - 9, 9):
+            e, m, c, x, y, w, h, p, neg = bbox_control_states[i:i+9]
             if not e or m <= 0 or w <= 0 or h <= 0 or p == '':
                 continue
             bbox = [int(x * self.w), int(y * self.h),
@@ -149,7 +149,7 @@ class TiledDiffusion(ABC):
                 shared.sd_model, c_prompt, self.steps)
             c_negative_prompt = prompt_parser.get_learned_conditioning(
                 shared.sd_model, c_negative_prompt, self.steps)
-            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
+            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m, c))
         if len(self.custom_bboxes) == 0: return
         self.global_multiplier = max(global_multiplier, 0.0)
         if self.global_multiplier >= 0 and abs(self.global_multiplier - 1.0) > 1e-6:
@@ -170,7 +170,7 @@ class TiledDiffusion(ABC):
             uncond, self.sampler.step)
         return conds_list, tensor, uncond, image_conditioning
 
-    def kdiff_custom_forward(self, x_tile, original_cond, custom_cond, uncond, bbox_id, bbox, sigma_in, forward_func, batched=False):
+    def kdiff_custom_forward(self, x_tile, original_cond, custom_cond, uncond, bbox_id, bbox, cond_scale, sigma_in, forward_func, batched=False, postprocess=None):
         '''
         Code migrate from modules/sd_samplers_kdiffusion.py
         '''
@@ -231,7 +231,21 @@ class TiledDiffusion(ABC):
             set_control_tensor(uncond.shape[0])
             x_out[-uncond.shape[0]:] = forward_func(x_in[-uncond.shape[0]:], sigma_in[-uncond.shape[0]:], cond={
                 "c_crossattn": [uncond], "c_concat": [image_cond_in[-uncond.shape[0]:]]})
-        return x_out
+        
+        if not self.is_edit_model:
+            denoised = self.sampler.combine_denoised(x_out, conds_list, uncond, cond_scale)
+        else:
+            denoised = self.sampler.combine_denoised_for_edit_model(x_out, cond_scale)
+
+        if self.sampler.mask is not None:
+            mask = self.sampler.mask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
+            nmask = self.sampler.nmask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
+            if self.sampler.init_latent.shape[2] == self.h and self.sampler.init_latent.shape[3] == self.w:
+                latent = self.sampler.init_latent[:,
+                                                  :, bbox[0]:bbox[2], bbox[1]:bbox[3]]
+            denoised = latent * mask + nmask * denoised
+
+        return denoised
 
     def ddim_custom_forward(self, x, cond_in, cond, uncond,  bbox_id, bbox, ts, forward_func, *args, **kwargs):
         conds_list, tensor, uncond, image_conditioning = self.prepare_custom_cond(
@@ -253,12 +267,14 @@ class TiledDiffusion(ABC):
             uncond = uncond[:, :cond.shape[1]]
 
         if self.sampler.mask is not None:
+            mask = self.sampler.mask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
+            nmask = self.sampler.nmask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
             if self.sampler.init_latent.shape[2] == self.h and self.sampler.init_latent.shape[3] == self.w:
                 latent = self.sampler.init_latent[:,
                                                   :, bbox[0]:bbox[2], bbox[1]:bbox[3]]
             img_orig = self.sampler.sampler.model.q_sample(
                 latent, ts)
-            x = img_orig * self.sampler.mask + self.sampler.nmask * x
+            x = img_orig * mask + nmask * x
 
         # Wrap the image conditioning back up since the DDIM code can accept the dict directly.
         # Note that they need to be lists because it just concatenates them later.
@@ -312,7 +328,7 @@ class TiledDiffusion(ABC):
 
             if len(self.custom_bboxes) > 0:
                 custom_control_tile_list = []
-                for bbox, _, _, _ in self.custom_bboxes:
+                for bbox, _, _, _, _ in self.custom_bboxes:
                     if len(control_tensor.shape) == 3:
                         control_tile = control_tensor[:, bbox[1] * 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
                     else:

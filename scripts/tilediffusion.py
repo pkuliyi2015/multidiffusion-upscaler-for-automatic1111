@@ -158,6 +158,8 @@ class Script(scripts.Script):
                                     label=f'Enable', value=False, elem_id=f'MD-enable-{i}')
                                 e.change(fn=None, inputs=[e], outputs=[
                                          e], _js=f'(e)=>onBoxEnableClick({is_t2i},{i}, e)')
+                                c = gr.Slider(label=f'CFG scale', value=7, minimum=1,
+                                              maximum=30, step=0.5, interactive=True, elem_id=f'MD-mt-{i}')
                                 m = gr.Slider(label=f'Multiplier', value=1, minimum=0,
                                               maximum=10, step=0.1, interactive=True, elem_id=f'MD-mt-{i}')
                             with gr.Row(variant='compact'):
@@ -184,7 +186,7 @@ class Script(scripts.Script):
                             neg = gr.Text(
                                 show_label=False, placeholder=f'Negative Prompt, will be appended too.', max_lines=1, elem_id=f'MD-p-{i}')
 
-                        bbox_controls.append((e, m, x, y, w, h, p, neg))
+                        bbox_controls.append((e, m, c, x, y, w, h, p, neg))
 
         controls = [
             enabled, method,

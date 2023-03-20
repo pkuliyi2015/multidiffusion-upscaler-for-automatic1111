@@ -45,7 +45,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
         super().prepare_custom_bbox(global_multiplier, bbox_control_states)
-        for bbox, _, _, m in self.custom_bboxes:
+        for bbox, _, _, m, _ in self.custom_bboxes:
             # multiply the gaussian weights in advance to save time
             gaussian_weights = self._gaussian_weights(
                 bbox[2] - bbox[0], bbox[3] - bbox[1]).to(devices.device) * m
@@ -69,36 +69,42 @@ class MixtureOfDiffusers(TiledDiffusion):
             shared.sd_model.apply_model = shared.sd_model.md_org_apply_model
             del shared.sd_model.md_org_apply_model
 
-    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox, cond, uncond):
+    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox, cfg, cond, uncond):
         if self.is_kdiff:
             if not hasattr(self, 'is_edit_model'):
                 self.is_edit_model = shared.sd_model.cond_stage_key == "edit" and self.sampler.image_cfg_scale is not None and self.sampler.image_cfg_scale != 1.0
-            return self.kdiff_custom_forward(x_in, c_in, cond, uncond, bbox_id, bbox, sigma_in=t_in, forward_func=shared.sd_model.md_org_apply_model, batched=True)
+            return self.kdiff_custom_forward(x_in, c_in, cond, uncond, bbox_id, bbox, cfg, sigma_in=t_in, forward_func=shared.sd_model.md_org_apply_model, batched=True)
         else:
             def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs):
                 # copy from p_sample_ddim in ddim.py
-                x_in = torch.cat([x] * 2)
-                t_in = torch.cat([ts] * 2)
-                if isinstance(c, dict):
-                    assert isinstance(unconditional_conditioning, dict)
-                    c_in = dict()
-                    for k in c:
-                        if isinstance(c[k], list):
-                            c_in[k] = [torch.cat([
-                                unconditional_conditioning[k][i],
-                                c[k][i]]) for i in range(len(c[k]))]
-                        else:
-                            c_in[k] = torch.cat([
-                                    unconditional_conditioning[k],
-                                    c[k]])
-                elif isinstance(c, list):
-                    c_in = list()
-                    assert isinstance(unconditional_conditioning, list)
-                    for i in range(len(c)):
-                        c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+                if unconditional_conditioning is None or cfg == 1.:
+                    return shared.sd_model.md_org_apply_model(x, ts, c)
                 else:
-                    c_in = torch.cat([unconditional_conditioning, c])
-                return shared.sd_model.md_org_apply_model(x_in, t_in, c_in)
+                    x_in = torch.cat([x] * 2)
+                    t_in = torch.cat([ts] * 2)
+                    if isinstance(c, dict):
+                        assert isinstance(unconditional_conditioning, dict)
+                        c_in = dict()
+                        for k in c:
+                            if isinstance(c[k], list):
+                                c_in[k] = [torch.cat([
+                                    unconditional_conditioning[k][i],
+                                    c[k][i]]) for i in range(len(c[k]))]
+                            else:
+                                c_in[k] = torch.cat([
+                                        unconditional_conditioning[k],
+                                        c[k]])
+                    elif isinstance(c, list):
+                        c_in = list()
+                        assert isinstance(unconditional_conditioning, list)
+                        for i in range(len(c)):
+                            c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+                    else:
+                        c_in = torch.cat([unconditional_conditioning, c])
+                    print(x_in.shape, t_in.shape, c_in)
+                    model_uncond, model_t = shared.sd_model.md_org_apply_model(x_in, t_in, c_in).chunk(2)
+                    model_output = model_uncond + cfg * (model_t - model_uncond)
+                return model_output
             
             return self.ddim_custom_forward(x_in, c_in, cond, uncond, bbox_id, bbox, ts=t_in, forward_func=forward_func)
 
@@ -156,28 +162,10 @@ class MixtureOfDiffusers(TiledDiffusion):
         if len(self.custom_bboxes) > 0:
             if self.global_multiplier > 0 and abs(self.global_multiplier - 1.0) > 1e-6:
                 self.x_buffer *= self.global_multiplier
-            for index, (bbox, cond, uncond, _) in enumerate(self.custom_bboxes):
+            for index, (bbox, cond, uncond, _, cfg) in enumerate(self.custom_bboxes):
                 # unpack sigma_in, x_in, image_cond
-                image_cond = None
-                if c_in is not None and isinstance(cond, dict):
-                    image_cond = cond['c_concat'][0]
-                if self.is_kdiff:
-                    x_tile = x_in[-self.batch_size:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    if image_cond is not None:
-                        if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
-                            image_cond = image_cond[-self.batch_size:, :, :, :]
-                        else:
-                            image_cond = image_cond[-self.batch_size:, :]
-                        c_tile = {'c_concat': [image_cond], 'c_crossattn': [cond['c_crossattn'][0]]}
-                else:
-                    x_tile = x_in[:self.batch_size, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    if image_cond is not None:
-                        if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
-                            image_cond = image_cond[:self.batch_size, :, :, :]
-                        else:
-                            image_cond = image_cond[:self.batch_size, :]
-                        c_tile = {'c_concat': [image_cond], 'c_crossattn': [cond['c_crossattn'][0]]}
-                x_tile_out = self.custom_apply_model(x_tile, t_in, c_tile, index, bbox, cond, uncond)
+                x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, index, bbox, cfg, cond, uncond)
                 x_tile_out *= self.custom_weights[index]
                 self.x_buffer[:, :, bbox[1]:bbox[3],bbox[0]:bbox[2]] += x_tile_out
                 self.update_pbar()

@@ -485,12 +485,7 @@ class VAEHook:
                 print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
                 return self.net.original_forward(x)
             else:
-                # compatible with AMD GPU
-                if torch.version.hip:
-                    return self.vae_tile_forward(x)
-                else:
-                    with torch.inference_mode():
-                        return self.vae_tile_forward(x)
+                return self.vae_tile_forward(x)
         finally:
             self.net.to(original_device)
 
