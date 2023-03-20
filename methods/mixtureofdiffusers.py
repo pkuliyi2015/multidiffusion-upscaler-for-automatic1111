@@ -75,8 +75,31 @@ class MixtureOfDiffusers(TiledDiffusion):
                 self.is_edit_model = shared.sd_model.cond_stage_key == "edit" and self.sampler.image_cfg_scale is not None and self.sampler.image_cfg_scale != 1.0
             return self.kdiff_custom_forward(x_in, c_in, cond, uncond, bbox_id, bbox, sigma_in=t_in, forward_func=shared.sd_model.md_org_apply_model, batched=True)
         else:
-            forward_func = lambda x, cond, ts, unconditional_conditioning, * \
-                args, **kwargs: shared.sd_model.md_org_apply_model(x, ts, cond)
+            def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs):
+                # copy from p_sample_ddim in ddim.py
+                x_in = torch.cat([x] * 2)
+                t_in = torch.cat([ts] * 2)
+                if isinstance(c, dict):
+                    assert isinstance(unconditional_conditioning, dict)
+                    c_in = dict()
+                    for k in c:
+                        if isinstance(c[k], list):
+                            c_in[k] = [torch.cat([
+                                unconditional_conditioning[k][i],
+                                c[k][i]]) for i in range(len(c[k]))]
+                        else:
+                            c_in[k] = torch.cat([
+                                    unconditional_conditioning[k],
+                                    c[k]])
+                elif isinstance(c, list):
+                    c_in = list()
+                    assert isinstance(unconditional_conditioning, list)
+                    for i in range(len(c)):
+                        c_in.append(torch.cat([unconditional_conditioning[i], c[i]]))
+                else:
+                    c_in = torch.cat([unconditional_conditioning, c])
+                return shared.sd_model.md_org_apply_model(x_in, t_in, c_in)
+            
             return self.ddim_custom_forward(x_in, c_in, cond, uncond, bbox_id, bbox, ts=t_in, forward_func=forward_func)
 
     @torch.no_grad()
@@ -140,7 +163,6 @@ class MixtureOfDiffusers(TiledDiffusion):
                     image_cond = cond['c_concat'][0]
                 if self.is_kdiff:
                     x_tile = x_in[-self.batch_size:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    t_tile = t_in[-self.batch_size:]
                     if image_cond is not None:
                         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
                             image_cond = image_cond[-self.batch_size:, :, :, :]
@@ -149,14 +171,13 @@ class MixtureOfDiffusers(TiledDiffusion):
                         c_tile = {'c_concat': [image_cond], 'c_crossattn': [cond['c_crossattn'][0]]}
                 else:
                     x_tile = x_in[:self.batch_size, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    t_tile = t_in[:self.batch_size]
                     if image_cond is not None:
                         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
                             image_cond = image_cond[:self.batch_size, :, :, :]
                         else:
                             image_cond = image_cond[:self.batch_size, :]
                         c_tile = {'c_concat': [image_cond], 'c_crossattn': [cond['c_crossattn'][0]]}
-                x_tile_out = self.custom_apply_model(x_tile, t_tile, c_tile, index, bbox, cond, uncond)
+                x_tile_out = self.custom_apply_model(x_tile, t_in, c_tile, index, bbox, cond, uncond)
                 x_tile_out *= self.custom_weights[index]
                 self.x_buffer[:, :, bbox[1]:bbox[3],bbox[0]:bbox[2]] += x_tile_out
                 self.update_pbar()
