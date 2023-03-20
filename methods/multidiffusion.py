@@ -14,7 +14,7 @@ class MultiDiffusion(TiledDiffusion):
         super().__init__("MultiDiffusion", sampler, sampler_name, *args, **kwargs)
         # record the steps for progress bar
         # hook the sampler
-        assert sampler_name is not 'UniPC', 'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
+        assert sampler_name != 'UniPC', 'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
@@ -43,12 +43,12 @@ class MultiDiffusion(TiledDiffusion):
             image_cond_tile = image_cond.repeat(
                 (len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
         return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
-    
-    def add_weights(self, input):
+
+    def add_global_weights(self, input):
         input += 1.0
 
-    def prepare_custom_bbox(self, prompts, negative_prompts, global_multiplier, bbox_control_states):
-        super().prepare_custom_bbox(prompts, negative_prompts, global_multiplier, bbox_control_states)
+    def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
+        super().prepare_custom_bbox(global_multiplier, bbox_control_states)
         for bbox, _, _, m in self.custom_bboxes:
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
 
@@ -62,9 +62,9 @@ class MultiDiffusion(TiledDiffusion):
             x_tile_out = self.sampler_func(
                 x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
-        
-        custom_func = lambda x, custom_cond, uncond, bbox: self.kdiff_custom_forward(
-            x, cond, custom_cond, uncond, bbox, sigma_in, self.is_edit_model, self.sampler_func
+
+        def custom_func(x, custom_cond, uncond, bbox_id, bbox): return self.kdiff_custom_forward(
+            x, cond, custom_cond, uncond, bbox_id, bbox, sigma_in, self.sampler_func
         )
 
         return self.compute_x_tile(x_in, repeat_func, custom_func)
@@ -89,33 +89,23 @@ class MultiDiffusion(TiledDiffusion):
             x_tile_out, x_pred = self.sampler_func(
                 x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out, x_pred
-        
-        custom_func = lambda x, cond, uncond, bbox: self.ddim_custom_forward(x, cond_in, cond, uncond, bbox, ts, self.sampler_func, *args, **kwargs)
+
+        def custom_func(x, cond, uncond, bbox_id, bbox): return self.ddim_custom_forward(
+            x, cond_in, cond, uncond, bbox_id, bbox, ts, self.sampler_func, *args, **kwargs)
         return self.compute_x_tile(x_in, repeat_func, custom_func)
 
     def compute_x_tile(self, x_in, func, custom_func):
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
 
-        self.init_pbar()
+        self.init(x_in)
 
-        # Kdiff 'AND' support and image editing model support
-        if len(self.custom_bboxes) > 0 and self.is_kdiff and not hasattr(self, 'is_edit_model'):
-            self.is_edit_model = shared.sd_model.cond_stage_key == "edit" and self.sampler.image_cfg_scale is not None and self.sampler.image_cfg_scale != 1.0
-
-        # ControlNet support
-        self.prepare_control_tensors(N)
-
-        if self.x_buffer is None:
-            self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
-        else:
-            self.x_buffer.zero_()
         if not self.is_kdiff:
             if self.x_buffer_pred is None:
                 self.x_buffer_pred = torch.zeros_like(x_in, device=x_in.device)
             else:
                 self.x_buffer_pred.zero_()
-        
+
         # Global sampling
         if self.global_multiplier > 0:
             for batch_id, bboxes in enumerate(self.batched_bboxes):
@@ -127,7 +117,7 @@ class MultiDiffusion(TiledDiffusion):
                         x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
                 x_tile = torch.cat(x_tile_list, dim=0)
                 # controlnet tiling
-                self.switch_controlnet_tensors(batch_id, x_tile)
+                self.switch_controlnet_tensors(batch_id, N, len(bboxes))
                 # compute tiles
                 if self.is_kdiff:
                     x_tile_out = func(x_tile, bboxes)
@@ -145,23 +135,22 @@ class MultiDiffusion(TiledDiffusion):
         if len(self.custom_bboxes) > 0:
             if self.global_multiplier > 0 and abs(self.global_multiplier - 1.0) > 1e-6:
                 self.x_buffer *= self.global_multiplier
-            if not self.is_kdiff:
-                self.x_buffer_pred *= self.global_multiplier
-            for index, bbox, cond, uncond, multiplier in enumerate(self.custom_bboxes):
-                self.switch_custom_controlnet_tensors(index, x_in)
+                if not self.is_kdiff:
+                    self.x_buffer_pred *= self.global_multiplier
+            for index, (bbox, cond, uncond, multiplier) in enumerate(self.custom_bboxes):
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
                     x_tile = x_in[-self.batch_size:, :,
                                   bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    x_tile_out = custom_func(x_tile, cond, uncond, bbox)
+                    x_tile_out = custom_func(x_tile, cond, uncond, index, bbox)
                     x_tile_out *= multiplier
                     self.x_buffer[:, :, bbox[1]:bbox[3],
                                   bbox[0]:bbox[2]] += x_tile_out
                 else:
-                    x_tile = x_in[:self.batch_size, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    x_tile_out, x_tile_pred = custom_func(
-                        x_tile, cond, uncond, bbox)
+                    x_tile = x_in[:self.batch_size, :,
+                                  bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                    x_tile_out, x_tile_pred = custom_func(x_tile, cond, uncond, index, bbox)
                     x_tile_out *= multiplier
                     x_tile_pred *= multiplier
                     self.x_buffer[:, :, bbox[1]:bbox[3],
@@ -170,10 +159,11 @@ class MultiDiffusion(TiledDiffusion):
                                        bbox[0]:bbox[2]] += x_tile_pred
                 self.update_pbar()
 
-        x_out = torch.where(self.weights > 1, self.x_buffer /
+        # Normalize. only divide when weights are greater than 0
+        x_out = torch.where(self.weights > 0, self.x_buffer /
                             self.weights, self.x_buffer)
         if not self.is_kdiff:
             x_pred = torch.where(
-                self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
+                self.weights > 0, self.x_buffer_pred / self.weights, self.x_buffer_pred)
             return x_out, x_pred
         return x_out

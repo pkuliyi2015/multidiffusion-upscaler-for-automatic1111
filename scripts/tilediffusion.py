@@ -127,7 +127,7 @@ class Script(scripts.Script):
                         enable_bbox_control = gr.Checkbox(
                             label='Enable', value=False)
                         global_multiplier = gr.Slider(
-                            minimum=0, maximum=10, step=0.1, label='Global Multiplier', value=1, interactive=True)
+                            minimum=0, maximum=10, step=0.1, label='Background Multiplier', value=1, interactive=True)
                     with gr.Row(variant='compact'):
                         create_button = gr.Button(
                             value="Create txt2img canvas" if not is_img2img else "From img2img")
@@ -135,7 +135,7 @@ class Script(scripts.Script):
                     bbox_controls = []  # control set for each bbox
                     with gr.Row(variant='compact'):
                         ref_image = gr.Image(
-                            label='Ref image (for conviently locate regions)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}')
+                            label='Ref image (for conviently locate regions)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}', interactive=True)
                         if not is_img2img:
                             # gradio has a serious bug: it cannot accept multiple inputs when you use both js and fn.
                             # to workaround this, we concat the inputs into a single string and parse it in js
@@ -283,29 +283,26 @@ class Script(scripts.Script):
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            if name in ['DDIM', 'UniPC', 'PLMS']:
-                iters = p.steps
-            else:
-                iters = len(sampler.get_sigmas(p, p.steps))
             if method == 'MultiDiffusion':
                 delegate = MultiDiffusion(
                     sampler, p.sampler_name, 
-                    iters,p.batch_size, p.steps, p.width, p.height,
+                    p.batch_size, p.steps, p.width, p.height,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
+                    control_tensor_cpu=control_tensor_cpu,
+                    prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
                 )
             elif method == 'Mixture of Diffusers':
                 delegate = MixtureOfDiffusers(
-                    iters, p.batch_size, p.steps, p.width, p.height,
+                    sampler, p.sampler_name, p.batch_size, p.steps, p.width, p.height,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
+                    control_tensor_cpu=control_tensor_cpu,
+                    prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
                 )
                 delegate.hook()
             if (enable_bbox_control):
-                delegate.prepare_custom_bbox(
-                    p.all_prompts, p.all_negative_prompts, global_multiplier, bbox_control_states)
+                delegate.prepare_custom_bbox(global_multiplier, bbox_control_states)
 
             print(f"{method} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
