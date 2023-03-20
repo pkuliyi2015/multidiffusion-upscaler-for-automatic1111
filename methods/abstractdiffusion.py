@@ -18,6 +18,8 @@ class TiledDiffusion(ABC):
         if self.is_kdiff:
             # The sampler is CFGDenoiser
             self.sampler = sampler.model_wrap_cfg
+            self.all_pos_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, steps)
+            self.all_neg_cond = prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompts, steps)
         else:
             self.sampler = sampler
 
@@ -58,6 +60,7 @@ class TiledDiffusion(ABC):
         # For kdiff sampler, the step counting is extremely tricky
         self.step_count = 0
         self.inner_loop_count = 0
+        self.kdiff_step = -1
         
         # Split the latent into tiles
         bboxes, weights = self.split_views(tile_w, tile_h, overlap)
@@ -82,6 +85,7 @@ class TiledDiffusion(ABC):
             self.pbar = tqdm(total=(self.total_bboxes) * state.sampling_steps, desc=f"{self.method} Sampling: ")
 
         if self.x_buffer is None:
+            self.weights = self.weights.to(x_in.device)
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
         else:
             self.x_buffer.zero_()
@@ -112,7 +116,7 @@ class TiledDiffusion(ABC):
         dy = (h - tile_h) / (rows - 1) if rows > 1 else 0
 
         bbox = []
-        count = torch.zeros((h, w), device=devices.device)
+        count = torch.zeros((h, w), device=devices.device, dtype=torch.float32)
         for row in range(rows):
             y = int(row * dy)
             if y + tile_h >= h:
@@ -122,19 +126,19 @@ class TiledDiffusion(ABC):
                 if x + tile_w >= w:
                     x = w - tile_w
                 bbox.append([x, y, x + tile_w, y + tile_h])
-                self.add_global_weights(count[y:y+tile_h, x:x+tile_w])
+                count[y:y+tile_h, x:x+tile_w] += self.get_global_weights()
         return bbox, count
 
     @abstractmethod
-    def add_global_weights(self, input):
+    def get_global_weights(self):
         pass
 
     def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
         '''
         Prepare custom bboxes for region prompt
         '''
-        for i in range(0, len(bbox_control_states) - 9, 9):
-            e, m, c, x, y, w, h, p, neg = bbox_control_states[i:i+9]
+        for i in range(0, len(bbox_control_states) - 8, 8):
+            e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
             if not e or m <= 0 or w <= 0 or h <= 0 or p == '':
                 continue
             bbox = [int(x * self.w), int(y * self.h),
@@ -149,114 +153,117 @@ class TiledDiffusion(ABC):
                 shared.sd_model, c_prompt, self.steps)
             c_negative_prompt = prompt_parser.get_learned_conditioning(
                 shared.sd_model, c_negative_prompt, self.steps)
-            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m, c))
+            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
         if len(self.custom_bboxes) == 0: return
         self.global_multiplier = max(global_multiplier, 0.0)
-        if self.global_multiplier >= 0 and abs(self.global_multiplier - 1.0) > 1e-6:
+        if self.global_multiplier >= 0 and abs(self.global_multiplier - 1.0) > 1e-5:
             self.weights *= self.global_multiplier
 
-    def prepare_custom_cond(self, cond_in, cond, uncond, bbox):
+    def prepare_custom_cond(self, org_cond, custom_cond, custom_uncond, bbox):
         image_conditioning = None
-        if isinstance(cond_in, dict):
-            image_cond = cond_in['c_concat'][0]
+        if isinstance(org_cond, dict):
+            image_cond = org_cond['c_concat'][0]
             if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
                 image_cond = image_cond[:, :,
                                         bbox[1]:bbox[3], bbox[0]:bbox[2]]
             image_conditioning = image_cond
 
         conds_list, tensor = prompt_parser.reconstruct_multicond_batch(
-            cond, self.sampler.step)
-        uncond = prompt_parser.reconstruct_cond_batch(
-            uncond, self.sampler.step)
-        return conds_list, tensor, uncond, image_conditioning
+            custom_cond, self.sampler.step)
+        custom_uncond = prompt_parser.reconstruct_cond_batch(
+            custom_uncond, self.sampler.step)
 
-    def kdiff_custom_forward(self, x_tile, original_cond, custom_cond, uncond, bbox_id, bbox, cond_scale, sigma_in, forward_func, batched=False, postprocess=None):
+        return conds_list, tensor, custom_uncond, image_conditioning
+    
+    def kdiff_custom_forward(self, x_tile, original_cond, custom_cond, uncond, bbox_id, bbox, sigma_in, forward_func):
         '''
-        Code migrate from modules/sd_samplers_kdiffusion.py
+        # The inner kdiff noise prediction is usually batched.
+        # We need to unwrap the inside loop to simulate the batched behavior.
+        # This can be extremely tricky.
         '''
-        conds_list, tensor, uncond, image_cond = self.prepare_custom_cond(
-            original_cond, custom_cond, uncond, bbox)
-        batch_size = len(conds_list)
-        repeats = [len(conds_list[i]) for i in range(batch_size)]
-        if not self.is_edit_model:
-            x_in = torch.cat([torch.stack([x_tile[i] for _ in range(n)])
-                              for i, n in enumerate(repeats)] + [x_tile])
-            image_cond_in = torch.cat([torch.stack([image_cond[i] for _ in range(
-                n)]) for i, n in enumerate(repeats)] + [image_cond])
+        if self.kdiff_step != self.sampler.step:
+            self.kdiff_step = self.sampler.step
+            self.kdiff_step_bbox = [-1 for _ in range(len(self.custom_bboxes))]
+            self.tensor = {}
+            self.uncond = {}
+            self.image_cond_in = {}
+            # Initialize global prompts just for estimate the behavior of kdiff
+            _, self.real_tensor = prompt_parser.reconstruct_multicond_batch(self.all_pos_cond, self.sampler.step)
+            self.real_uncond = prompt_parser.reconstruct_cond_batch(self.all_neg_cond, self.sampler.step)
 
-        else:
-            x_in = torch.cat([torch.stack([x_tile[i] for _ in range(n)])
-                              for i, n in enumerate(repeats)] + [x_tile] + [x_tile])
-            image_cond_in = torch.cat([torch.stack([image_cond[i] for _ in range(n)]) for i, n in enumerate(
-                repeats)] + [image_cond] + [torch.zeros_like(x_tile)])
-            
-        def set_control_tensor(repeat_size):
-            if len(self.control_tensor_custom) > 0:
-                for param_id in range(len(self.control_params)):
-                    control_tensor = self.control_tensor_custom[param_id][bbox_id].to(x_in.device)
-                    self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
+        if self.kdiff_step_bbox[bbox_id] != self.sampler.step:
+            # When a new step starts for a bbox, we need to judge whether the tensor is batched.
+            self.kdiff_step_bbox[bbox_id] = self.sampler.step
 
-        if tensor.shape[1] == uncond.shape[1]:
-            if not self.is_edit_model:
-                cond = torch.cat([tensor, uncond])
-            else:
-                cond = torch.cat([tensor, uncond, uncond])
+            _, tensor, uncond, image_cond_in = self.prepare_custom_cond(original_cond, custom_cond, uncond, bbox)
 
-            if shared.batch_cond_uncond or batched:
-                set_control_tensor(x_in.shape[0])
-                x_out = forward_func(x_in, sigma_in, cond={"c_crossattn": [
-                    cond], "c_concat": [image_cond_in]})
-            else:
-                x_out = torch.zeros_like(x_in)
-                for batch_offset in range(0, x_out.shape[0], batch_size):
-                    a = batch_offset
-                    b = a + batch_size
-                    set_control_tensor(batch_size)
-                    x_out[a:b] = forward_func(x_in[a:b], sigma_in[a:b], cond={"c_crossattn": [
-                        cond[a:b]], "c_concat": [image_cond_in[a:b]]})
-        else:
-            x_out = torch.zeros_like(x_in)
-            batch_size = batch_size*2 if shared.batch_cond_uncond or batched else batch_size
-            for batch_offset in range(0, tensor.shape[0], batch_size):
-                a = batch_offset
-                b = min(a + batch_size, tensor.shape[0])
-
-                if not self.is_edit_model:
-                    c_crossattn = [tensor[a:b]]
+            if self.real_tensor.shape[1] == self.real_uncond.shape[1]:
+                # when the real tensor is with equal length, all information is contained in x_tile.
+                # we simulate the batched behavior and compute all the tensors in one go.
+                if tensor.shape[1] == uncond.shape[1] and shared.batch_cond_uncond:
+                    if not self.is_edit_model:
+                        cond = torch.cat([tensor, uncond])
+                    else:
+                        cond = torch.cat([tensor, uncond, uncond])
+                    self.set_control_tensor(bbox_id, x_tile.shape[0])
+                    return forward_func(x_tile, sigma_in, cond={"c_crossattn": [
+                        cond], "c_concat": [image_cond_in]})
                 else:
-                    c_crossattn = torch.cat([tensor[a:b]], uncond)
-                set_control_tensor(b-a)
-                x_out[a:b] = forward_func(x_in[a:b], sigma_in[a:b], cond={
-                    "c_crossattn": c_crossattn, "c_concat": [image_cond_in[a:b]]})
-            set_control_tensor(uncond.shape[0])
-            x_out[-uncond.shape[0]:] = forward_func(x_in[-uncond.shape[0]:], sigma_in[-uncond.shape[0]:], cond={
-                "c_crossattn": [uncond], "c_concat": [image_cond_in[-uncond.shape[0]:]]})
-        
-        if not self.is_edit_model:
-            denoised = self.sampler.combine_denoised(x_out, conds_list, uncond, cond_scale)
+                    x_out = torch.zeros_like(x_tile)
+                    cond_size = tensor.shape[0]
+                    self.set_control_tensor(bbox_id, cond_size)
+                    cond_out = forward_func(x_tile[:cond_size], sigma_in[:cond_size], cond={"c_crossattn": [
+                        tensor], "c_concat": [image_cond_in[:cond_size]]})
+                    uncond_size = uncond.shape[0]
+                    self.set_control_tensor(bbox_id, uncond_size)
+                    uncond_out = forward_func(x_tile[cond_size:cond_size+uncond_size], sigma_in[cond_size:cond_size+uncond_size], cond={"c_crossattn": [
+                        uncond], "c_concat": [image_cond_in[cond_size:cond_size+uncond_size]]})
+                    x_out[:cond_size] = cond_out
+                    x_out[cond_size:cond_size+uncond_size] = uncond_out
+                    if self.is_edit_model:
+                        x_out[cond_size+uncond_size:] = uncond_out
+                    return x_out
+                
+            # otherwise, the x_tile is only a partial batch. We have to denoise in different runs.
+            # initialize the state variables for current bbox
+            self.tensor[bbox_id] = tensor
+            self.uncond[bbox_id] = uncond
+            self.image_cond_in[bbox_id] = image_cond_in
+            self.a = [0 for _ in range(len(self.custom_bboxes))]
+
+        # get current condition and uncondition
+        tensor = self.tensor[bbox_id]
+        uncond = self.uncond[bbox_id]
+        batch_size = self.batch_size*2 if shared.batch_cond_uncond else self.batch_size
+        # get the start and end index of the current batch
+        a = self.a[bbox_id]
+        b = a + batch_size
+        self.a[bbox_id] += batch_size
+        # Judge the progress of batched processing cond and uncond for each bbox.
+        # IMPORTANT: The end condition is a rather than b.
+        if a < tensor.shape[0]:
+            if not self.is_edit_model:
+                c_crossattn = [tensor[a:b]]
+            else:
+                c_crossattn = torch.cat([tensor[a:b]], uncond)
+            self.set_control_tensor(bbox_id, x_tile.shape[0])
+            # complete this batch.
+            return forward_func(x_tile, sigma_in, cond={
+                "c_crossattn": c_crossattn, "c_concat": [self.image_cond_in[bbox_id]]})
         else:
-            denoised = self.sampler.combine_denoised_for_edit_model(x_out, cond_scale)
-
-        if self.sampler.mask is not None:
-            mask = self.sampler.mask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            nmask = self.sampler.nmask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            if self.sampler.init_latent.shape[2] == self.h and self.sampler.init_latent.shape[3] == self.w:
-                latent = self.sampler.init_latent[:,
-                                                  :, bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            denoised = latent * mask + nmask * denoised
-
-        return denoised
-
-    def ddim_custom_forward(self, x, cond_in, cond, uncond,  bbox_id, bbox, ts, forward_func, *args, **kwargs):
+            # if the cond is finished, we need to process the uncond.
+            self.set_control_tensor(bbox_id, uncond.shape[0])
+            return forward_func(x_tile, sigma_in, cond={"c_crossattn": [uncond], "c_concat": [self.image_cond_in[bbox_id]]})
+    
+    def ddim_custom_forward(self, x, cond_in, cond, uncond, bbox, ts, forward_func, *args, **kwargs):
         conds_list, tensor, uncond, image_conditioning = self.prepare_custom_cond(
             cond_in, cond, uncond, bbox)
+        
         assert all([len(conds) == 1 for conds in conds_list]
                    ), 'composition via AND is not supported for DDIM/PLMS samplers'
 
         cond = tensor
-        # for DDIM, shapes must match, we can't just process cond and uncond independently;
-        # filling uncond with repeats of the last vector to match length is
-        # not 100% correct but should work well enough
+        # for DDIM, shapes definitely match. So we dont need to do the same thing as in the KDIFF sampler.
         if uncond.shape[1] < cond.shape[1]:
             last_vector = uncond[:, -1:]
             last_vector_repeated = last_vector.repeat(
@@ -266,16 +273,6 @@ class TiledDiffusion(ABC):
         elif uncond.shape[1] > cond.shape[1]:
             uncond = uncond[:, :cond.shape[1]]
 
-        if self.sampler.mask is not None:
-            mask = self.sampler.mask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            nmask = self.sampler.nmask[bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            if self.sampler.init_latent.shape[2] == self.h and self.sampler.init_latent.shape[3] == self.w:
-                latent = self.sampler.init_latent[:,
-                                                  :, bbox[0]:bbox[2], bbox[1]:bbox[3]]
-            img_orig = self.sampler.sampler.model.q_sample(
-                latent, ts)
-            x = img_orig * mask + nmask * x
-
         # Wrap the image conditioning back up since the DDIM code can accept the dict directly.
         # Note that they need to be lists because it just concatenates them later.
         if image_conditioning is not None:
@@ -283,17 +280,10 @@ class TiledDiffusion(ABC):
                     "c_crossattn": [cond]}
             uncond = {"c_concat": [
                 image_conditioning], "c_crossattn": [uncond]}
-            
-        if len(self.control_tensor_custom) > 0:
-            for i in range(len(self.control_params)):
-                control_tensor = self.control_tensor_custom[i][bbox_id].to(x.device)
-                # just repeat the control tensor by 2 x batch size
-                control_tensor.repeat([2*x.shape[0], 1, 1, 1])
-                self.control_params[i].hint_cond = control_tensor
-
+        
+        # We cannot determine the batch size here for different methods, so delay it to the forward_func.
         return forward_func(x, cond, ts, unconditional_conditioning=uncond, *args, **kwargs)
-
-
+    
     def prepare_control_tensors(self):
         '''
         Crop the control tensor into tiles and cache them
@@ -328,7 +318,7 @@ class TiledDiffusion(ABC):
 
             if len(self.custom_bboxes) > 0:
                 custom_control_tile_list = []
-                for bbox, _, _, _, _ in self.custom_bboxes:
+                for bbox, _, _, _ in self.custom_bboxes:
                     if len(control_tensor.shape) == 3:
                         control_tile = control_tensor[:, bbox[1] * 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
                     else:
@@ -351,6 +341,12 @@ class TiledDiffusion(ABC):
                 else:
                     control_tile = control_tile.repeat([tile_batch_size*x_batch_size, 1, 1, 1])
                 self.control_params[param_id].hint_cond = control_tile.to(devices.device)
+
+    def set_control_tensor(self, bbox_id, repeat_size):
+        if len(self.control_tensor_custom) > 0:
+            for param_id in range(len(self.control_params)):
+                control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
+                self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
 
 
     

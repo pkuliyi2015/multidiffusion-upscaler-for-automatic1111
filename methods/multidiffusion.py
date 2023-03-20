@@ -44,13 +44,14 @@ class MultiDiffusion(TiledDiffusion):
                 (len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
         return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
 
-    def add_global_weights(self, input):
-        input += 1.0
+    def get_global_weights(self):
+        return 1.0
 
     def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
         super().prepare_custom_bbox(global_multiplier, bbox_control_states)
-        for bbox, _, _, m, _ in self.custom_bboxes:
+        for bbox, _, _, m in self.custom_bboxes:
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
+
 
     @torch.no_grad()
     def kdiff_repeat(self, x_in, sigma_in, cond):
@@ -63,8 +64,8 @@ class MultiDiffusion(TiledDiffusion):
                 x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
 
-        def custom_func(x, custom_cond, uncond, bbox_id, bbox, cfg): return self.kdiff_custom_forward(
-            x, cond, custom_cond, uncond, bbox_id, bbox, cfg, sigma_in, self.sampler_func
+        def custom_func(x, custom_cond, uncond, bbox_id, bbox): return self.kdiff_custom_forward(
+            x, cond, custom_cond, uncond, bbox_id, bbox, sigma_in, self.sampler_func
         )
 
         return self.compute_x_tile(x_in, repeat_func, custom_func)
@@ -90,8 +91,15 @@ class MultiDiffusion(TiledDiffusion):
                 x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out, x_pred
 
-        def custom_func(x, cond, uncond, bbox_id, bbox, _): return self.ddim_custom_forward(
-            x, cond_in, cond, uncond, bbox_id, bbox, ts, self.sampler_func, *args, **kwargs)
+        def custom_func(x, cond, uncond, bbox_id, bbox): 
+            # before the final forward, we can set the control tensor
+            def forward_func(x, *args, **kwargs):
+                self.set_control_tensor(bbox_id, 2*x.shape[0])
+                return self.sampler_func(x, *args, **kwargs)
+            
+            return self.ddim_custom_forward(
+            x, cond_in, cond, uncond, bbox, ts, forward_func, *args, **kwargs)
+        
         return self.compute_x_tile(x_in, repeat_func, custom_func)
 
     def compute_x_tile(self, x_in, func, custom_func):
@@ -137,20 +145,17 @@ class MultiDiffusion(TiledDiffusion):
                 self.x_buffer *= self.global_multiplier
                 if not self.is_kdiff:
                     self.x_buffer_pred *= self.global_multiplier
-            for index, (bbox, cond, uncond, multiplier, cfg) in enumerate(self.custom_bboxes):
+            for index, (bbox, cond, uncond, multiplier) in enumerate(self.custom_bboxes):
+                x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
-                    x_tile = x_in[-self.batch_size:, :,
-                                  bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    x_tile_out = custom_func(x_tile, cond, uncond, index, bbox, cfg)
+                    x_tile_out = custom_func(x_tile, cond, uncond, index, bbox)
                     x_tile_out *= multiplier
                     self.x_buffer[:, :, bbox[1]:bbox[3],
                                   bbox[0]:bbox[2]] += x_tile_out
                 else:
-                    x_tile = x_in[:self.batch_size, :,
-                                  bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    x_tile_out, x_tile_pred = custom_func(x_tile, cond, uncond, index, bbox, cfg)
+                    x_tile_out, x_tile_pred = custom_func(x_tile, cond, uncond, index, bbox)
                     x_tile_out *= multiplier
                     x_tile_pred *= multiplier
                     self.x_buffer[:, :, bbox[1]:bbox[3],
