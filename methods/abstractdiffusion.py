@@ -328,7 +328,7 @@ class TiledDiffusion(ABC):
                     custom_control_tile_list.append(control_tile)
                 self.control_tensor_custom.append(custom_control_tile_list)
 
-    def switch_controlnet_tensors(self, batch_id, x_batch_size, tile_batch_size):
+    def switch_controlnet_tensors(self, batch_id, x_batch_size, tile_batch_size, is_denoise=False):
         if self.control_tensor_batch is not None:
             for param_id in range(len(self.control_params)):
                 control_tile = self.control_tensor_batch[param_id][batch_id]
@@ -339,7 +339,7 @@ class TiledDiffusion(ABC):
                         all_control_tile.append(torch.cat(this_control_tile, dim=0))
                     control_tile = torch.cat(all_control_tile, dim=0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
                 else:
-                    control_tile = control_tile.repeat([tile_batch_size*x_batch_size, 1, 1, 1])
+                    control_tile = control_tile.repeat([x_batch_size if is_denoise else x_batch_size * 2, 1, 1, 1])
                 self.control_params[param_id].hint_cond = control_tile.to(devices.device)
 
     def set_control_tensor(self, bbox_id, repeat_size):

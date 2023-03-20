@@ -141,7 +141,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                 c_tile = {'c_concat': [image_cond_tile],
                           'c_crossattn': [attn_tile]}
                 # Controlnet tiling
-                self.switch_controlnet_tensors(batch_id, N, len(bboxes))
+                self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
                 x_tile_out = shared.sd_model.md_org_apply_model(
                     x_tile, t_tile, c_tile)  # here the x is the noise
 
