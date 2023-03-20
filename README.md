@@ -1,19 +1,22 @@
-# MultiDiffusion with Tiled VAE
+# Tiled Diffusion with Tiled VAE
 
 English｜[中文](README_CN.md)
 
-This repository contains two scripts that enable **ultra-large image generation**.
+Introducing revolutionary **ultra-large image generation** via Tiled Diffusion & VAE!
 
-- The MultiDiffusion comes from existing work. Please refer to their paper and GitHub page [MultiDiffusion](https://multidiffusion.github.io)
-- The Tiled VAE is my original algorithm, which is **very powerful** in VRAM saving
+- My optimized reimplementation of two state-of-the-art training-free compositional methods: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
+- My original Tiled VAE algorithm, which is seam-free and **extremely powerful** in VRAM saving.
 
-## Update on 2023.3.18
-- Regional Prompt Control UI is ready but it has no function yet. 
-- Will complete the backend in 24 hours.
+## Impressive Update on 2023.3.20
+- **Unprecedented regional prompt control with my super-convenient new UI**![region](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Region.png?raw=true)
+- **Add a new SOTA method: Mixture of Diffusers. Less seams & better quality!**
+- Will update this README later. **If you find my extension powerful and are willing to help me improve this README, please feel free to PR!** 
 
-## MultiDiffusion
+## Tiled Diffusion
 
 ****
+
+The following readme is out-of-date. Will update soon.
 
 **Fast ultra-large images refinement (img2img)**
 
