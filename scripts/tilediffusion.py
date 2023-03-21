@@ -1,3 +1,4 @@
+'''
 # ------------------------------------------------------------------------
 #
 #   Tiled Diffusion for Automatic1111 WebUI
@@ -47,23 +48,28 @@
 #
 #   Please give me a star if you like this project!
 #
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------
+'''
 
-from methods import MultiDiffusion, MixtureOfDiffusers, splitable
-import numpy as np
 import torch
+import numpy as np
+from enum import Enum
 import gradio as gr
 
 from modules import sd_samplers, images, shared, scripts
 from modules.shared import opts
 from modules.ui import gr_show
-
 from modules.processing import StableDiffusionProcessing
+
+from methods import MultiDiffusion, MixtureOfDiffusers, splitable
 
 
 BBOX_MAX_NUM = min(shared.cmd_opts.md_max_regions if hasattr(
     shared.cmd_opts, "md_max_regions") else 8, 16)
 
+class Method(Enum):
+    MULTI_DIFF = 'MultiDiffusion'
+    MIX_DIFF   = 'Mixture of Diffusers'
 
 
 class Script(scripts.Script):
@@ -77,12 +83,12 @@ class Script(scripts.Script):
     def ui(self, is_img2img):
         tab = 't2i' if not is_img2img else 'i2i'
         is_t2i = 'true' if not is_img2img else 'false'
+
         with gr.Accordion('Tiled Diffusion', open=False):
             with gr.Row(variant='compact'):
                 enabled = gr.Checkbox(label='Enable', value=False)
-                method = gr.Dropdown(label='Method', choices=[
-                                   'MultiDiffusion', 'Mixture of Diffusers'], value='MultiDiffusion')
-                
+                method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value)
+
             with gr.Row(variant='compact', visible=False) as tab_size:
                 image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024,
                                         elem_id=f'MD-overwrite-width-{tab}')
@@ -134,55 +140,52 @@ class Script(scripts.Script):
 
                     bbox_controls = []  # control set for each bbox
                     with gr.Row(variant='compact'):
-                        ref_image = gr.Image(
-                            label='Ref image (for conviently locate regions)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}', interactive=True)
+                        ref_image = gr.Image(label='Ref image (for conviently locate regions)', image_mode=None, 
+                                             elem_id=f'MD-bbox-ref-{tab}', interactive=True)
                         if not is_img2img:
                             # gradio has a serious bug: it cannot accept multiple inputs when you use both js and fn.
                             # to workaround this, we concat the inputs into a single string and parse it in js
                             def create_t2i_ref(string):
                                 w, h = [int(x) for x in string.split('x')]
-                                if w < 8:
-                                    w = 8
-                                if h < 8:
-                                    h = 8
+                                w = max(w, 8)
+                                h = max(h, 8)
                                 return np.zeros(shape=(h, w, 3), dtype=np.uint8) + 255
-                            create_button.click(fn=create_t2i_ref, inputs=[
-                                                overwrite_image_size], outputs=ref_image, _js=f'(o)=>onCreateT2IRefClick(o)')
-                        else:
                             create_button.click(
-                                fn=None, inputs=[], outputs=ref_image, _js=f'onCreateI2IRefClick')
+                                fn=create_t2i_ref, 
+                                inputs=overwrite_image_size, 
+                                outputs=ref_image, 
+                                _js='onCreateT2IRefClick')
+                        else:
+                            create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick')
+
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
-                                e = gr.Checkbox(
-                                    label=f'Enable', value=False, elem_id=f'MD-enable-{i}')
-                                e.change(fn=None, inputs=[e], outputs=[
-                                         e], _js=f'(e)=>onBoxEnableClick({is_t2i},{i}, e)')
-                                m = gr.Slider(label=f'Multiplier', value=1, minimum=0,
-                                              maximum=10, step=0.1, interactive=True, elem_id=f'MD-mt-{i}')
+                                e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{i}')
+                                e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
+                                
+                                m = gr.Slider(label='Multiplier', value=1, minimum=0, maximum=10, step=0.1, 
+                                              interactive=True, elem_id=f'MD-mt-{i}')
+                            
                             with gr.Row(variant='compact'):
-                                x = gr.Slider(label=f'x', value=0.4, minimum=0.0, maximum=1.0,
-                                              step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-x')
-                                y = gr.Slider(label=f'y', value=0.4, minimum=0.0, maximum=1.0,
-                                              step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-y')
-                                w = gr.Slider(label=f'w', value=0.2, minimum=0.0, maximum=1.0,
-                                              step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-w')
-                                h = gr.Slider(label=f'h', value=0.2, minimum=0.0, maximum=1.0,
-                                              step=0.01, interactive=True, elem_id=f'MD-{tab}-{i}-h')
+                                x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
+                                              interactive=True, elem_id=f'MD-{tab}-{i}-x')
+                                y = gr.Slider(label='y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
+                                              interactive=True, elem_id=f'MD-{tab}-{i}-y')
+                                w = gr.Slider(label='w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, 
+                                              interactive=True, elem_id=f'MD-{tab}-{i}-w')
+                                h = gr.Slider(label='h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, 
+                                              interactive=True, elem_id=f'MD-{tab}-{i}-h')
 
-                                x.change(fn=None, inputs=[x], outputs=[
-                                         x], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'x\', v)')
-                                y.change(fn=None, inputs=[y], outputs=[
-                                         y], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'y\', v)')
-                                w.change(fn=None, inputs=[w], outputs=[
-                                         w], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'w\', v)')
-                                h.change(fn=None, inputs=[h], outputs=[
-                                         h], _js=f'(v)=>onBoxChange({is_t2i}, {i}, \'h\', v)')
+                                x.change(fn=None, inputs=x, outputs=x, _js=f'(v) => onBoxChange({is_t2i}, {i}, "x", v)')
+                                y.change(fn=None, inputs=y, outputs=y, _js=f'(v) => onBoxChange({is_t2i}, {i}, "y", v)')
+                                w.change(fn=None, inputs=w, outputs=w, _js=f'(v) => onBoxChange({is_t2i}, {i}, "w", v)')
+                                h.change(fn=None, inputs=h, outputs=h, _js=f'(v) => onBoxChange({is_t2i}, {i}, "h", v)')
 
-                            p = gr.Text(
-                                show_label=False, placeholder=f'Prompt, will be appended to your {tab} prompt)', max_lines=2, elem_id=f'MD-p-{i}')
-                            neg = gr.Text(
-                                show_label=False, placeholder=f'Negative Prompt, will be appended too.', max_lines=1, elem_id=f'MD-p-{i}')
+                            p   = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', 
+                                          max_lines=2, elem_id=f'MD-p-{i}')
+                            neg = gr.Text(show_label=False, placeholder=f'Negative Prompt, will also be appended',         
+                                          max_lines=1, elem_id=f'MD-n-{i}')
 
                         bbox_controls.append((e, m, x, y, w, h, p, neg))
 
@@ -195,35 +198,33 @@ class Script(scripts.Script):
             enable_bbox_control,
             global_multiplier
         ]
-        for i in range(BBOX_MAX_NUM):
-            controls.extend(bbox_controls[i])
+        for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
         return controls
 
     def process(self, p: StableDiffusionProcessing,
-                enabled: bool, method: str,
-                overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
-                tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
-                upscaler_index: str, scale_factor: float,
-                control_tensor_cpu: bool,
-                enable_bbox_control: bool, global_multiplier: float, *bbox_control_states
-                ):
+            enabled: bool, method: str,
+            overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
+            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
+            upscaler_index: str, scale_factor: float,
+            control_tensor_cpu: bool, enable_bbox_control: bool, global_multiplier: float, 
+            *bbox_control_states
+        ):
         
         MixtureOfDiffusers.unhook()
         if not enabled: return
 
+        method: Method = Method(method)
+
         ''' upscale '''
         if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
-            upscaler_name = [x.name for x in shared.sd_upscalers].index(
-                upscaler_index)
+            upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
 
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
             upscaler = shared.sd_upscalers[upscaler_name]
             if upscaler.name != "None":
-                print(
-                    f"[Tiled Diffusion] upscaling image with {upscaler.name}...")
-                image = upscaler.scaler.upscale(
-                    init_img, scale_factor, upscaler.data_path)
+                print(f"[Tiled Diffusion] upscaling image with {upscaler.name}...")
+                image = upscaler.scaler.upscale(init_img, scale_factor, upscaler.data_path)
                 p.extra_generation_params["Tiled Diffusion upscaler"] = upscaler.name
                 p.extra_generation_params["Tiled Diffusion scale factor"] = scale_factor
             else:
@@ -242,9 +243,9 @@ class Script(scripts.Script):
 
         ''' sanitiy check '''
         if not splitable(p.width, p.height, tile_width, tile_height, overlap):
-            print(
-                "[Tiled Diffusion] ignore due to image too small or tile size too large.")
+            print("[Tiled Diffusion] ignore due to image too small or tile size too large.")
             return
+
         p.extra_generation_params["Tiled Diffusion tile width"] = tile_width
         p.extra_generation_params["Tiled Diffusion tile height"] = tile_height
         p.extra_generation_params["Tiled Diffusion overlap"] = overlap
@@ -261,15 +262,13 @@ class Script(scripts.Script):
                     hint = hint.unsqueeze(0)
                 _, _, h1, w1 = hint.shape
                 if h != h1 or w != w1:
-                    hint = torch.nn.functional.interpolate(
-                        hint, size=(h, w), mode="nearest")
+                    hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
                 return hint
             ControlNet.align = align
             for script in p.scripts.scripts + p.scripts.alwayson_scripts:
                 if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
                     controlnet_script = script
-                    print(
-                        "[Tiled Diffusion] ControlNet found, MultiDiffusion-ControlNet support is enabled.")
+                    print("[Tiled Diffusion] ControlNet found, MultiDiffusion-ControlNet support is enabled.")
                     break
         except ImportError:
             pass
@@ -283,7 +282,7 @@ class Script(scripts.Script):
             sampler = old_create_sampler(name, model)
             # unhook the create_sampler function
             sd_samplers.create_sampler = old_create_sampler
-            if method == 'MultiDiffusion':
+            if   method == Method.MULTI_DIFF:
                 delegate = MultiDiffusion(
                     sampler, p.sampler_name, 
                     p.batch_size, p.steps, p.width, p.height,
@@ -292,19 +291,20 @@ class Script(scripts.Script):
                     control_tensor_cpu=control_tensor_cpu,
                     prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
                 )
-            elif method == 'Mixture of Diffusers':
+            elif method == Method.MIX_DIFF:
                 delegate = MixtureOfDiffusers(
-                    sampler, p.sampler_name, p.batch_size, p.steps, p.width, p.height,
+                    sampler, p.sampler_name, 
+                    p.batch_size, p.steps, p.width, p.height,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
                     control_tensor_cpu=control_tensor_cpu,
                     prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
                 )
                 delegate.hook()
-            if (enable_bbox_control):
+            if enable_bbox_control:
                 delegate.prepare_custom_bbox(global_multiplier, bbox_control_states)
 
-            print(f"{method} hooked into {p.sampler_name} sampler. " +
+            print(f"{method.value} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
                   f"Tile batches: {len(delegate.batched_bboxes)}, " +
                   f"Batch size:", tile_batch_size)
