@@ -6,6 +6,7 @@ const DEFAULT_H = 0.2;
 const DEFAULT_W = 0.2;
 
 
+// ref: https://html-color.codes/
 const COLOR_MAP = [
     ['#ff0000', 'rgba(255, 0, 0, 0.3)'],          // red
     ['#ff9900', 'rgba(255, 153, 0, 0.3)'],        // orange
@@ -56,27 +57,24 @@ function onBoxEnableClick(is_t2i, idx, enable) {
     }
     canvas = ref_div.querySelector('img');
     if (!canvas) { return false; }
+
     if (enable) {
         // Check if the bounding box already exists
         if (!bboxes[idx]) {
             // Initialize bounding box
-            const x = DEFAULT_X;
-            const y = DEFAULT_Y;
-            const w = DEFAULT_W;
-            const h = DEFAULT_H;
-            const bbox = [x, y, w, h];
+            const bbox = [DEFAULT_X, DEFAULT_Y, DEFAULT_W, DEFAULT_H];
             const colorMap = COLOR_MAP[idx % COLOR_MAP.length];
             const div = document.createElement('div');
             div.id = 'MD-bbox-' + (is_t2i ? 't2i-' : 'i2i-') + idx;
-            div.style.left = '0px';
-            div.style.top = '0px';
-            div.style.width = '0px';
-            div.style.height = '0px';
-            div.style.position = 'absolute';
-            div.style.border = '2px solid ' + colorMap[0];
+            div.style.left       = '0px';
+            div.style.top        = '0px';
+            div.style.width      = '0px';
+            div.style.height     = '0px';
+            div.style.position   = 'absolute';
+            div.style.border     = '2px solid ' + colorMap[0];
             div.style.background = colorMap[1];
-            div.style.zIndex = '900';
-            div.style.display = 'none';
+            div.style.zIndex     = '900';
+            div.style.display    = 'none';
             div.addEventListener('mousedown', function (e) {
                 if (e.button === 0) {
                     onBoxMouseDown(e, is_t2i, idx);
@@ -105,16 +103,17 @@ function onBoxEnableClick(is_t2i, idx, enable) {
 function displayBox(canvas, vpScale, div, x, y, w, h) {
     // check null input
     if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
+
     // client: canvas widget display size
     // natural: content image real size
-    let canvasCenterX = canvas.clientWidth / 2;
+    let canvasCenterX = canvas.clientWidth  / 2;
     let canvasCenterY = canvas.clientHeight / 2;
-    let scaledX = canvas.naturalWidth * vpScale;
+    let scaledX = canvas.naturalWidth  * vpScale;
     let scaledY = canvas.naturalHeight * vpScale;
-    let viewRectLeft = canvasCenterX - scaledX / 2;
+    let viewRectLeft  = canvasCenterX - scaledX / 2;
     let viewRectRight = canvasCenterX + scaledX / 2;
-    let viewRectTop = canvasCenterY - scaledY / 2;
-    let viewRectDown = canvasCenterY + scaledY / 2;
+    let viewRectTop   = canvasCenterY - scaledY / 2;
+    let viewRectDown  = canvasCenterY + scaledY / 2;
 
     let xDiv = viewRectLeft + scaledX * x;
     let yDiv = viewRectTop + scaledY * y;
@@ -122,10 +121,10 @@ function displayBox(canvas, vpScale, div, x, y, w, h) {
     let hDiv = Math.min(scaledY * h, viewRectDown - yDiv);
 
     // update <div> when not equal
-    div.style.left = xDiv + 'px';
-    div.style.top = yDiv + 'px';
-    div.style.width = wDiv + 'px';
-    div.style.height = hDiv + 'px';
+    div.style.left    = xDiv + 'px';
+    div.style.top     = yDiv + 'px';
+    div.style.width   = wDiv + 'px';
+    div.style.height  = hDiv + 'px';
     div.style.display = 'block';
 }
 
@@ -151,6 +150,7 @@ function onBoxChange(is_t2i, idx, what, v) {
     }
     let [div, bbox] = bboxes[idx];
     if (div.style.display === 'none') { return v; }
+
     let [x, y, w, h] = bbox;
     // parse trigger
     let vpScale = null;
@@ -166,7 +166,7 @@ function onBoxChange(is_t2i, idx, what, v) {
         case 'w':
         case 'h':
             vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-            let scaledX = canvas.naturalWidth * vpScale;
+            let scaledX = canvas.naturalWidth  * vpScale;
             let scaledY = canvas.naturalHeight * vpScale;
             // Calculate maximum bbox size
             let upscalerFactor = 1.0;
@@ -224,7 +224,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
     }
 
     const horizontalPivot = resizeLeft ? bbox[0] + bbox[2] : bbox[0];
-    const verticalPivot = resizeTop ? bbox[1] + bbox[3] : bbox[1];
+    const verticalPivot   = resizeTop  ? bbox[1] + bbox[3] : bbox[1];
 
     // Canvas can be regarded as invariant during the drag operation
     // Calculate in advance to reduce overhead
@@ -238,15 +238,15 @@ function onBoxMouseDown(e, is_t2i, idx) {
     let scaledY = canvas.naturalHeight * vpScale;
 
     // Calculate the canvas center and view rectangle coordinates
-    let canvasCenterX = (vpOffset.left + window.scrollX) + canvas.clientWidth / 2;
-    let canvasCenterY = (vpOffset.top + window.scrollY) + canvas.clientHeight / 2;
-    let viewRectLeft = canvasCenterX - scaledX / 2 - window.scrollX;
+    let canvasCenterX = (vpOffset.left + window.scrollX) + canvas.clientWidth  / 2;
+    let canvasCenterY = (vpOffset.top  + window.scrollY) + canvas.clientHeight / 2;
+    let viewRectLeft  = canvasCenterX - scaledX / 2 - window.scrollX;
     let viewRectRight = canvasCenterX + scaledX / 2 - window.scrollX;
-    let viewRectTop = canvasCenterY - scaledY / 2 - window.scrollY;
-    let viewRectDown = canvasCenterY + scaledY / 2 - window.scrollY;
+    let viewRectTop   = canvasCenterY - scaledY / 2 - window.scrollY;
+    let viewRectDown  = canvasCenterY + scaledY / 2 - window.scrollY;
 
     mouseX = Math.min(Math.max(mouseX, viewRectLeft), viewRectRight);
-    mouseY = Math.min(Math.max(mouseY, viewRectTop), viewRectDown);
+    mouseY = Math.min(Math.max(mouseY, viewRectTop),  viewRectDown);
 
     // Calculate maximum bbox size
     let upscalerFactor = 1.0;
@@ -264,7 +264,6 @@ function onBoxMouseDown(e, is_t2i, idx) {
 
     // Move or resize the bounding box on mousemove
     function onMouseMove(e) {
-
         // Prevent selecting anything irrelevant
         e.preventDefault();
 
@@ -274,7 +273,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
 
         // clamp the mouse position to the view rectangle
         newMouseX = Math.min(Math.max(newMouseX, viewRectLeft), viewRectRight);
-        newMouseY = Math.min(Math.max(newMouseY, viewRectTop), viewRectDown);
+        newMouseY = Math.min(Math.max(newMouseY, viewRectTop),  viewRectDown);
 
         // Calculate the mouse movement delta
         let dx = (newMouseX - mouseX) / scaledX;
@@ -318,9 +317,8 @@ function onBoxMouseDown(e, is_t2i, idx) {
                     }
                 }
                 // Clamp the w to the maximum size
-                if (w > maxW) {
-                    w = maxW;
-                }
+                w = Math.min(w, maxW);
+
                 // Clamp the bounding box to the image
                 if (x < 0) {
                     w = w + x;
@@ -348,9 +346,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
                         h = h + dy;
                     }
                 }
-                if (h > maxH) {
-                    h = maxH;
-                }
+                h = Math.min(h, maxH);
                 if (y < 0) {
                     h = h + y;
                     y = 0;
@@ -360,6 +356,7 @@ function onBoxMouseDown(e, is_t2i, idx) {
             }
         }
         let old_bbox = bboxes[idx][1];
+
         // If all the values are the same, just return
         if (old_bbox[0] === x && old_bbox[1] === y && old_bbox[2] === w && old_bbox[3] === h) return;
         // else update the bbox
@@ -376,26 +373,27 @@ function onBoxMouseDown(e, is_t2i, idx) {
     // Remove the mousemove and mouseup event listeners
     function onMouseUp() {
         document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
+        document.removeEventListener('mouseup',   onMouseUp);
     }
 
     // Add the event listeners
     document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('mouseup',   onMouseUp);
 }
 
 function updateCursorStyle(e, is_t2i, idx) {
     // This function changes the cursor style when hovering over the bounding box
     let bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
     if (!bboxes[idx]) return;
+
     let [div, _] = bboxes[idx];
     let boxRect = div.getBoundingClientRect();
     let mouseX = e.clientX;
     let mouseY = e.clientY;
 
-    let resizeLeft = mouseX >= boxRect.left && mouseX <= boxRect.left + RESIZE_BORDER;
-    let resizeRight = mouseX >= boxRect.right - RESIZE_BORDER && mouseX <= boxRect.right;
-    let resizeTop = mouseY >= boxRect.top && mouseY <= boxRect.top + RESIZE_BORDER;
+    let resizeLeft   = mouseX >= boxRect.left && mouseX <= boxRect.left + RESIZE_BORDER;
+    let resizeRight  = mouseX >= boxRect.right - RESIZE_BORDER && mouseX <= boxRect.right;
+    let resizeTop    = mouseY >= boxRect.top && mouseY <= boxRect.top + RESIZE_BORDER;
     let resizeBottom = mouseY >= boxRect.bottom - RESIZE_BORDER && mouseY <= boxRect.bottom;
 
     if ((resizeLeft && resizeTop) || (resizeRight && resizeBottom)) {
@@ -423,6 +421,7 @@ function updateTabBoxes(is_t2i) {
         canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
     }
     if (!canvas) return;
+
     for (let idx = 0; idx < bboxes.length; idx++) {
         if (!bboxes[idx]) continue;
         let [div, bbox] = bboxes[idx];
@@ -445,15 +444,17 @@ function onCreateT2IRefClick(overwrite) {
     let width, height;
     if (overwrite) {
       const overwriteInputs = gradioApp().querySelectorAll('#MD-overwrite-width-t2i input, #MD-overwrite-height-t2i input');
-      width = parseInt(overwriteInputs[0].value);
+      width  = parseInt(overwriteInputs[0].value);
       height = parseInt(overwriteInputs[2].value);
     } else {
       const sizeInputs = gradioApp().querySelectorAll('#txt2img_width input, #txt2img_height input');
-      width = parseInt(sizeInputs[0].value);
+      width  = parseInt(sizeInputs[0].value);
       height = parseInt(sizeInputs[2].value);
     }
-    if (isNaN(width)) width = 512;
+
+    if (isNaN(width))  width  = 512;
     if (isNaN(height)) height = 512;
+
     // Concat it to string to bypass the gradio bug
     // 向黑恶势力低头
     return width.toString() + 'x' + height.toString();

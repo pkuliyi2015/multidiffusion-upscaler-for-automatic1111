@@ -1,10 +1,9 @@
-'''
-   Export all methods
-'''
+import math
+
+from methods.abstractdiffusion import TiledDiffusion
 from methods.multidiffusion import MultiDiffusion
 from methods.mixtureofdiffusers import MixtureOfDiffusers
-from methods.abstractdiffusion import TiledDiffusion
-import math
+
 
 def splitable(w, h, tile_w, tile_h, overlap):
     w, h = w//8, h//8
