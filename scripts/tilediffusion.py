@@ -209,10 +209,13 @@ class Script(scripts.Script):
             control_tensor_cpu: bool, enable_bbox_control: bool, global_multiplier: float, 
             *bbox_control_states
         ):
-        
-        MixtureOfDiffusers.unhook()
-        if not enabled: return
 
+        if hasattr(sd_samplers, "md_org_create_sampler"):
+            sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
+            del sd_samplers.md_org_create_sampler
+            MixtureOfDiffusers.unhook()
+
+        if not enabled: return
         method: Method = Method(method)
 
         ''' upscale '''
@@ -274,15 +277,12 @@ class Script(scripts.Script):
             pass
 
         ''' sampler hijack '''
-        # hack the create_sampler function to get the created sampler
-        old_create_sampler = sd_samplers.create_sampler
-
+        # custom sampler
         def create_sampler(name, model):
             # create the sampler with the original function
-            sampler = old_create_sampler(name, model)
+            sampler = sd_samplers.md_org_create_sampler(name, model)
             # unhook the create_sampler function
-            sd_samplers.create_sampler = old_create_sampler
-            if   method == Method.MULTI_DIFF:
+            if  method == Method.MULTI_DIFF:
                 delegate = MultiDiffusion(
                     sampler, p.sampler_name, 
                     p.batch_size, p.steps, p.width, p.height,
@@ -310,4 +310,8 @@ class Script(scripts.Script):
                   f"Batch size:", tile_batch_size)
             return sampler
         
+        # hack the create_sampler function to get the created sampler
+
+        if not hasattr(sd_samplers, "md_org_create_sampler"):
+            setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
         sd_samplers.create_sampler = create_sampler

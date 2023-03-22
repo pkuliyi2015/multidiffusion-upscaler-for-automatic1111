@@ -1,5 +1,5 @@
 const BBOX_MAX_NUM = 16;
-const BBOX_MAX_SIZE = 1280;
+const BBOX_WARNING_SIZE = 1280;
 const DEFAULT_X = 0.4;
 const DEFAULT_Y = 0.4;
 const DEFAULT_H = 0.2;
@@ -75,6 +75,22 @@ function onBoxEnableClick(is_t2i, idx, enable) {
             div.style.background = colorMap[1];
             div.style.zIndex     = '900';
             div.style.display    = 'none';
+            // A text tip to warn the user if bbox is too large
+            const tip = document.createElement('span');
+            tip.id = 'MD-tip-' + (is_t2i ? 't2i-' : 'i2i-') + idx;
+            tip.style.position = 'absolute';
+            tip.style.fontSize = '12px';
+            tip.style.color = colorMap[0];
+            tip.style.fontWeight = 'bold';
+            tip.style.zIndex = '901';
+            tip.style.display = 'none';
+            tip.style.transform = 'translate(-50%, -50%)';
+            tip.style.left = '50%';
+            tip.style.top = '50%';
+            tip.innerHTML = 'Warning: Region very large!<br>Take care of VRAM usage!';
+            tip.style.textAlign  = 'center';
+            div.appendChild(tip);
+
             div.addEventListener('mousedown', function (e) {
                 if (e.button === 0) {
                     onBoxMouseDown(e, is_t2i, idx);
@@ -90,7 +106,7 @@ function onBoxEnableClick(is_t2i, idx, enable) {
         let [div, bbox] = bboxes[idx];
         let [x, y, w, h] = bbox;
         let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-        displayBox(canvas, vpScale, div, x, y, w, h);
+        displayBox(canvas, is_t2i, vpScale, div, x, y, w, h);
         return true;
     } else {
         if (!bboxes[idx]) { return false; }
@@ -100,7 +116,7 @@ function onBoxEnableClick(is_t2i, idx, enable) {
     return false;
 }
 
-function displayBox(canvas, vpScale, div, x, y, w, h) {
+function displayBox(canvas, is_t2i, vpScale, div, x, y, w, h) {
     // check null input
     if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
 
@@ -119,6 +135,20 @@ function displayBox(canvas, vpScale, div, x, y, w, h) {
     let yDiv = viewRectTop + scaledY * y;
     let wDiv = Math.min(scaledX * w, viewRectRight - xDiv);
     let hDiv = Math.min(scaledY * h, viewRectDown - yDiv);
+
+    // Calculate warning bbox size
+    let upscalerFactor = 1.0;
+    if (!is_t2i){
+        upscalerFactor = getUpscalerFactor();
+    }
+    let maxSize = BBOX_WARNING_SIZE / upscalerFactor * vpScale;
+    let maxW = maxSize / scaledX;
+    let maxH = maxSize / scaledY;
+    if (w > maxW || h > maxH) {
+        div.querySelector('span').style.display = 'block';
+    } else {
+        div.querySelector('span').style.display = 'none';
+    }
 
     // update <div> when not equal
     div.style.left    = xDiv + 'px';
@@ -153,7 +183,6 @@ function onBoxChange(is_t2i, idx, what, v) {
 
     let [x, y, w, h] = bbox;
     // parse trigger
-    let vpScale = null;
     switch (what) {
         case 'x': 
             x = v; 
@@ -164,31 +193,16 @@ function onBoxChange(is_t2i, idx, what, v) {
             bboxes[idx][1][1] = y;
             break;
         case 'w':
+            w = v;
+            bboxes[idx][1][2] = w;
+            break;
         case 'h':
-            vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-            let scaledX = canvas.naturalWidth  * vpScale;
-            let scaledY = canvas.naturalHeight * vpScale;
-            // Calculate maximum bbox size
-            let upscalerFactor = 1.0;
-            if (!is_t2i){
-                upscalerFactor = getUpscalerFactor();
-            }
-            let maxSize = BBOX_MAX_SIZE / upscalerFactor * vpScale;
-            let maxW = maxSize / scaledX;
-            let maxH = maxSize / scaledY;
-            if (what === 'w') {
-                w = Math.min(v, maxW);
-                bboxes[idx][1][2] = w;
-            } else {
-                h = Math.min(v, maxH);
-                bboxes[idx][1][3] = h;
-            }
+            h = v;
+            bboxes[idx][1][3] = h;
             break;
     }
-    if (!vpScale) {
-        vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-    }
-    displayBox(canvas, vpScale, div, x, y, w, h);
+    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+    displayBox(canvas, is_t2i, vpScale, div, x, y, w, h);
     return v
 }
 
@@ -247,15 +261,6 @@ function onBoxMouseDown(e, is_t2i, idx) {
 
     mouseX = Math.min(Math.max(mouseX, viewRectLeft), viewRectRight);
     mouseY = Math.min(Math.max(mouseY, viewRectTop),  viewRectDown);
-
-    // Calculate maximum bbox size
-    let upscalerFactor = 1.0;
-    if (!is_t2i){
-        upscalerFactor = getUpscalerFactor();
-    }
-    let maxSize = BBOX_MAX_SIZE / upscalerFactor * vpScale;
-    let maxW = maxSize / scaledX;
-    let maxH = maxSize / scaledY;
 
     // The querySelector is not very efficient, so we query it once and reuse it
     const sliderIds = ['x', 'y', 'w', 'h'];
@@ -316,8 +321,6 @@ function onBoxMouseDown(e, is_t2i, idx) {
                         w = w + dx;
                     }
                 }
-                // Clamp the w to the maximum size
-                w = Math.min(w, maxW);
 
                 // Clamp the bounding box to the image
                 if (x < 0) {
@@ -346,7 +349,6 @@ function onBoxMouseDown(e, is_t2i, idx) {
                         h = h + dy;
                     }
                 }
-                h = Math.min(h, maxH);
                 if (y < 0) {
                     h = h + y;
                     y = 0;
@@ -421,14 +423,13 @@ function updateTabBoxes(is_t2i) {
         canvas = gradioApp().querySelector('#MD-bbox-ref-i2i img');
     }
     if (!canvas) return;
-
+    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
     for (let idx = 0; idx < bboxes.length; idx++) {
         if (!bboxes[idx]) continue;
         let [div, bbox] = bboxes[idx];
         if (div.style.display === 'none') continue;
         let [x, y, w, h] = bbox;
-        let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-        displayBox(canvas,vpScale, div, x, y, w, h);
+        displayBox(canvas, is_t2i, vpScale, div, x, y, w, h);
     }
 }
 
