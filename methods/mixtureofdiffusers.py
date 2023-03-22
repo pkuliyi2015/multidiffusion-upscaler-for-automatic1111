@@ -23,19 +23,20 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     def _gaussian_weights(self, tile_w=None, tile_h=None) -> Tensor:
         '''
-        Gaussian weights to smooth the noise of each tile.
+        Copy from the original implementation of Mixture of Diffusers
+        https://github.com/albarji/mixture-of-diffusers/blob/master/mixdiff/tiling.py
+        This generates gaussian weights to smooth the noise of each tile.
         This is critical for this method to work.
         '''
         if tile_w is None: tile_w = self.tile_w
         if tile_h is None: tile_h = self.tile_h
         
-        # FIXME: document this formula, why & how?
         f = lambda x, midpoint, var=0.01: exp(-(x-midpoint)*(x-midpoint) / (tile_w*tile_w) / (2*var)) / sqrt(2*pi*var)
         x_probs = [f(x, (tile_w - 1) / 2) for x in range(tile_w)]   # -1 because index goes from 0 to latent_width - 1
         y_probs = [f(y,  tile_h      / 2) for y in range(tile_h)]
 
         w = np.outer(y_probs, x_probs)
-        return torch.from_numpy(w).to(device=self.weights.device, dtype=self.weights.dtype)
+        return torch.from_numpy(w).to(devices.device, dtype=torch.float32)
 
     def get_global_weights(self):
         if not hasattr(self, 'per_tile_weights'):
@@ -45,16 +46,17 @@ class MixtureOfDiffusers(TiledDiffusion):
     def init(self, x_in):
         super().init(x_in)
 
-        if not hasattr(self, 'rescaling_factor'):
-            for i in range(len(self.custom_weights)):
-                self.custom_weights[i] = self.custom_weights[i].to(device=x_in.device, dtype=x_in.dtype)
+        if not hasattr(self, 'rescale_factor'):
+            # The original gaussian weights can be extremely small, so we rescale them for numerical stability
             self.rescale_factor = 1 / self.weights
-
+            # Meanwhile, we rescale the custom weights in advance to save time of slicing
+            for bbox_id, (bbox, _, _, _) in enumerate(self.custom_bboxes):
+                self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
+                self.custom_weights[bbox_id] *= self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+            
     def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
         super().prepare_custom_bbox(global_multiplier, bbox_control_states)
-
         for bbox, _, _, m in self.custom_bboxes:
-            # multiply the gaussian weights in advance to save time
             gaussian_weights = self._gaussian_weights(bbox[2] - bbox[0], bbox[3] - bbox[1]) * m
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += gaussian_weights
             self.custom_weights.append(gaussian_weights.unsqueeze(0).unsqueeze(0))
@@ -134,6 +136,8 @@ class MixtureOfDiffusers(TiledDiffusion):
                 x_tile_out = shared.sd_model.md_org_apply_model(x_tile, t_tile, c_tile)  # here the x is the noise
 
                 for i, bbox in enumerate(bboxes):
+                    # This weights can be calcluated in advance, but will cost a lot of vram 
+                    # when you have many tiles. So we calculate it here.
                     w = self.per_tile_weights * self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
                     self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :] * w
 
@@ -148,7 +152,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                 # unpack sigma_in, x_in, image_cond
                 x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
                 x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox, cond, uncond)
-                x_tile_out *= self.custom_weights[bbox_id] * self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                x_tile_out *= self.custom_weights[bbox_id]
                 self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
                 self.update_pbar()
 

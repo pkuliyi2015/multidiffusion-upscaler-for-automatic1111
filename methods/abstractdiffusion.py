@@ -243,7 +243,7 @@ class TiledDiffusion(ABC):
         b = a + batch_size
         self.a[bbox_id] += batch_size
         # Judge the progress of batched processing cond and uncond for each bbox.
-        # IMPORTANT: The end condition is a rather than b.
+        # NOTE: The end condition is a rather than b.
         if a < tensor.shape[0]:
             if not self.is_edit_model:
                 c_crossattn = [tensor[a:b]]
