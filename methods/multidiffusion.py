@@ -56,6 +56,11 @@ class MultiDiffusion(TiledDiffusion):
 
     @torch.no_grad()
     def kdiff_repeat(self, x_in, sigma_in, cond):
+        '''
+        This function will replace the original forward function in ldm/diffusionmodels/kdiffusion.py
+        So its signature should be the same as the original function, 
+        especially the "cond" should be with exactly the same name
+        '''
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is:
             #   = batch_size * (num_AND + 1)   if not an edit model
@@ -72,18 +77,23 @@ class MultiDiffusion(TiledDiffusion):
         return self.compute_x_tile(x_in, repeat_func, custom_func)
 
     @torch.no_grad()
-    def ddim_repeat(self, x_in, cond_in, ts, uncond_in, *args, **kwargs):
+    def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
+        '''
+        This function will replace the original p_sample_ddim function in ldm/diffusionmodels/ddim.py
+        So its signature should be the same as the original function,
+        Particularly, the unconditional_conditioning should be with exactly the same name
+        '''
         def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
                 ts_tile = ts.repeat(len(bboxes))
                 cond_tile = self.repeat_cond_dict(cond_in, bboxes)
-                ucond_tile = self.repeat_cond_dict(uncond_in, bboxes)
+                ucond_tile = self.repeat_cond_dict(unconditional_conditioning, bboxes)
             else:
                 ts_tile = ts.repeat(len(bboxes))
                 cond_shape = cond_in.shape
                 cond_tile = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
-                ucond_shape = uncond_in.shape
-                ucond_tile = uncond_in.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
+                ucond_shape = unconditional_conditioning.shape
+                ucond_tile = unconditional_conditioning.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
             x_tile_out, x_pred = self.sampler_func(
                 x_tile, cond_tile, 
                 ts_tile, 
