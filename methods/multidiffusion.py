@@ -1,5 +1,6 @@
 import torch
 
+from modules import devices, extra_networks
 from modules.shared import state
 
 from methods.abstractdiffusion import TiledDiffusion
@@ -11,12 +12,12 @@ class MultiDiffusion(TiledDiffusion):
         Hijack the sampler for latent image tiling and fusion
     """
 
-    def __init__(self, sampler, sampler_name:str, *args, **kwargs):
-        super().__init__("MultiDiffusion", sampler, sampler_name, *args, **kwargs)
+    def __init__(self, sampler, p, *args, **kwargs):
+        super().__init__("MultiDiffusion", sampler, p, *args, **kwargs)
 
         # record the steps for progress bar
         # hook the sampler
-        assert sampler_name != 'UniPC', \
+        assert p.sampler_name != 'UniPC', \
             'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
@@ -48,10 +49,10 @@ class MultiDiffusion(TiledDiffusion):
     def get_global_weights(self):
         return 1.0
 
-    def init_custom_bbox(self, global_multiplier, bbox_control_states, *args, **kwargs):
-        super().init_custom_bbox(global_multiplier, bbox_control_states, *args, **kwargs)
+    def init_custom_bbox(self, global_multiplier, bbox_control_states, prompts, neg_prompts):
+        super().init_custom_bbox(global_multiplier, bbox_control_states, prompts, neg_prompts)
 
-        for bbox, _, _, m in self.custom_bboxes:
+        for bbox, _, _, m, _ in self.custom_bboxes:
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
 
     @torch.no_grad()
@@ -160,8 +161,11 @@ class MultiDiffusion(TiledDiffusion):
                 if not self.is_kdiff:
                     self.x_buffer_pred *= self.global_multiplier
 
-            for index, (bbox, cond, uncond, multiplier) in enumerate(self.custom_bboxes):
+            for index, (bbox, cond, uncond, multiplier, extra_network_data) in enumerate(self.custom_bboxes):
                 x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                if not self.p.disable_extra_networks:
+                    with devices.autocast():
+                        extra_networks.activate(self.p, extra_network_data)
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
@@ -174,6 +178,9 @@ class MultiDiffusion(TiledDiffusion):
                     x_tile_pred *= multiplier
                     self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
                     self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred
+                if not self.p.disable_extra_networks:
+                    with devices.autocast():
+                        extra_networks.deactivate(self.p, extra_network_data)
                 # update progress bar
                 self.update_pbar()
 

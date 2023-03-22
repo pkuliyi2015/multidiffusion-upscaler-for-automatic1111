@@ -300,16 +300,14 @@ class Script(scripts.Script):
             # unhook the create_sampler function
             if  method == Method.MULTI_DIFF:
                 delegate = MultiDiffusion(
-                    sampler, p.sampler_name, 
-                    p.batch_size, p.steps, p.width, p.height,
+                    sampler, p,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
                     control_tensor_cpu=control_tensor_cpu
                 )
             elif method == Method.MIX_DIFF:
                 delegate = MixtureOfDiffusers(
-                    sampler, p.sampler_name, 
-                    p.batch_size, p.steps, p.width, p.height,
+                    sampler, p,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
                     control_tensor_cpu=control_tensor_cpu

@@ -5,17 +5,16 @@ from typing import List
 import torch
 from tqdm import tqdm
 
-from modules import devices, shared, prompt_parser
+from modules import devices, shared, prompt_parser, extra_networks
 from modules.shared import state
-
+from modules.processing import StableDiffusionProcessing
 
 class TiledDiffusion(ABC):
 
-    def __init__(self, method:str, sampler, sampler_name:str, batch_size:int, steps:int,
-                 w:int, h:int, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
+    def __init__(self, method:str, sampler, p:StableDiffusionProcessing, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
                  controlnet_script=None, control_tensor_cpu=False):
-
-        self.is_kdiff = sampler_name not in ['DDIM', 'PLMS', 'UniPC']
+        self.p = p
+        self.is_kdiff = p.sampler_name not in ['DDIM', 'PLMS', 'UniPC']
         if self.is_kdiff:
             # The sampler is CFGDenoiser
             self.sampler = sampler.model_wrap_cfg
@@ -23,11 +22,11 @@ class TiledDiffusion(ABC):
             self.sampler = sampler
 
         self.method = method
-        self.batch_size = batch_size
-        self.steps = steps
+        self.batch_size = p.batch_size
+        self.steps = p.steps
 
         # initialize the tile bboxes and weights
-        self.w, self.h = w//8, h//8
+        self.w, self.h = p.width//8, p.height//8
         if tile_w > self.w: tile_w = self.w
         if tile_h > self.h: tile_h = self.h
         min_tile_size = min(tile_w, tile_h)
@@ -96,7 +95,7 @@ class TiledDiffusion(ABC):
         else:
             if self.step_count == state.sampling_step:
                 self.inner_loop_count += 1
-                if self.inner_loop_count < self.total_bboxes:
+                if self.inner_loop_count < (self.total_bboxes):
                     self.pbar.update()
             else:
                 self.step_count = state.sampling_step
@@ -142,12 +141,14 @@ class TiledDiffusion(ABC):
             w = min(1 - x, w)
             h = min(1 - y, h)
             bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
-            c_prompt = [prompt + ', ' + p for prompt in prompts]
-            if neg != '': c_negative_prompt = [prompt + ', ' + neg for prompt in neg_prompts]
+            c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + p, self.p.styles) for prompt in prompts]
+            c_prompt, extra_network_data = extra_networks.parse_prompts(c_prompt)
+            if neg != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + neg) for prompt in neg_prompts]
             else:         c_negative_prompt = neg_prompts
             c_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, self.steps)
             c_negative_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, self.steps)
-            self.custom_bboxes.append([bbox, c_prompt, c_negative_prompt, m])
+            
+            self.custom_bboxes.append([bbox, c_prompt, c_negative_prompt, m, extra_network_data])
 
         if len(self.custom_bboxes) == 0: return
         self.all_pos_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, self.steps)
@@ -326,7 +327,7 @@ class TiledDiffusion(ABC):
 
             if len(self.custom_bboxes) > 0:
                 custom_control_tile_list = []
-                for bbox, _, _, _ in self.custom_bboxes:
+                for bbox, _, _, _, _ in self.custom_bboxes:
                     if len(control_tensor.shape) == 3:
                         control_tile = control_tensor[:, bbox[1] * 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
                     else:

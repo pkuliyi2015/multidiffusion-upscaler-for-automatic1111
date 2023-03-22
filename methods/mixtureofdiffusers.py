@@ -3,7 +3,7 @@ from torch import Tensor
 import numpy as np
 from numpy import pi, exp, sqrt
 
-from modules import devices, shared
+from modules import devices, shared, extra_networks
 from modules.shared import state
 from modules.script_callbacks import before_image_saved_callback, remove_callbacks_for_function
 
@@ -50,13 +50,13 @@ class MixtureOfDiffusers(TiledDiffusion):
             # The original gaussian weights can be extremely small, so we rescale them for numerical stability
             self.rescale_factor = 1 / self.weights
             # Meanwhile, we rescale the custom weights in advance to save time of slicing
-            for bbox_id, (bbox, _, _, _) in enumerate(self.custom_bboxes):
+            for bbox_id, (bbox, _, _, _, _) in enumerate(self.custom_bboxes):
                 self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
                 self.custom_weights[bbox_id] *= self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
             
-    def init_custom_bbox(self, global_multiplier, bbox_control_states, *args, **kwargs):
-        super().init_custom_bbox(global_multiplier, bbox_control_states, *args, **kwargs)
-        for bbox, _, _, m in self.custom_bboxes:
+    def init_custom_bbox(self, global_multiplier, bbox_control_states, prompts, neg_prompts):
+        super().init_custom_bbox(global_multiplier, bbox_control_states, prompts, neg_prompts)
+        for bbox, _, _, m, _ in self.custom_bboxes:
             gaussian_weights = self._gaussian_weights(bbox[2] - bbox[0], bbox[3] - bbox[1]) * m
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += gaussian_weights
             self.custom_weights.append(gaussian_weights.unsqueeze(0).unsqueeze(0))
@@ -64,7 +64,8 @@ class MixtureOfDiffusers(TiledDiffusion):
     def hook(self):
         if not hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.md_org_apply_model = shared.sd_model.apply_model
-            shared.sd_model.apply_model = self.apply_model
+        
+        shared.sd_model.apply_model = self.apply_model
 
         def remove_hook(_):
             MixtureOfDiffusers.unhook()
@@ -148,12 +149,18 @@ class MixtureOfDiffusers(TiledDiffusion):
             if self.global_multiplier > 0 and abs(self.global_multiplier - 1.0) > 1e-6:
                 self.x_buffer *= self.global_multiplier
             
-            for bbox_id, (bbox, cond, uncond, _) in enumerate(self.custom_bboxes):
+            for bbox_id, (bbox, cond, uncond, _, extra_network_data) in enumerate(self.custom_bboxes):
                 # unpack sigma_in, x_in, image_cond
+                if not self.p.disable_extra_networks:
+                    with devices.autocast():
+                        extra_networks.activate(self.p, extra_network_data)
                 x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
                 x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox, cond, uncond)
                 x_tile_out *= self.custom_weights[bbox_id]
                 self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
                 self.update_pbar()
+                if not self.p.disable_extra_networks:
+                    with devices.autocast():
+                        extra_networks.deactivate(self.p, extra_network_data)
 
         return self.x_buffer
