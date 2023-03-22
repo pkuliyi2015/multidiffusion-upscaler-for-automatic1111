@@ -7,7 +7,11 @@ Introducing revolutionary **ultra-large image generation** via Tiled Diffusion &
 - My optimized reimplementation of two state-of-the-art training-free compositional methods: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
 - My original Tiled VAE algorithm, which is seam-free and **extremely powerful** in VRAM saving.
 
-## Impressive Update on 2023.3.20
+
+## Important Update on 2023.3.22
+- **Fixed Logic erros in region prompt control**. Please update as previous versions cannot correctly deal with more than 1 custom region, it wrongly uses positive prompt as the negative condition so cannot draw meaningful objects.
+
+## Important Update on 2023.3.20
 - **Unprecedented regional prompt control with my super-convenient new UI**![region](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Region.png?raw=true)
 - **Add a new SOTA method: Mixture of Diffusers. Less seams & better quality!**
 - Will update this README later. **If you find my extension powerful and are willing to help me improve this README, please feel free to PR!** 
