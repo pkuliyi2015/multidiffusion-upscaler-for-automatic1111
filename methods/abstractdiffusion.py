@@ -143,7 +143,7 @@ class TiledDiffusion(ABC):
             bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
             c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + p, self.p.styles) for prompt in prompts]
             c_prompt, extra_network_data = extra_networks.parse_prompts(c_prompt)
-            if neg != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + neg) for prompt in neg_prompts]
+            if neg != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + neg, self.p.styles) for prompt in neg_prompts]
             else:         c_negative_prompt = neg_prompts
             c_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, self.steps)
             c_negative_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, self.steps)
