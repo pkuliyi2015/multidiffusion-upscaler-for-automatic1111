@@ -13,23 +13,18 @@ class TiledDiffusion(ABC):
 
     def __init__(self, method:str, sampler, sampler_name:str, batch_size:int, steps:int,
                  w:int, h:int, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
-                 controlnet_script=None, control_tensor_cpu=False, 
-                 prompts:List[str]=[''], neg_prompts:List[str]=['']):
+                 controlnet_script=None, control_tensor_cpu=False):
 
         self.is_kdiff = sampler_name not in ['DDIM', 'PLMS', 'UniPC']
         if self.is_kdiff:
             # The sampler is CFGDenoiser
             self.sampler = sampler.model_wrap_cfg
-            self.all_pos_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, steps)
-            self.all_neg_cond = prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompts, steps)
         else:
             self.sampler = sampler
 
         self.method = method
         self.batch_size = batch_size
         self.steps = steps
-        self.prompts = prompts
-        self.neg_prompts = neg_prompts
 
         # initialize the tile bboxes and weights
         self.w, self.h = w//8, h//8
@@ -135,28 +130,30 @@ class TiledDiffusion(ABC):
     def get_global_weights(self):
         pass
 
-    def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
+    def init_custom_bbox(self, global_multiplier, bbox_control_states,  prompts:List[str], neg_prompts:List[str]):
         '''
         Prepare custom bboxes for region prompt
         '''
         for i in range(0, len(bbox_control_states) - 8, 8):
             e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
-            if not e or m <= 0 or w <= 0 or h <= 0 or p == '': continue
-
+            if not e or m <= 0 or x>=1 or y>=1 or w <= 0 or h <= 0 or p == '': continue
             bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
-            c_prompt = [prompt + ', ' + p for prompt in self.prompts]
-            if neg != '': c_negative_prompt = [prompt + ', ' + neg for prompt in self.neg_prompts]
-            else:         c_negative_prompt = self.neg_prompts
+            c_prompt = [prompt + ', ' + p for prompt in prompts]
+            if neg != '': c_negative_prompt = [prompt + ', ' + neg for prompt in neg_prompts]
+            else:         c_negative_prompt = neg_prompts
             c_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, self.steps)
             c_negative_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, self.steps)
-            self.custom_bboxes.append((bbox, c_prompt, c_negative_prompt, m))
+            self.custom_bboxes.append([bbox, c_prompt, c_negative_prompt, m])
 
         if len(self.custom_bboxes) == 0: return
+        self.all_pos_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, self.steps)
+        self.all_neg_cond = prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompts, self.steps)
         self.global_multiplier = max(global_multiplier, 0.0)
         if self.global_multiplier >= 0 and abs(self.global_multiplier - 1.0) > 1e-5:
             self.weights *= self.global_multiplier
 
-    def prepare_custom_cond(self, org_cond, custom_cond, custom_uncond, bbox):
+
+    def reconstruct_custom_cond(self, org_cond, custom_cond, custom_uncond, bbox):
         image_conditioning = None
         if isinstance(org_cond, dict):
             image_cond = org_cond['c_concat'][0]
@@ -189,7 +186,7 @@ class TiledDiffusion(ABC):
             # When a new step starts for a bbox, we need to judge whether the tensor is batched.
             self.kdiff_step_bbox[bbox_id] = self.sampler.step
 
-            _, tensor, uncond, image_cond_in = self.prepare_custom_cond(original_cond, custom_cond, uncond, bbox)
+            _, tensor, uncond, image_cond_in = self.reconstruct_custom_cond(original_cond, custom_cond, uncond, bbox)
 
             if self.real_tensor.shape[1] == self.real_uncond.shape[1]:
                 # when the real tensor is with equal length, all information is contained in x_tile.
@@ -270,7 +267,7 @@ class TiledDiffusion(ABC):
                 })
     
     def ddim_custom_forward(self, x, cond_in, cond, uncond, bbox, ts, forward_func, *args, **kwargs):
-        conds_list, tensor, uncond, image_conditioning = self.prepare_custom_cond(cond_in, cond, uncond, bbox)
+        conds_list, tensor, uncond, image_conditioning = self.reconstruct_custom_cond(cond_in, cond, uncond, bbox)
         assert all([len(conds) == 1 for conds in conds_list]), \
             'composition via AND is not supported for DDIM/PLMS samplers'
 

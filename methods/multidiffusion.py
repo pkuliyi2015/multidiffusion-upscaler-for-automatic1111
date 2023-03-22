@@ -48,8 +48,8 @@ class MultiDiffusion(TiledDiffusion):
     def get_global_weights(self):
         return 1.0
 
-    def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
-        super().prepare_custom_bbox(global_multiplier, bbox_control_states)
+    def init_custom_bbox(self, global_multiplier, bbox_control_states, *args, **kwargs):
+        super().init_custom_bbox(global_multiplier, bbox_control_states, *args, **kwargs)
 
         for bbox, _, _, m in self.custom_bboxes:
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m

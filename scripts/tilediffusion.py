@@ -61,7 +61,7 @@ from modules.shared import opts
 from modules.ui import gr_show
 from modules.processing import StableDiffusionProcessing
 
-from methods import MultiDiffusion, MixtureOfDiffusers, splitable
+from methods import TiledDiffusion, MultiDiffusion, MixtureOfDiffusers, splitable
 
 
 BBOX_MAX_NUM = min(shared.cmd_opts.md_max_regions if hasattr(
@@ -216,7 +216,6 @@ class Script(scripts.Script):
             MixtureOfDiffusers.unhook()
 
         if not enabled: return
-        method: Method = Method(method)
 
         ''' upscale '''
         if hasattr(p, "init_images") and len(p.init_images) > 0:    # img2img
@@ -249,9 +248,26 @@ class Script(scripts.Script):
             print("[Tiled Diffusion] ignore due to image too small or tile size too large.")
             return
 
+        p.extra_generation_params["Tiled Diffusion method"] = method
         p.extra_generation_params["Tiled Diffusion tile width"] = tile_width
         p.extra_generation_params["Tiled Diffusion tile height"] = tile_height
         p.extra_generation_params["Tiled Diffusion overlap"] = overlap
+        p.extra_generation_params["Tiled Diffusion batch size"] = tile_batch_size
+
+        
+    def process_batch(self, p: StableDiffusionProcessing,
+            enabled: bool, method: str,
+            overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
+            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
+            upscaler_index: str, scale_factor: float,
+            control_tensor_cpu: bool, enable_bbox_control: bool, global_multiplier: float, 
+            *bbox_control_states, batch_number, prompts, seeds, subseeds):
+        '''
+        compatible with the webui batch processing
+        '''
+        if not enabled: return
+        method: Method = Method(method) 
+        n = batch_number
 
         ''' ControlNet hackin '''
         # try to hook into controlnet tensors
@@ -288,8 +304,7 @@ class Script(scripts.Script):
                     p.batch_size, p.steps, p.width, p.height,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu,
-                    prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
+                    control_tensor_cpu=control_tensor_cpu
                 )
             elif method == Method.MIX_DIFF:
                 delegate = MixtureOfDiffusers(
@@ -297,12 +312,14 @@ class Script(scripts.Script):
                     p.batch_size, p.steps, p.width, p.height,
                     tile_width, tile_height, overlap, tile_batch_size,
                     controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu,
-                    prompts=p.all_prompts, neg_prompts=p.all_negative_prompts
+                    control_tensor_cpu=control_tensor_cpu
                 )
                 delegate.hook()
+            else:
+                raise NotImplementedError(f"Method {method} not implemented.")
             if enable_bbox_control:
-                delegate.prepare_custom_bbox(global_multiplier, bbox_control_states)
+                neg_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
+                delegate.init_custom_bbox(global_multiplier, bbox_control_states, prompts, neg_prompts)
 
             print(f"{method.value} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
@@ -315,3 +332,4 @@ class Script(scripts.Script):
         if not hasattr(sd_samplers, "md_org_create_sampler"):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
         sd_samplers.create_sampler = create_sampler
+

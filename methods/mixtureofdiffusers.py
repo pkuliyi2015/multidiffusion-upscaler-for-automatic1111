@@ -54,8 +54,8 @@ class MixtureOfDiffusers(TiledDiffusion):
                 self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
                 self.custom_weights[bbox_id] *= self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
             
-    def prepare_custom_bbox(self, global_multiplier, bbox_control_states):
-        super().prepare_custom_bbox(global_multiplier, bbox_control_states)
+    def init_custom_bbox(self, global_multiplier, bbox_control_states, *args, **kwargs):
+        super().init_custom_bbox(global_multiplier, bbox_control_states, *args, **kwargs)
         for bbox, _, _, m in self.custom_bboxes:
             gaussian_weights = self._gaussian_weights(bbox[2] - bbox[0], bbox[3] - bbox[1]) * m
             self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += gaussian_weights
