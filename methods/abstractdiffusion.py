@@ -137,6 +137,10 @@ class TiledDiffusion(ABC):
         for i in range(0, len(bbox_control_states) - 8, 8):
             e, m, x, y, w, h, p, neg = bbox_control_states[i:i+8]
             if not e or m <= 0 or x>=1 or y>=1 or w <= 0 or h <= 0 or p == '': continue
+            x = max(0, x)
+            y = max(0, y)
+            w = min(1 - x, w)
+            h = min(1 - y, h)
             bbox = [int(x * self.w), int(y * self.h), int((x + w) * self.w), int((y + h) * self.h)]
             c_prompt = [prompt + ', ' + p for prompt in prompts]
             if neg != '': c_negative_prompt = [prompt + ', ' + neg for prompt in neg_prompts]
@@ -181,6 +185,8 @@ class TiledDiffusion(ABC):
             # Initialize global prompts just for estimate the behavior of kdiff
             _, self.real_tensor = prompt_parser.reconstruct_multicond_batch(self.all_pos_cond, self.sampler.step)
             self.real_uncond = prompt_parser.reconstruct_cond_batch(self.all_neg_cond, self.sampler.step)
+            # reset the progress for all bboxes
+            self.a = [0 for _ in range(len(self.custom_bboxes))]
 
         if self.kdiff_step_bbox[bbox_id] != self.sampler.step:
             # When a new step starts for a bbox, we need to judge whether the tensor is batched.
@@ -229,12 +235,11 @@ class TiledDiffusion(ABC):
             self.tensor[bbox_id] = tensor
             self.uncond[bbox_id] = uncond
             self.image_cond_in[bbox_id] = image_cond_in
-            self.a = [0 for _ in range(len(self.custom_bboxes))]
 
         # get current condition and uncondition
         tensor = self.tensor[bbox_id]
         uncond = self.uncond[bbox_id]
-        batch_size = self.batch_size*2 if shared.batch_cond_uncond else self.batch_size
+        batch_size = x_tile.shape[0]
         # get the start and end index of the current batch
         a = self.a[bbox_id]
         b = a + batch_size
