@@ -61,7 +61,7 @@ from modules.shared import opts
 from modules.ui import gr_show
 from modules.processing import StableDiffusionProcessing
 
-from methods import TiledDiffusion, MultiDiffusion, MixtureOfDiffusers, splitable
+from methods import MultiDiffusion, MixtureOfDiffusers, splitable, BlendMode
 
 
 BBOX_MAX_NUM = min(shared.cmd_opts.md_max_regions if hasattr(
@@ -73,6 +73,9 @@ class Method(Enum):
 
 
 class Script(scripts.Script):
+
+    def __init__(self):
+        self.delegate = None
 
     def title(self):
         return "Tiled Diffusion"
@@ -163,10 +166,17 @@ class Script(scripts.Script):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{i}')
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
+                                blend_mode = gr.Dropdown(label='Blend Mode', choices=['Mix', 'Feather'], value='Feather', 
+                                                         elem_id=f'MD-blend-{i}')
+                                feather_radius = gr.Slider(label='Multiplier', value=1, minimum=0, maximum=10, step=0.1, 
+                                                interactive=True, elem_id=f'MD-mt-{i}', visible=blend_mode.value == 'Feather')
+                                multiplier = gr.Slider(label='Radius', value=0.2, minimum=0, maximum=1, step=0.01, 
+                                              interactive=True, elem_id=f'MD-mt-{i}', visible=blend_mode.value == 'Mix')
                                 
-                                m = gr.Slider(label='Multiplier', value=1, minimum=0, maximum=10, step=0.1, 
-                                              interactive=True, elem_id=f'MD-mt-{i}')
-                            
+                                def on_blend_mode_change(x): 
+                                    return gr_show(x=='Mix'), gr_show(x=='Feather')
+                                blend_mode.change(fn=on_blend_mode_change, inputs=blend_mode, outputs=[feather_radius, multiplier])
+
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
                                               interactive=True, elem_id=f'MD-{tab}-{i}-x')
@@ -182,12 +192,12 @@ class Script(scripts.Script):
                                 w.change(fn=None, inputs=w, outputs=w, _js=f'(v) => onBoxChange({is_t2i}, {i}, "w", v)')
                                 h.change(fn=None, inputs=h, outputs=h, _js=f'(v) => onBoxChange({is_t2i}, {i}, "h", v)')
 
-                            p   = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', 
+                            prompt   = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', 
                                           max_lines=2, elem_id=f'MD-p-{i}')
-                            neg = gr.Text(show_label=False, placeholder=f'Negative Prompt, will also be appended',         
+                            neg_prompt = gr.Text(show_label=False, placeholder=f'Negative Prompt, will also be appended',         
                                           max_lines=1, elem_id=f'MD-n-{i}')
 
-                        bbox_controls.append((e, m, x, y, w, h, p, neg))
+                        bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_radius, multiplier])
 
         controls = [
             enabled, method,
@@ -214,6 +224,7 @@ class Script(scripts.Script):
             sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
             del sd_samplers.md_org_create_sampler
             MixtureOfDiffusers.unhook()
+            self.delegate = None
 
         if not enabled: return
 
@@ -297,32 +308,37 @@ class Script(scripts.Script):
         def create_sampler(name, model):
             # create the sampler with the original function
             sampler = sd_samplers.md_org_create_sampler(name, model)
-            # unhook the create_sampler function
-            if  method == Method.MULTI_DIFF:
-                delegate = MultiDiffusion(
-                    sampler, p,
-                    tile_width, tile_height, overlap, tile_batch_size,
-                    controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
-                )
-            elif method == Method.MIX_DIFF:
-                delegate = MixtureOfDiffusers(
-                    sampler, p,
-                    tile_width, tile_height, overlap, tile_batch_size,
-                    controlnet_script=controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
-                )
-                delegate.hook()
-            else:
-                raise NotImplementedError(f"Method {method} not implemented.")
-            if enable_bbox_control:
+            if self.delegate is None:
+                if  method == Method.MULTI_DIFF:
+                    self.delegate = MultiDiffusion(
+                        sampler, p,
+                        tile_width, tile_height, overlap, tile_batch_size,
+                        controlnet_script=controlnet_script,
+                        control_tensor_cpu=control_tensor_cpu
+                    )
+                elif method == Method.MIX_DIFF:
+                    self.delegate = MixtureOfDiffusers(
+                        sampler, p,
+                        tile_width, tile_height, overlap, tile_batch_size,
+                        controlnet_script=controlnet_script,
+                        control_tensor_cpu=control_tensor_cpu
+                    )
+                else:
+                    raise NotImplementedError(f"Method {method} not implemented.")
+                if enable_bbox_control:
+                    self.delegate.init_custom_bbox(global_multiplier, bbox_control_states)
+        
+            self.delegate.hook(sampler)
+
+            if len(self.delegate.custom_bboxes) > 0:
                 neg_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
-                delegate.init_custom_bbox(global_multiplier, bbox_control_states, prompts, neg_prompts)
+                self.delegate.refresh_prompt(bbox_control_states, prompts, neg_prompts)
 
             print(f"{method.value} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
-                  f"Tile batches: {len(delegate.batched_bboxes)}, " +
+                  f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
                   f"Batch size:", tile_batch_size)
+            
             return sampler
         
         # hack the create_sampler function to get the created sampler
@@ -330,4 +346,14 @@ class Script(scripts.Script):
         if not hasattr(sd_samplers, "md_org_create_sampler"):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
         sd_samplers.create_sampler = create_sampler
+
+    
+    def postprocess(self, p, processed, *args):
+        if self.delegate is None: return
+        self.delegate = None
+        self.delegate = None
+        if hasattr(sd_samplers, "md_org_create_sampler"):
+            sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
+            del sd_samplers.md_org_create_sampler
+            MixtureOfDiffusers.unhook()
 

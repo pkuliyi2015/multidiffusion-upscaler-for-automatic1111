@@ -3,7 +3,7 @@ import torch
 from modules import devices, extra_networks
 from modules.shared import state
 
-from methods.abstractdiffusion import TiledDiffusion
+from methods.abstractdiffusion import TiledDiffusion, BlendMode
 
 
 class MultiDiffusion(TiledDiffusion):
@@ -14,21 +14,22 @@ class MultiDiffusion(TiledDiffusion):
 
     def __init__(self, sampler, p, *args, **kwargs):
         super().__init__("MultiDiffusion", sampler, p, *args, **kwargs)
-
-        # record the steps for progress bar
-        # hook the sampler
         assert p.sampler_name != 'UniPC', \
             'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
+        # For ddim sampler we need to cache the pred_x0
+        self.x_buffer_pred = None
+
+    def hook(self, sampler):
+        super().hook(sampler)
+        # hook the sampler
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
             self.sampler_func = self.sampler.inner_model.forward
             self.sampler.inner_model.forward = self.kdiff_repeat
         else:
-            self.sampler_func = sampler.orig_p_sample_ddim
+            self.sampler_func = self.sampler.orig_p_sample_ddim
             self.sampler.orig_p_sample_ddim = self.ddim_repeat
-        # For ddim sampler we need to cache the pred_x0
-        self.x_buffer_pred = None
 
     def repeat_cond_dict(self, cond_input, bboxes):
         cond = cond_input['c_crossattn'][0]
@@ -49,11 +50,14 @@ class MultiDiffusion(TiledDiffusion):
     def get_global_weights(self):
         return 1.0
 
-    def init_custom_bbox(self, global_multiplier, bbox_control_states, prompts, neg_prompts):
-        super().init_custom_bbox(global_multiplier, bbox_control_states, prompts, neg_prompts)
+    def init_custom_bbox(self, global_multiplier, bbox_control_states):
+        super().init_custom_bbox(global_multiplier, bbox_control_states)
 
-        for bbox, _, _, m, _ in self.custom_bboxes:
-            self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += m
+        for bbox in self.custom_bboxes:
+            if bbox.blend_mode == BlendMode.MIX:
+                self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += bbox.multiplier
+            elif bbox.blend_mode == BlendMode.FEATHER:
+                self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = 1.0
 
     @torch.no_grad()
     def kdiff_repeat(self, x_in, sigma_in, cond):
@@ -161,26 +165,36 @@ class MultiDiffusion(TiledDiffusion):
                 if not self.is_kdiff:
                     self.x_buffer_pred *= self.global_multiplier
 
-            for index, (bbox, cond, uncond, multiplier, extra_network_data) in enumerate(self.custom_bboxes):
+            for index, bbox in enumerate(self.custom_bboxes):
                 x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
-                        extra_networks.activate(self.p, extra_network_data)
+                        extra_networks.activate(self.p, bbox.extra_network_data)
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
-                    x_tile_out = custom_func(x_tile, cond, uncond, index, bbox)
-                    x_tile_out *= multiplier
-                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                    x_tile_out = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
+                    if bbox.blend_mode == BlendMode.MIX:
+                        x_tile_out *= bbox.multiplier
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                    elif bbox.blend_mode == BlendMode.FEATHER:
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
+                            self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_out *  bbox.feather_mask
                 else:
-                    x_tile_out, x_tile_pred = custom_func(x_tile, cond, uncond, index, bbox)
-                    x_tile_out *= multiplier
-                    x_tile_pred *= multiplier
-                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
-                    self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred
+                    x_tile_out, x_tile_pred = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
+                    if bbox.blend_mode == BlendMode.MIX:
+                        x_tile_out *= bbox.multiplier
+                        x_tile_pred *= bbox.multiplier
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred
+                    elif bbox.blend_mode == BlendMode.FEATHER:
+                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
+                            self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_out *  bbox.feather_mask
+                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
+                            self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_pred *  bbox.feather_mask
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
-                        extra_networks.deactivate(self.p, extra_network_data)
+                        extra_networks.deactivate(self.p,bbox.extra_network_data)
                 # update progress bar
                 self.update_pbar()
 
@@ -190,3 +204,4 @@ class MultiDiffusion(TiledDiffusion):
             x_pred = torch.where(self.weights > 0, self.x_buffer_pred / self.weights, self.x_buffer_pred)
             return x_out, x_pred
         return x_out
+    
