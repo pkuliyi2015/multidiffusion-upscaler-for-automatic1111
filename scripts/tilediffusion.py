@@ -64,8 +64,8 @@ from modules.processing import StableDiffusionProcessing
 from methods import MultiDiffusion, MixtureOfDiffusers, splitable, BlendMode
 
 
-BBOX_MAX_NUM = min(shared.cmd_opts.md_max_regions if hasattr(
-    shared.cmd_opts, "md_max_regions") else 8, 16)
+BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
+
 
 class Method(Enum):
     MULTI_DIFF = 'MultiDiffusion'
@@ -132,15 +132,13 @@ class Script(scripts.Script):
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
             with gr.Group(variant='panel', elem_id=f'MD-bbox-control-{tab}'):
                 with gr.Accordion('Region Prompt Control', open=False):
+                    with gr.Row(variant='compact'):
+                        enable_bbox_control = gr.Checkbox(label='Enable', value=False)
+                        draw_background = gr.Checkbox(label='Draw tiles as background (SLOW but save VRAM) ', value=False)
+                        causal_layers = gr.Checkbox(label='Causalize layers', value=lambda: False)
 
                     with gr.Row(variant='compact'):
-                        enable_bbox_control = gr.Checkbox(
-                            label='Enable', value=False)
-                        draw_background = gr.Checkbox(
-                            label='Draw tiles as background (SLOW but save VRAM) ', value=False)
-                    with gr.Row(variant='compact'):
-                        create_button = gr.Button(
-                            value="Create txt2img canvas" if not is_img2img else "From img2img")
+                        create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
 
                     bbox_controls = []  # control set for each bbox
                     with gr.Row(variant='compact'):
@@ -165,39 +163,26 @@ class Script(scripts.Script):
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
-                                e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{i}')
+                                e = gr.Checkbox(label='Enable', value=False)
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
-                                
-                                blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value, 
-                                                         elem_id=f'MD-blend-{i}', visible=True)
-                                
-                                feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, 
-                                            interactive=True, elem_id=f'MD-feather-{i}', visible=blend_mode.value == BlendMode.FOREGROUND.value)
-                                
-                                def on_blend_mode_change(x): 
-                                    return gr_show(x==BlendMode.FOREGROUND.value)
-                                blend_mode.change(fn=on_blend_mode_change, inputs=blend_mode, outputs=[feather_ratio])
-                                
+
+                                blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value, visible=True)
+                                feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=blend_mode.value == BlendMode.FOREGROUND.value)
+                                blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio)
 
                             with gr.Row(variant='compact'):
-                                x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
-                                              interactive=True, elem_id=f'MD-{tab}-{i}-x')
-                                y = gr.Slider(label='y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
-                                              interactive=True, elem_id=f'MD-{tab}-{i}-y')
-                                w = gr.Slider(label='w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, 
-                                              interactive=True, elem_id=f'MD-{tab}-{i}-w')
-                                h = gr.Slider(label='h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, 
-                                              interactive=True, elem_id=f'MD-{tab}-{i}-h')
+                                x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-x')
+                                y = gr.Slider(label='y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-y')
+                                w = gr.Slider(label='w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-w')
+                                h = gr.Slider(label='h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-h')
 
-                                x.change(fn=None, inputs=x, outputs=x, _js=f'(v) => onBoxChange({is_t2i}, {i}, "x", v)')
-                                y.change(fn=None, inputs=y, outputs=y, _js=f'(v) => onBoxChange({is_t2i}, {i}, "y", v)')
-                                w.change(fn=None, inputs=w, outputs=w, _js=f'(v) => onBoxChange({is_t2i}, {i}, "w", v)')
-                                h.change(fn=None, inputs=h, outputs=h, _js=f'(v) => onBoxChange({is_t2i}, {i}, "h", v)')
+                                x.change(fn=None, inputs=x, outputs=x, _js=f'v => onBoxChange({is_t2i}, {i}, "x", v)')
+                                y.change(fn=None, inputs=y, outputs=y, _js=f'v => onBoxChange({is_t2i}, {i}, "y", v)')
+                                w.change(fn=None, inputs=w, outputs=w, _js=f'v => onBoxChange({is_t2i}, {i}, "w", v)')
+                                h.change(fn=None, inputs=h, outputs=h, _js=f'v => onBoxChange({is_t2i}, {i}, "h", v)')
 
-                            prompt   = gr.Text(show_label=False, placeholder=f'Prompt, will be appended to your {tab} prompt', 
-                                          max_lines=2, elem_id=f'MD-p-{i}')
-                            neg_prompt = gr.Text(show_label=False, placeholder=f'Negative Prompt, will be appended to your {tab} negative prompt',         
-                                          max_lines=1, elem_id=f'MD-n-{i}')
+                            prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2)
+                            neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1)
 
                         bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
 
@@ -208,32 +193,36 @@ class Script(scripts.Script):
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control,
-            draw_background
+            draw_background,
+            causal_layers,
         ]
         for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
         return controls
     
-    def custom_create_sampler(self, name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, prompts, n):
+    def custom_create_sampler(
+            self, name, model, method, p, 
+            tile_width, tile_height, overlap, tile_batch_size, 
+            control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states,
+            prompts, n,
+        ):
         # create the sampler with the original function
         method: Method = Method(method) 
         sampler = sd_samplers.md_org_create_sampler(name, model)
         if self.delegate is None:
-            if  method == Method.MULTI_DIFF:
-                self.delegate = MultiDiffusion(
-                    sampler, p,
-                    tile_width, tile_height, overlap, tile_batch_size,
-                    controlnet_script=self.controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
-                )
+            if method == Method.MULTI_DIFF:
+                delegate_cls = MultiDiffusion
             elif method == Method.MIX_DIFF:
-                self.delegate = MixtureOfDiffusers(
-                    sampler, p,
-                    tile_width, tile_height, overlap, tile_batch_size,
-                    controlnet_script=self.controlnet_script,
-                    control_tensor_cpu=control_tensor_cpu
-                )
+                delegate_cls = MixtureOfDiffusers
             else:
                 raise NotImplementedError(f"Method {method} not implemented.")
+            
+            self.delegate = delegate_cls(
+                sampler, p,
+                tile_width, tile_height, overlap, tile_batch_size,
+                controlnet_script=self.controlnet_script,
+                control_tensor_cpu=control_tensor_cpu
+            )
+
             if enable_bbox_control:
                 self.delegate.init_custom_bbox(draw_background, bbox_control_states)
     
@@ -247,7 +236,7 @@ class Script(scripts.Script):
                 f"Tile size: {tile_width}x{tile_height}, " +
                 f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
                 f"Batch size:", tile_batch_size)
-        
+
         return sampler
 
     def process(self, p: StableDiffusionProcessing,
@@ -255,8 +244,8 @@ class Script(scripts.Script):
             overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
             upscaler_index: str, scale_factor: float,
-            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: bool,
-            *bbox_control_states
+            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: bool, causal_layers: bool, 
+            *bbox_control_states,
         ):
 
         if hasattr(sd_samplers, "md_org_create_sampler"):
@@ -326,27 +315,29 @@ class Script(scripts.Script):
                         self.controlnet_script = script
                         print("[Tiled Diffusion] ControlNet found, support is enabled.")
                         break
-
             except ImportError:
                 pass
 
-        
-        create_sampler = lambda name, model : self.custom_create_sampler(
-            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, p.all_prompts, 0)
+        create_sampler = lambda name, model: self.custom_create_sampler(
+            name, model, method, p, 
+            tile_width, tile_height, overlap, tile_batch_size, 
+            control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, 
+            p.all_prompts, 0,
+        )
 
         if not hasattr(sd_samplers, "md_org_create_sampler"):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
         sd_samplers.create_sampler = create_sampler
-
-
         
     def process_batch(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
             overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
             upscaler_index: str, scale_factor: float,
-            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: float, 
-            *bbox_control_states, batch_number, prompts, seeds, subseeds):
+            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: float, causal_layers: bool, 
+            *bbox_control_states,
+            batch_number, prompts, seeds, subseeds,
+        ):
         '''
         compatible with the webui batch processing
         '''
@@ -354,7 +345,6 @@ class Script(scripts.Script):
         n = batch_number
 
         ''' sampler hijack '''
-        
         # hack the create_sampler function to get the created sampler
         create_sampler = lambda name, model : self.custom_create_sampler(
             name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, prompts, n)
@@ -363,7 +353,6 @@ class Script(scripts.Script):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
         sd_samplers.create_sampler = create_sampler
 
-    
     def postprocess(self, p, processed, *args):
         if self.delegate is None: return
         self.delegate = None
@@ -371,4 +360,3 @@ class Script(scripts.Script):
             sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
             del sd_samplers.md_org_create_sampler
             MixtureOfDiffusers.unhook()
-

@@ -66,6 +66,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     def hook(self, sampler):
         super().hook(sampler)
+
         if not hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.md_org_apply_model = shared.sd_model.apply_model
         
@@ -153,6 +154,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.activate(self.p, bbox.extra_network_data)
+
                 x_tile = x_in[bbox.slice]
                 x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox, bbox.prompt, bbox.neg_prompt)
                 if bbox.blend_mode == BlendMode.BACKGROUND:
@@ -166,7 +168,9 @@ class MixtureOfDiffusers(TiledDiffusion):
                     x_feather_buffer[bbox.slice] += x_tile_out
                     x_feather_mask[bbox.slice] += bbox.feather_mask
                     x_feather_count[bbox.slice] += 1
+
                 self.update_pbar()
+
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p, bbox.extra_network_data)
@@ -177,8 +181,6 @@ class MixtureOfDiffusers(TiledDiffusion):
             x_feather_buffer = torch.where(x_feather_count > 1, x_feather_buffer / x_feather_count, x_feather_buffer)
             x_feather_mask = torch.where(x_feather_count > 1, x_feather_mask / x_feather_count, x_feather_mask)
             # Weighted average with original x_buffer
-            
-            x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + 
-                                    x_feather_mask * x_feather_buffer, x_out)
+            x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + x_feather_mask * x_feather_buffer, x_out)
 
         return x_out

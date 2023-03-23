@@ -2,7 +2,6 @@ import math
 import torch
 import numpy as np
 
-
 from enum import Enum
 from abc import ABC, abstractmethod
 from typing import List
@@ -12,11 +11,14 @@ from modules import devices, shared, prompt_parser, extra_networks
 from modules.shared import state
 from modules.processing import StableDiffusionProcessing
 
+
 class BlendMode(Enum):
     FOREGROUND = 'Foreground'
     BACKGROUND = 'Background'
 
+
 class BBox:
+
     def __init__(self, x, y, w, h):
         self.x = x
         self.y = y
@@ -28,7 +30,9 @@ class BBox:
     def __getitem__(self, index):
         return self.box[index]
 
+
 class CustomBBox(BBox):
+
     def __init__(self, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_radio):
         super().__init__(x, y, w, h)
         self.prompt_cache = prompt
@@ -45,8 +49,10 @@ class CustomBBox(BBox):
     def prepare_prompt(self, prompts, neg_prompts, styles, steps):
         c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.prompt_cache, styles) for prompt in prompts]
         c_prompt, extra_network_data = extra_networks.parse_prompts(c_prompt)
-        if self.neg_prompt_cache != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.neg_prompt_cache, styles)  for prompt in neg_prompts]
-        else:         c_negative_prompt = neg_prompts
+        if self.neg_prompt_cache != '': 
+            c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.neg_prompt_cache, styles)  for prompt in neg_prompts]
+        else:
+            c_negative_prompt = neg_prompts
         self.prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, steps)
         self.neg_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, steps)
         self.extra_network_data = extra_network_data
@@ -75,8 +81,9 @@ class CustomBBox(BBox):
 
 class TiledDiffusion(ABC):
 
-    def __init__(self, method:str, sampler, p:StableDiffusionProcessing, tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
-                 controlnet_script=None, control_tensor_cpu=False):
+    def __init__(self, method:str, sampler, p:StableDiffusionProcessing, 
+                 tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
+                 controlnet_script=None, control_tensor_cpu=False, causal_layers=False):
         self.p = p
         self.is_kdiff = p.sampler_name not in ['DDIM', 'PLMS', 'UniPC']
         if self.is_kdiff:
@@ -88,6 +95,7 @@ class TiledDiffusion(ABC):
         self.method = method
         self.batch_size = p.batch_size
         self.steps = p.steps
+        self.causal_layers = causal_layers
 
         # initialize the tile bboxes and weights
         self.w, self.h = p.width//8, p.height//8
@@ -102,7 +110,7 @@ class TiledDiffusion(ABC):
 
         # Avoid the overhead of creating a new tensor for each batch
         # And avoid the overhead of weight summing
-        self.x_buffer = None
+        self.x_buffer = None            # [1, 1, 64, 64]
         # Region prompt control
         self.custom_bboxes = []
         self.draw_background = True
@@ -251,11 +259,18 @@ class TiledDiffusion(ABC):
         # We need to unwrap the inside loop to simulate the batched behavior.
         # This can be extremely tricky.
         '''
+        # x_tile: [1, 4, 13, 15]
+        # original_cond: {'c_crossattn': Tensor[1, 77, 768], 'c_concat': Tensor[1, 5, 1, 1]}
+        # custom_cond: MulticondLearnedConditioning
+        # uncond: Tensor[1, 231, 768]
+        # bbox: CustomBBox
+        # sigma_in: Tensor[1]
+        # forward_func: CFGDenoiser.forward
         if self.kdiff_step != self.sampler.step:
             self.kdiff_step = self.sampler.step
             self.kdiff_step_bbox = [-1 for _ in range(len(self.custom_bboxes))]
-            self.tensor = {}
-            self.uncond = {}
+            self.tensor = {}        # {int: Tensor[cond]}
+            self.uncond = {}        # {int: Tensor[cond]}
             self.image_cond_in = {}
             # Initialize global prompts just for estimate the behavior of kdiff
             _, self.real_tensor = prompt_parser.reconstruct_multicond_batch(self.all_pos_cond, self.sampler.step)
@@ -431,7 +446,6 @@ class TiledDiffusion(ABC):
             for param_id in range(len(self.control_params)):
                 control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
                 self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
-
 
     def reset_controlnet_tensors(self):
         if self.control_tensor_batch is not None:

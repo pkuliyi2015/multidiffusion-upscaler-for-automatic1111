@@ -21,6 +21,7 @@ class MultiDiffusion(TiledDiffusion):
 
     def hook(self, sampler):
         super().hook(sampler)
+
         # hook the sampler
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
@@ -57,12 +58,15 @@ class MultiDiffusion(TiledDiffusion):
                 self.weights[bbox.slice] += 1
 
     @torch.no_grad()
-    def kdiff_repeat(self, x_in, sigma_in, cond):
+    def kdiff_repeat(self, x_in, sigma_in, cond):   # one step of k_diff denoise
         '''
         This function will replace the original forward function in ldm/diffusionmodels/kdiffusion.py
         So its signature should be the same as the original function, 
         especially the "cond" should be with exactly the same name
         '''
+        # x_in: [B, C=4, H=64, W=64]
+        # sigma_in： [1]
+        # cond['c_crossattn'][0]: [1, 77, 768]
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is:
             #   = batch_size * (num_AND + 1)   if not an edit model
@@ -114,6 +118,10 @@ class MultiDiffusion(TiledDiffusion):
         return self.compute_x_tile(x_in, repeat_func, custom_func)
 
     def compute_x_tile(self, x_in, func, custom_func):
+        # x_in: [B, C=4, H=64, W=64], the original whole latent
+        # func: `repeat_func` preparing sigma, cond, uncond
+        # custom_func: `custom_func` 
+
         N, C, H, W = x_in.shape
         assert H == self.h and W == self.w
 
@@ -164,13 +172,16 @@ class MultiDiffusion(TiledDiffusion):
         if len(self.custom_bboxes) > 0:
             for index, bbox in enumerate(self.custom_bboxes):
                 x_tile = x_in[bbox.slice]
+
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.activate(self.p, bbox.extra_network_data)
+
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
                     x_tile_out = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
+
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer[bbox.slice] += x_tile_out
                     elif bbox.blend_mode == BlendMode.FOREGROUND:
@@ -197,12 +208,14 @@ class MultiDiffusion(TiledDiffusion):
                         if x_feather_pred_buffer is None:
                             x_feather_pred_buffer = torch.zeros_like(self.x_pred_buffer)
                         x_feather_pred_buffer[bbox.slice] += x_tile_pred
+
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p,bbox.extra_network_data)
+
                 # update progress bar
                 self.update_pbar()
-        
+
         # Averaging background buffer
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
         if not self.is_kdiff:
@@ -223,4 +236,3 @@ class MultiDiffusion(TiledDiffusion):
                                     x_feather_mask * x_feather_pred_buffer, x_pred_out)
         
         return x_out if self.is_kdiff else (x_out, x_pred_out)
-    
