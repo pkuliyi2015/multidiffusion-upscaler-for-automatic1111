@@ -40,7 +40,7 @@ class CustomBBox:
         w, h = self.w, self.h
         mask = np.zeros((h, w), dtype=np.float32)
 
-        feather_radius = int(min(w, h) * self.feather_ratio)
+        feather_radius = int(min(w//2, h//2) * self.feather_ratio)
         # Generate the mask via gaussian weights
         # adjust the weight near the edge. the closer to the edge, the lower the weight
         for i in range(feather_radius):
