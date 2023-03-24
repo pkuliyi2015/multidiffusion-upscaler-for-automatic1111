@@ -165,14 +165,14 @@ class Script(scripts.Script):
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
-                                e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{i}')
+                                e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{tab}-{i}')
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
                                 
                                 blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value, 
-                                                         elem_id=f'MD-blend-{i}', visible=True)
+                                                         elem_id=f'MD-blend-{tab}-{i}', visible=True)
                                 
                                 feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, 
-                                            interactive=True, elem_id=f'MD-feather-{i}', visible=blend_mode.value == BlendMode.FOREGROUND.value)
+                                            interactive=True, elem_id=f'MD-feather-{tab}-{i}', visible=blend_mode.value == BlendMode.FOREGROUND.value)
                                 
                                 def on_blend_mode_change(x): 
                                     return gr_show(x==BlendMode.FOREGROUND.value)
@@ -195,9 +195,9 @@ class Script(scripts.Script):
                                 h.change(fn=None, inputs=h, outputs=h, _js=f'(v) => onBoxChange({is_t2i}, {i}, "h", v)')
 
                             prompt   = gr.Text(show_label=False, placeholder=f'Prompt, will be appended to your {tab} prompt', 
-                                          max_lines=2, elem_id=f'MD-p-{i}')
+                                          max_lines=2, elem_id=f'MD-p-{tab}-{i}')
                             neg_prompt = gr.Text(show_label=False, placeholder=f'Negative Prompt, will be appended to your {tab} negative prompt',         
-                                          max_lines=1, elem_id=f'MD-n-{i}')
+                                          max_lines=1, elem_id=f'MD-n-{tab}-{i}')
 
                         bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
 
