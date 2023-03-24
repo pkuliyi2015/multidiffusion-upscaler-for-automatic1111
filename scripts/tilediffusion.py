@@ -242,9 +242,8 @@ class Script(scripts.Script):
 
         ''' unhijack & clear all '''
         if not hasattr(sd_samplers, "create_sampler_original_md"):
-            sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
-        sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
-        MultiDiffusion    .unhook()
+            sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
+            del sd_samplers.create_sampler_original_md
         MixtureOfDiffusers.unhook()
         self.delegate = None
 
@@ -333,12 +332,10 @@ class Script(scripts.Script):
         print('sd_samplers.create_sampler:', sd_samplers.create_sampler)
         print('sd_samplers.create_sampler_original_md:', sd_samplers.create_sampler_original_md)
 
-    def postprocess(self, p, processed, enabled: bool, *args):
-        if not enabled: return
-
-        sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
-        MultiDiffusion    .unhook()
+    def postprocess(self, p, processed, *args):
+        if hasattr(sd_samplers, "create_sampler_original_md"):
+            sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
+            del sd_samplers.create_sampler_original_md
         MixtureOfDiffusers.unhook()
         self.delegate = None
-
         devices.torch_gc()

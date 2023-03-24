@@ -155,11 +155,51 @@ class TiledDiffusion:
     def init_custom_bbox(self, draw_background:bool, bbox_control_states:List[Any]):
         ''' Prepare custom bboxes for region prompt, init weight of each tile '''
 
+<<<<<<< HEAD
         self.custom_bboxes: List[CustomBBox] = []
         for i in range(0, len(bbox_control_states) - 9, 9):
             e, x, y, w, h, p, n, blend_mode, feather_ratio = bbox_control_states[i:i+9]
             if not e or x > 1.0 or y > 1.0 or w <= 0.0 or h <= 0.0: continue
 
+=======
+    def split_views(self, tile_w, tile_h, overlap):
+        non_overlap_width = tile_w - overlap
+        non_overlap_height = tile_h - overlap
+        w, h = self.w, self.h
+        cols = math.ceil((w - overlap) / non_overlap_width)
+        rows = math.ceil((h - overlap) / non_overlap_height)
+
+        dx = (w - tile_w) / (cols - 1) if cols > 1 else 0
+        dy = (h - tile_h) / (rows - 1) if rows > 1 else 0
+
+        bbox_list = []
+        count = torch.zeros((1, 1, h, w), device=devices.device, dtype=torch.float32)
+        for row in range(rows):
+            y = int(row * dy)
+            if y + tile_h >= h:
+                y = h - tile_h
+            for col in range(cols):
+                x = int(col * dx)
+                if x + tile_w >= w:
+                    x = w - tile_w
+                bbox = BBox(x, y, tile_w, tile_h)
+                bbox_list.append(bbox)
+                count[bbox.slice] += self.get_global_weights()
+        return bbox_list, count
+
+    @abstractmethod
+    def get_global_weights(self):
+        pass
+
+    def init_custom_bbox(self, draw_background, bbox_control_states):
+        '''
+        Prepare custom bboxes for region prompt
+        '''
+        self.custom_bboxes = []
+        for i in range(0, len(bbox_control_states), 9):
+            enable, x, y ,w, h, p, neg, blend_mode, feather_ratio = bbox_control_states[i:i+9]
+            if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0: continue
+>>>>>>> main
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)
