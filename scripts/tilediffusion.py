@@ -75,6 +75,7 @@ class Method(Enum):
 class Script(scripts.Script):
 
     def __init__(self):
+        self.controlnet_script = None
         self.delegate = None
 
     def title(self):
@@ -211,6 +212,43 @@ class Script(scripts.Script):
         ]
         for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
         return controls
+    
+    def custom_create_sampler(self, name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, prompts, n):
+        # create the sampler with the original function
+        method: Method = Method(method) 
+        sampler = sd_samplers.md_org_create_sampler(name, model)
+        if self.delegate is None:
+            if  method == Method.MULTI_DIFF:
+                self.delegate = MultiDiffusion(
+                    sampler, p,
+                    tile_width, tile_height, overlap, tile_batch_size,
+                    controlnet_script=self.controlnet_script,
+                    control_tensor_cpu=control_tensor_cpu
+                )
+            elif method == Method.MIX_DIFF:
+                self.delegate = MixtureOfDiffusers(
+                    sampler, p,
+                    tile_width, tile_height, overlap, tile_batch_size,
+                    controlnet_script=self.controlnet_script,
+                    control_tensor_cpu=control_tensor_cpu
+                )
+            else:
+                raise NotImplementedError(f"Method {method} not implemented.")
+            if enable_bbox_control:
+                self.delegate.init_custom_bbox(draw_background, bbox_control_states)
+    
+        self.delegate.hook(sampler)
+
+        if len(self.delegate.custom_bboxes) > 0:
+            neg_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
+            self.delegate.refresh_prompt(prompts, neg_prompts)
+
+        print(f"{method.value} hooked into {p.sampler_name} sampler. " +
+                f"Tile size: {tile_width}x{tile_height}, " +
+                f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
+                f"Batch size:", tile_batch_size)
+        
+        return sampler
 
     def process(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
@@ -266,6 +304,41 @@ class Script(scripts.Script):
         p.extra_generation_params["Tiled Diffusion overlap"] = overlap
         p.extra_generation_params["Tiled Diffusion batch size"] = tile_batch_size
 
+        ''' ControlNet hackin '''
+        # try to hook into controlnet tensors
+        if self.controlnet_script is None:
+            try:
+                from scripts.cldm import ControlNet
+                # fix controlnet multi-batch issue
+
+                def align(self, hint, h, w):
+                    if (len(hint.shape) == 3):
+                        hint = hint.unsqueeze(0)
+                    _, _, h1, w1 = hint.shape
+                    if h != h1 or w != w1:
+                        hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
+                    return hint
+                
+                ControlNet.align = align
+
+                for script in p.scripts.scripts + p.scripts.alwayson_scripts:
+                    if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
+                        self.controlnet_script = script
+                        print("[Tiled Diffusion] ControlNet found, support is enabled.")
+                        break
+
+            except ImportError:
+                pass
+
+        
+        create_sampler = lambda name, model : self.custom_create_sampler(
+            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, p.all_prompts, 0)
+
+        if not hasattr(sd_samplers, "md_org_create_sampler"):
+            setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
+        sd_samplers.create_sampler = create_sampler
+
+
         
     def process_batch(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
@@ -278,71 +351,13 @@ class Script(scripts.Script):
         compatible with the webui batch processing
         '''
         if not enabled: return
-        method: Method = Method(method) 
         n = batch_number
 
-        ''' ControlNet hackin '''
-        # try to hook into controlnet tensors
-        controlnet_script = None
-        try:
-            from scripts.cldm import ControlNet
-            # fix controlnet multi-batch issue
-
-            def align(self, hint, h, w):
-                if (len(hint.shape) == 3):
-                    hint = hint.unsqueeze(0)
-                _, _, h1, w1 = hint.shape
-                if h != h1 or w != w1:
-                    hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
-                return hint
-            ControlNet.align = align
-            for script in p.scripts.scripts + p.scripts.alwayson_scripts:
-                if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
-                    controlnet_script = script
-                    print("[Tiled Diffusion] ControlNet found, support is enabled.")
-                    break
-        except ImportError:
-            pass
-
         ''' sampler hijack '''
-        # custom sampler
-        def create_sampler(name, model):
-            # create the sampler with the original function
-            sampler = sd_samplers.md_org_create_sampler(name, model)
-            if self.delegate is None:
-                if  method == Method.MULTI_DIFF:
-                    self.delegate = MultiDiffusion(
-                        sampler, p,
-                        tile_width, tile_height, overlap, tile_batch_size,
-                        controlnet_script=controlnet_script,
-                        control_tensor_cpu=control_tensor_cpu
-                    )
-                elif method == Method.MIX_DIFF:
-                    self.delegate = MixtureOfDiffusers(
-                        sampler, p,
-                        tile_width, tile_height, overlap, tile_batch_size,
-                        controlnet_script=controlnet_script,
-                        control_tensor_cpu=control_tensor_cpu
-                    )
-                else:
-                    raise NotImplementedError(f"Method {method} not implemented.")
-                if enable_bbox_control:
-                    self.delegate.init_custom_bbox(draw_background, bbox_control_states)
-        
-            self.delegate.hook(sampler)
-
-            if len(self.delegate.custom_bboxes) > 0:
-                neg_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
-                self.delegate.refresh_prompt(prompts, neg_prompts)
-
-            print(f"{method.value} hooked into {p.sampler_name} sampler. " +
-                  f"Tile size: {tile_width}x{tile_height}, " +
-                  f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
-                  f"Batch size:", tile_batch_size)
-            
-            return sampler
         
         # hack the create_sampler function to get the created sampler
+        create_sampler = lambda name, model : self.custom_create_sampler(
+            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, prompts, n)
 
         if not hasattr(sd_samplers, "md_org_create_sampler"):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
