@@ -142,9 +142,12 @@ class MixtureOfDiffusers(TiledDiffusion):
 
                 self.update_pbar()
 
+        x_feather_buffer = None
+        x_feather_mask = None
+        x_feather_count = None
+
         # Custom region sampling
         if len(self.custom_bboxes) > 0:
-            
             for bbox_id, bbox in enumerate(self.custom_bboxes):
                 # unpack sigma_in, x_in, image_cond
                 if not self.p.disable_extra_networks:
@@ -156,10 +159,26 @@ class MixtureOfDiffusers(TiledDiffusion):
                     x_tile_out *= self.custom_weights[bbox_id]
                     self.x_buffer[bbox.slice] += x_tile_out
                 elif bbox.blend_mode == BlendMode.FOREGROUND:
-                    self.x_buffer[bbox.slice] = x_tile_out * bbox.feather_mask + self.x_buffer[bbox.slice] * (1 - bbox.feather_mask)
+                    if x_feather_buffer is None:
+                        x_feather_buffer = torch.zeros_like(self.x_buffer)
+                        x_feather_mask = torch.zeros_like(self.x_buffer)
+                        x_feather_count = torch.zeros_like(self.x_buffer)
+                    x_feather_buffer[bbox.slice] += x_tile_out
+                    x_feather_mask[bbox.slice] += bbox.feather_mask
+                    x_feather_count[bbox.slice] += 1
                 self.update_pbar()
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p, bbox.extra_network_data)
+        
+        x_out = self.x_buffer
+        if x_feather_buffer is not None:
+            # Average overlapping feathered regions
+            x_feather_buffer = torch.where(x_feather_count > 1, x_feather_buffer / x_feather_count, x_feather_buffer)
+            x_feather_mask = torch.where(x_feather_count > 1, x_feather_mask / x_feather_count, x_feather_mask)
+            # Weighted average with original x_buffer
+            
+            x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + 
+                                    x_feather_mask * x_feather_buffer, x_out)
 
-        return self.x_buffer
+        return x_out

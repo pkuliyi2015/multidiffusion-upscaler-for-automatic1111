@@ -200,7 +200,7 @@ class TiledDiffusion(ABC):
         self.custom_bboxes = []
         for i in range(0, len(bbox_control_states) - 9, 9):
             enable, x, y ,w, h, p, neg, blend_mode, feather_ratio = bbox_control_states[i:i+9]
-            if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0 or p == '': continue
+            if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0: continue
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)

@@ -17,7 +17,7 @@ class MultiDiffusion(TiledDiffusion):
         assert p.sampler_name != 'UniPC', \
             'MultiDiffusion is not compatible with UniPC, please use other samplers instead.'
         # For ddim sampler we need to cache the pred_x0
-        self.x_buffer_pred = None
+        self.x_pred_buffer = None
 
     def hook(self, sampler):
         super().hook(sampler)
@@ -120,10 +120,10 @@ class MultiDiffusion(TiledDiffusion):
         self.init(x_in)
 
         if not self.is_kdiff:
-            if self.x_buffer_pred is None:
-                self.x_buffer_pred = torch.zeros_like(x_in, device=x_in.device)
+            if self.x_pred_buffer is None:
+                self.x_pred_buffer = torch.zeros_like(x_in, device=x_in.device)
             else:
-                self.x_buffer_pred.zero_()
+                self.x_pred_buffer.zero_()
 
         # Background sampling
         if self.draw_background:
@@ -150,13 +150,13 @@ class MultiDiffusion(TiledDiffusion):
                         x_o = x_tile_out [i*N:(i+1)*N, :, :, :]
                         x_p = x_tile_pred[i*N:(i+1)*N, :, :, :]
                         self.x_buffer     [bbox.slice] += x_o
-                        self.x_buffer_pred[bbox.slice] += x_p
+                        self.x_pred_buffer[bbox.slice] += x_p
                 
                 # update progress bar
                 self.update_pbar()
 
         x_feather_buffer = None
-        x_feather_buffer_pred = None
+        x_feather_pred_buffer = None
         x_feather_mask = None
         x_feather_count = None
 
@@ -185,7 +185,7 @@ class MultiDiffusion(TiledDiffusion):
                     x_tile_out, x_tile_pred = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer[bbox.slice] += x_tile_out
-                        self.x_buffer_pred[bbox.slice] += x_tile_pred
+                        self.x_pred_buffer[bbox.slice] += x_tile_pred
                     elif bbox.blend_mode == BlendMode.FOREGROUND:
                         if x_feather_buffer is None:
                             x_feather_buffer = torch.zeros_like(self.x_buffer)
@@ -194,9 +194,9 @@ class MultiDiffusion(TiledDiffusion):
                         x_feather_buffer[bbox.slice] += x_tile_out
                         x_feather_mask[bbox.slice] += bbox.feather_mask
                         x_feather_count[bbox.slice] += 1
-                        if x_feather_buffer_pred is None:
-                            x_feather_buffer_pred = torch.zeros_like(self.x_buffer_pred)
-                        x_feather_buffer_pred[bbox.slice] += x_tile_pred
+                        if x_feather_pred_buffer is None:
+                            x_feather_pred_buffer = torch.zeros_like(self.x_pred_buffer)
+                        x_feather_pred_buffer[bbox.slice] += x_tile_pred
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p,bbox.extra_network_data)
@@ -204,9 +204,9 @@ class MultiDiffusion(TiledDiffusion):
                 self.update_pbar()
         
         # Averaging background buffer
-        self.x_buffer = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
+        x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
         if not self.is_kdiff:
-            self.x_buffer_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
+            x_pred_out = torch.where(self.weights > 1, self.x_pred_buffer / self.weights, self.x_pred_buffer)
         
         #Foreground Feather blending
         if x_feather_buffer is not None:
@@ -215,12 +215,12 @@ class MultiDiffusion(TiledDiffusion):
             x_feather_mask = torch.where(x_feather_count > 1, x_feather_mask / x_feather_count, x_feather_mask)
             # Weighted average with original x_buffer
             
-            self.x_buffer = torch.where(x_feather_count > 0, self.x_buffer * (1 - x_feather_mask) + 
-                                    x_feather_mask * x_feather_buffer, self.x_buffer)
+            x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + 
+                                    x_feather_mask * x_feather_buffer, x_out)
             if not self.is_kdiff:
-                x_feather_buffer_pred = torch.where(x_feather_count > 1, x_feather_buffer_pred / x_feather_count, x_feather_buffer_pred)
-                self.x_buffer_pred = torch.where(x_feather_count > 0, self.x_buffer_pred * (1 - x_feather_mask) + 
-                                    x_feather_mask * x_feather_buffer_pred, self.x_buffer_pred)
+                x_feather_pred_buffer = torch.where(x_feather_count > 1, x_feather_pred_buffer / x_feather_count, x_feather_pred_buffer)
+                x_pred_out = torch.where(x_feather_count > 0, x_pred_out * (1 - x_feather_mask) + 
+                                    x_feather_mask * x_feather_pred_buffer, x_pred_out)
         
-        return self.x_buffer if self.is_kdiff else (self.x_buffer, self.x_buffer_pred)
+        return x_out if self.is_kdiff else (x_out, x_pred_out)
     
