@@ -41,7 +41,8 @@ class MultiDiffusion(TiledDiffusion):
 
     @staticmethod
     def unhook():
-        # TODO: currently cannot unhook MultiDiffusion...
+        # NOTE: no need to unhook MultiDiffusion as it only hook the sampler,
+        # which will be destroyed after the painting is done
         pass
     
     def init_custom_bbox(self, draw_background:bool, bbox_control_states):
@@ -198,7 +199,6 @@ class MultiDiffusion(TiledDiffusion):
 
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
-                    # kdiff last batch is always the correct original input
                     x_tile_out = custom_func(x_tile, bbox.cond, bbox.uncond, index, bbox)
 
                     if bbox.blend_mode == BlendMode.BACKGROUND:
