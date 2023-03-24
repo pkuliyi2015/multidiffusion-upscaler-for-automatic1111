@@ -270,48 +270,52 @@ class TiledDiffusion(ABC):
             _, tensor, uncond, image_cond_in = self.reconstruct_custom_cond(original_cond, custom_cond, uncond, bbox)
 
             if self.real_tensor.shape[1] == self.real_uncond.shape[1]:
-                # when the real tensor is with equal length, all information is contained in x_tile.
-                # we simulate the batched behavior and compute all the tensors in one go.
-                if tensor.shape[1] == uncond.shape[1] and shared.batch_cond_uncond:
-                    if not self.is_edit_model:
-                        cond = torch.cat([tensor, uncond])
+                if shared.batch_cond_uncond:
+                    # when the real tensor is with equal length, all information is contained in x_tile.
+                    # we simulate the batched behavior and compute all the tensors in one go.
+                    if tensor.shape[1] == uncond.shape[1]:
+                        # When our prompt tensor is with equal length, we can directly their code.
+                        if not self.is_edit_model:
+                            cond = torch.cat([tensor, uncond])
+                        else:
+                            cond = torch.cat([tensor, uncond, uncond])
+                        self.set_control_tensor(bbox_id, x_tile.shape[0])
+                        return forward_func(x_tile, sigma_in, cond={"c_crossattn": [cond], "c_concat": [image_cond_in]})
                     else:
-                        cond = torch.cat([tensor, uncond, uncond])
-                    self.set_control_tensor(bbox_id, x_tile.shape[0])
-                    return forward_func(x_tile, sigma_in, cond={"c_crossattn": [cond], "c_concat": [image_cond_in]})
-                else:
-                    x_out = torch.zeros_like(x_tile)
-                    cond_size = tensor.shape[0]
-                    self.set_control_tensor(bbox_id, cond_size)
-                    cond_out = forward_func(
-                        x_tile  [:cond_size], 
-                        sigma_in[:cond_size], 
-                        cond={
-                            "c_crossattn": [tensor], 
-                            "c_concat": [image_cond_in[:cond_size]]
-                        })
-                    uncond_size = uncond.shape[0]
-                    self.set_control_tensor(bbox_id, uncond_size)
-                    uncond_out = forward_func(
-                        x_tile  [cond_size:cond_size+uncond_size], 
-                        sigma_in[cond_size:cond_size+uncond_size], 
-                        cond={
-                            "c_crossattn": [uncond], 
-                            "c_concat": [image_cond_in[cond_size:cond_size+uncond_size]]
-                        })
-                    x_out[:cond_size] = cond_out
-                    x_out[cond_size:cond_size+uncond_size] = uncond_out
-                    if self.is_edit_model:
-                        x_out[cond_size+uncond_size:] = uncond_out
-                    return x_out
+                        # When not, we need to pass the tensor to UNet separately.
+                        x_out = torch.zeros_like(x_tile)
+                        cond_size = tensor.shape[0]
+                        self.set_control_tensor(bbox_id, cond_size)
+                        cond_out = forward_func(
+                            x_tile  [:cond_size], 
+                            sigma_in[:cond_size], 
+                            cond={
+                                "c_crossattn": [tensor], 
+                                "c_concat": [image_cond_in[:cond_size]]
+                            })
+                        uncond_size = uncond.shape[0]
+                        self.set_control_tensor(bbox_id, uncond_size)
+                        uncond_out = forward_func(
+                            x_tile  [cond_size:cond_size+uncond_size], 
+                            sigma_in[cond_size:cond_size+uncond_size], 
+                            cond={
+                                "c_crossattn": [uncond], 
+                                "c_concat": [image_cond_in[cond_size:cond_size+uncond_size]]
+                            })
+                        x_out[:cond_size] = cond_out
+                        x_out[cond_size:cond_size+uncond_size] = uncond_out
+                        if self.is_edit_model:
+                            x_out[cond_size+uncond_size:] = uncond_out
+                        return x_out
                 
-            # otherwise, the x_tile is only a partial batch. We have to denoise in different runs.
-            # initialize the state variables for current bbox
+            # otherwise, the x_tile is only a partial batch. 
+            # We have to denoise in different runs.
+            # We store the prompt and neg_prompt tensors for current bbox
             self.tensor[bbox_id] = tensor
             self.uncond[bbox_id] = uncond
             self.image_cond_in[bbox_id] = image_cond_in
 
-        # get current condition and uncondition
+        # Now we get current batch of prompt and neg_prompt tensors
         tensor = self.tensor[bbox_id]
         uncond = self.uncond[bbox_id]
         batch_size = x_tile.shape[0]
@@ -319,9 +323,87 @@ class TiledDiffusion(ABC):
         a = self.a[bbox_id]
         b = a + batch_size
         self.a[bbox_id] += batch_size
-        # Judge the progress of batched processing cond and uncond for each bbox.
-        # NOTE: The end condition is a rather than b.
+
+        if self.real_tensor.shape[1] == self.real_uncond.shape[1]:
+            # When use --lowvram or --medvram, kdiff will slice the cond and uncond with [a:b]
+            # So we need to slice our tensor and uncond with the same index as original kdiff.
+            
+            # --- original code in kdiff ---
+            # if not self.is_edit_model:
+            #     cond = torch.cat([tensor, uncond])
+            # else:
+            #     cond = torch.cat([tensor, uncond, uncond])
+            # cond = cond[a:b]
+            # ------------------------------
+            
+            # The original kdiff code is to concat and then slice, but this cannot apply to
+            # our custom prompt tensor when tensor.shape[1] != uncond.shape[1]. So we adapt it.
+
+            cond_in, uncond_in = None, None
+            # Slice the [prompt, neg prompt, (possibly) neg prompt] with [a:b]
+            if not self.is_edit_model:
+                if b <= tensor.shape[0]:
+                    cond_in = tensor[a:b]
+                elif a >= tensor.shape[0]:
+                    cond_in = uncond[a-tensor.shape[0]:b-tensor.shape[0]]
+                else:
+                    cond_in = tensor[a:]
+                    uncond_in = uncond[:b-tensor.shape[0]]
+            else:
+                if b <= tensor.shape[0]:
+                    cond_in = tensor[a:b]
+                elif b > tensor.shape[0] and b <= tensor.shape[0] + uncond.shape[0]:
+                    if a>= tensor.shape[0]:
+                        cond_in = uncond[a-tensor.shape[0]:b-tensor.shape[0]]
+                    else:
+                        cond_in = tensor[a:]
+                        uncond_in = uncond[:b-tensor.shape[0]]
+                else:
+                    if a >= tensor.shape[0] + uncond.shape[0]:
+                        cond_in = uncond[a-tensor.shape[0]-uncond.shape[0]:b-tensor.shape[0]-uncond.shape[0]]
+                    elif a >= tensor.shape[0]:
+                        cond_in = torch.cat([uncond[a-tensor.shape[0]:], uncond[:b-tensor.shape[0]-uncond.shape[0]]])
+            
+            if uncond_in is None or tensor.shape[1] == uncond.shape[1]:
+                # If the tensor can be passed to UNet in one go, do it.
+                if uncond_in is not None:
+                    cond_in = torch.cat([cond_in, uncond_in])
+                self.set_control_tensor(bbox_id, x_tile.shape[0])
+                return forward_func(x_tile, 
+                                    sigma_in, 
+                                    cond={
+                                            "c_crossattn": [cond_in], 
+                                            "c_concat": [self.image_cond_in[bbox_id]]
+                                        })
+            else:
+                # If not, we need to pass the tensor to UNet separately.
+                x_out = torch.zeros_like(x_tile)
+                cond_size = cond_in.shape[0]
+                self.set_control_tensor(bbox_id, cond_size)
+                cond_out = forward_func(
+                    x_tile  [:cond_size], 
+                    sigma_in[:cond_size], 
+                    cond={
+                        "c_crossattn": [cond_in], 
+                        "c_concat": [self.image_cond_in[bbox_id]]
+                    })
+                self.set_control_tensor(bbox_id, uncond_in.shape[0])
+                uncond_out = forward_func(
+                    x_tile  [cond_size:], 
+                    sigma_in[cond_size:], 
+                    cond={
+                        "c_crossattn": [uncond_in], 
+                        "c_concat": [self.image_cond_in[bbox_id]]
+                    })
+                x_out[:cond_size] = cond_out
+                x_out[cond_size:] = uncond_out
+                return x_out
+
+        # If the original prompt is with different length, 
+        # kdiff will deal with the cond and uncond separately.
+        # Hence we also deal with the tensor and uncond separately.
         if a < tensor.shape[0]:
+            # Deal with custom prompt tensor
             if not self.is_edit_model:
                 c_crossattn = [tensor[a:b]]
             else:
@@ -336,7 +418,7 @@ class TiledDiffusion(ABC):
                     "c_concat": [self.image_cond_in[bbox_id]]
                 })
         else:
-            # if the cond is finished, we need to process the uncond.
+            # if all prompt slices are processed, we process the negative prompt.
             self.set_control_tensor(bbox_id, uncond.shape[0])
             return forward_func(
                 x_tile, 
