@@ -40,7 +40,7 @@ class MultiDiffusion(TiledDiffusion):
         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
             image_cond_list = []
             for bbox in bboxes:
-                image_cond_list.append(image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                image_cond_list.append(image_cond[bbox.slice])
             image_cond_tile = torch.cat(image_cond_list, dim=0)
         else:
             image_cond_shape = image_cond.shape
@@ -50,14 +50,11 @@ class MultiDiffusion(TiledDiffusion):
     def get_global_weights(self):
         return 1.0
 
-    def init_custom_bbox(self, global_multiplier, bbox_control_states):
-        super().init_custom_bbox(global_multiplier, bbox_control_states)
-
+    def init_custom_bbox(self, draw_background, bbox_control_states):
+        super().init_custom_bbox(draw_background, bbox_control_states)
         for bbox in self.custom_bboxes:
-            if bbox.blend_mode == BlendMode.MIX:
-                self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += bbox.multiplier
-            elif bbox.blend_mode == BlendMode.FEATHER:
-                self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = 1.0
+            if bbox.blend_mode == BlendMode.BACKGROUND:
+                self.weights[bbox.slice] += 1
 
     @torch.no_grad()
     def kdiff_repeat(self, x_in, sigma_in, cond):
@@ -128,14 +125,14 @@ class MultiDiffusion(TiledDiffusion):
             else:
                 self.x_buffer_pred.zero_()
 
-        # Global sampling
-        if self.global_multiplier > 0:
+        # Background sampling
+        if self.draw_background:
             for batch_id, bboxes in enumerate(self.batched_bboxes):
                 if state.interrupted: return x_in
 
                 x_tile_list = []
                 for bbox in bboxes:
-                    x_tile_list.append(x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                    x_tile_list.append(x_in[bbox.slice])
                 x_tile = torch.cat(x_tile_list, dim=0)
 
                 # controlnet tiling
@@ -146,27 +143,27 @@ class MultiDiffusion(TiledDiffusion):
                     x_tile_out = func(x_tile, bboxes)
                     for i, bbox in enumerate(bboxes):
                         x = x_tile_out[i*N:(i+1)*N, :, :, :]
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x
+                        self.x_buffer[bbox.slice] += x
                 else:
                     x_tile_out, x_tile_pred = func(x_tile, bboxes)
                     for i, bbox in enumerate(bboxes):
                         x_o = x_tile_out [i*N:(i+1)*N, :, :, :]
                         x_p = x_tile_pred[i*N:(i+1)*N, :, :, :]
-                        self.x_buffer     [:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_o
-                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_p
+                        self.x_buffer     [bbox.slice] += x_o
+                        self.x_buffer_pred[bbox.slice] += x_p
                 
                 # update progress bar
                 self.update_pbar()
 
+        x_feather_buffer = None
+        x_feather_buffer_pred = None
+        x_feather_mask = None
+        x_feather_count = None
+
         # Custom region sampling
         if len(self.custom_bboxes) > 0:
-            if self.global_multiplier > 0 and abs(self.global_multiplier - 1.0) > 1e-6:
-                self.x_buffer *= self.global_multiplier
-                if not self.is_kdiff:
-                    self.x_buffer_pred *= self.global_multiplier
-
             for index, bbox in enumerate(self.custom_bboxes):
-                x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                x_tile = x_in[bbox.slice]
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.activate(self.p, bbox.extra_network_data)
@@ -174,34 +171,56 @@ class MultiDiffusion(TiledDiffusion):
                     # retrieve original x_in from construncted input
                     # kdiff last batch is always the correct original input
                     x_tile_out = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
-                    if bbox.blend_mode == BlendMode.MIX:
-                        x_tile_out *= bbox.multiplier
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
-                    elif bbox.blend_mode == BlendMode.FEATHER:
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
-                            self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_out *  bbox.feather_mask
+                    if bbox.blend_mode == BlendMode.BACKGROUND:
+                        self.x_buffer[bbox.slice] += x_tile_out
+                    elif bbox.blend_mode == BlendMode.FOREGROUND:
+                        if x_feather_buffer is None:
+                            x_feather_buffer = torch.zeros_like(self.x_buffer)
+                            x_feather_mask = torch.zeros_like(self.x_buffer)
+                            x_feather_count = torch.zeros_like(self.x_buffer)
+                        x_feather_buffer[bbox.slice] += x_tile_out
+                        x_feather_mask[bbox.slice] += bbox.feather_mask
+                        x_feather_count[bbox.slice] += 1
                 else:
                     x_tile_out, x_tile_pred = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
-                    if bbox.blend_mode == BlendMode.MIX:
-                        x_tile_out *= bbox.multiplier
-                        x_tile_pred *= bbox.multiplier
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
-                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_pred
-                    elif bbox.blend_mode == BlendMode.FEATHER:
-                        self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
-                            self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_out *  bbox.feather_mask
-                        self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] = \
-                            self.x_buffer_pred[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] * (1 - bbox.feather_mask) + x_tile_pred *  bbox.feather_mask
+                    if bbox.blend_mode == BlendMode.BACKGROUND:
+                        self.x_buffer[bbox.slice] += x_tile_out
+                        self.x_buffer_pred[bbox.slice] += x_tile_pred
+                    elif bbox.blend_mode == BlendMode.FOREGROUND:
+                        if x_feather_buffer is None:
+                            x_feather_buffer = torch.zeros_like(self.x_buffer)
+                            x_feather_mask = torch.zeros_like(self.x_buffer)
+                            x_feather_count = torch.zeros_like(self.x_buffer)
+                        x_feather_buffer[bbox.slice] += x_tile_out
+                        x_feather_mask[bbox.slice] += bbox.feather_mask
+                        x_feather_count[bbox.slice] += 1
+                        if x_feather_buffer_pred is None:
+                            x_feather_buffer_pred = torch.zeros_like(self.x_buffer_pred)
+                        x_feather_buffer_pred[bbox.slice] += x_tile_pred
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p,bbox.extra_network_data)
                 # update progress bar
                 self.update_pbar()
-
-        # Normalize. only divide when weights are greater than 0
-        x_out = torch.where(self.weights > 0, self.x_buffer / self.weights, self.x_buffer)
+        
+        # Averaging background buffer
+        self.x_buffer = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
         if not self.is_kdiff:
-            x_pred = torch.where(self.weights > 0, self.x_buffer_pred / self.weights, self.x_buffer_pred)
-            return x_out, x_pred
-        return x_out
+            self.x_buffer_pred = torch.where(self.weights > 1, self.x_buffer_pred / self.weights, self.x_buffer_pred)
+        
+        #Foreground Feather blending
+        if x_feather_buffer is not None:
+            # Average overlapping feathered regions
+            x_feather_buffer = torch.where(x_feather_count > 1, x_feather_buffer / x_feather_count, x_feather_buffer)
+            x_feather_mask = torch.where(x_feather_count > 1, x_feather_mask / x_feather_count, x_feather_mask)
+            # Weighted average with original x_buffer
+            
+            self.x_buffer = torch.where(x_feather_count > 0, self.x_buffer * (1 - x_feather_mask) + 
+                                    x_feather_mask * x_feather_buffer, self.x_buffer)
+            if not self.is_kdiff:
+                x_feather_buffer_pred = torch.where(x_feather_count > 1, x_feather_buffer_pred / x_feather_count, x_feather_buffer_pred)
+                self.x_buffer_pred = torch.where(x_feather_count > 0, self.x_buffer_pred * (1 - x_feather_mask) + 
+                                    x_feather_mask * x_feather_buffer_pred, self.x_buffer_pred)
+        
+        return self.x_buffer if self.is_kdiff else (self.x_buffer, self.x_buffer_pred)
     

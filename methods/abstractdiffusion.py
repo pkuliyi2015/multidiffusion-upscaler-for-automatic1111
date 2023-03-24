@@ -13,45 +13,64 @@ from modules.shared import state
 from modules.processing import StableDiffusionProcessing
 
 class BlendMode(Enum):
-    MIX = 'Mix'
-    FEATHER = 'Feather'
+    FOREGROUND = 'Foreground'
+    BACKGROUND = 'Background'
 
-class CustomBBox:
-    def __init__(self, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_radius, multiplier, extra_network_data):
+class BBox:
+    def __init__(self, x, y, w, h):
         self.x = x
         self.y = y
         self.w = w
         self.h = h
         self.box = [x, y, x+w, y+h]
-        self.prompt = prompt
-        self.neg_prompt = neg_prompt
-        self.multiplier = multiplier
-        self.blend_mode = blend_mode
-        self.feather_ratio = min(max(feather_radius, 0), min(w, h)/2)
-        self.extra_network_data = extra_network_data
-        if self.blend_mode == BlendMode.FEATHER:
-            self.feather_mask = self.generate_feather_mask()
+        self.slice = (slice(None), slice(None), slice(y, y+h), slice(x, x+w))
 
     def __getitem__(self, index):
         return self.box[index]
+
+class CustomBBox(BBox):
+    def __init__(self, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_radio):
+        super().__init__(x, y, w, h)
+        self.prompt_cache = prompt
+        self.neg_prompt_cache = neg_prompt
+        self.prompt = None
+        self.neg_prompt = None
+        self.blend_mode = blend_mode
+        self.feather_ratio = max(min(feather_radio,1),0)
+        self.extra_network_data = None
+
+        if self.blend_mode == BlendMode.FOREGROUND:
+            self.feather_mask = self.generate_feather_mask()
+
+    def prepare_prompt(self, prompts, neg_prompts, styles, steps):
+        c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.prompt_cache, styles) for prompt in prompts]
+        c_prompt, extra_network_data = extra_networks.parse_prompts(c_prompt)
+        if self.neg_prompt_cache != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.neg_prompt_cache, styles)  for prompt in neg_prompts]
+        else:         c_negative_prompt = neg_prompts
+        self.prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, steps)
+        self.neg_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, steps)
+        self.extra_network_data = extra_network_data
     
     def generate_feather_mask(self):
         '''Generate a feather mask for the bbox'''
         w, h = self.w, self.h
-        mask = np.zeros((h, w), dtype=np.float32)
+        mask = np.ones((h, w), dtype=np.float32)
 
         feather_radius = int(min(w//2, h//2) * self.feather_ratio)
         # Generate the mask via gaussian weights
         # adjust the weight near the edge. the closer to the edge, the lower the weight
-        for i in range(feather_radius):
-            weight = math.exp(-0.5 * (1 - i/feather_radius)**2)
-            mask[:, i] = weight
-            mask[:, w-i-1] = weight
-            mask[i, :] = weight
-            mask[h-i-1, :] = weight
+        # weight = ( dist / feather_radius) ** 2
+        for i in range(h//2):
+            for j in range(w//2):
+                dist = min(i, j)
+                if dist >= feather_radius: continue
+                weight = (dist / feather_radius) ** 2
+                mask[i, j] = weight
+                mask[i, w-j-1] = weight
+                mask[h-i-1, j] = weight
+                mask[h-i-1, w-j-1] = weight
+
         return torch.from_numpy(mask).to(devices.device, dtype=torch.float32)
-
-
 
 
 class TiledDiffusion(ABC):
@@ -86,7 +105,7 @@ class TiledDiffusion(ABC):
         self.x_buffer = None
         # Region prompt control
         self.custom_bboxes = []
-        self.global_multiplier = 1.0
+        self.draw_background = True
 
         # For controlnet
         self.controlnet_script = controlnet_script
@@ -103,7 +122,7 @@ class TiledDiffusion(ABC):
         self.kdiff_step = -1
 
         # Split the latent into tiles
-        bboxes, weights = self.split_views(tile_w, tile_h, overlap)
+        bboxes, self.weights = self.split_views(tile_w, tile_h, overlap)
         self.num_batches = math.ceil(len(bboxes) / tile_batch_size)
         optimal_batch_size = math.ceil(len(bboxes) / self.num_batches)
         self.tile_batch_size = optimal_batch_size
@@ -111,7 +130,6 @@ class TiledDiffusion(ABC):
             start = i * tile_batch_size
             end = min((i + 1) * tile_batch_size, len(bboxes))
             self.batched_bboxes.append(bboxes[start:end])
-        self.weights = weights.unsqueeze(0).unsqueeze(0)
 
     def init(self, x_in):
         # Kdiff 'AND' support and image editing model support
@@ -121,8 +139,8 @@ class TiledDiffusion(ABC):
                 and self.sampler.image_cfg_scale != 1.0
 
         if self.pbar is None:
-            self.total_bboxes = (self.num_batches if self.global_multiplier > 0 else 0) + len(self.custom_bboxes)
-            assert self.total_bboxes > 0, "No bbox to sample! global_multiplier is 0 and no custom bboxes provided."
+            self.total_bboxes = (self.num_batches if self.draw_background else 0) + len(self.custom_bboxes)
+            assert self.total_bboxes > 0, "No region to sample! no background to draw and no custom bboxes were provided."
             self.pbar = tqdm(total=(self.total_bboxes) * state.sampling_steps, desc=f"{self.method} Sampling: ")
 
         if self.x_buffer is None:
@@ -156,8 +174,8 @@ class TiledDiffusion(ABC):
         dx = (w - tile_w) / (cols - 1) if cols > 1 else 0
         dy = (h - tile_h) / (rows - 1) if rows > 1 else 0
 
-        bbox = []
-        count = torch.zeros((h, w), device=devices.device, dtype=torch.float32)
+        bbox_list = []
+        count = torch.zeros((1, 1, h, w), device=devices.device, dtype=torch.float32)
         for row in range(rows):
             y = int(row * dy)
             if y + tile_h >= h:
@@ -166,22 +184,23 @@ class TiledDiffusion(ABC):
                 x = int(col * dx)
                 if x + tile_w >= w:
                     x = w - tile_w
-                bbox.append([x, y, x + tile_w, y + tile_h])
-                count[y:y+tile_h, x:x+tile_w] += self.get_global_weights()
-        return bbox, count
+                bbox = BBox(x, y, tile_w, tile_h)
+                bbox_list.append(bbox)
+                count[bbox.slice] += self.get_global_weights()
+        return bbox_list, count
 
     @abstractmethod
     def get_global_weights(self):
         pass
 
-    def init_custom_bbox(self, global_multiplier, bbox_control_states):
+    def init_custom_bbox(self, draw_background, bbox_control_states):
         '''
         Prepare custom bboxes for region prompt
         '''
-        for i in range(0, len(bbox_control_states) - 10, 10):
-            enable, x, y ,w, h, p, neg, blend_mode, feather_radius, multiplier = bbox_control_states[i:i+10]
+        self.custom_bboxes = []
+        for i in range(0, len(bbox_control_states) - 9, 9):
+            enable, x, y ,w, h, p, neg, blend_mode, feather_ratio = bbox_control_states[i:i+9]
             if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0 or p == '': continue
-            if blend_mode == 'Mix' and multiplier <= 0: continue
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)
@@ -190,13 +209,13 @@ class TiledDiffusion(ABC):
             y = max(0, y)
             w = min(self.w - x, w)
             h = min(self.h - y, h)
-            bbox_obj = CustomBBox(x, y, w, h, None, None, BlendMode(blend_mode), feather_radius, multiplier, None)
+            bbox_obj = CustomBBox(x, y, w, h, p, neg, BlendMode(blend_mode), feather_ratio)
             self.custom_bboxes.append(bbox_obj)
 
         if len(self.custom_bboxes) == 0: return
-        self.global_multiplier = max(global_multiplier, 0.0)
-        if self.global_multiplier >= 0 and abs(self.global_multiplier - 1.0) > 1e-5:
-            self.weights *= self.global_multiplier
+        self.draw_background = draw_background
+        if not draw_background:
+            self.weights.zero_()
 
     def hook(self, sampler):
         if self.is_kdiff:
@@ -207,23 +226,9 @@ class TiledDiffusion(ABC):
 
         self.reset_controlnet_tensors()
 
-    def refresh_prompt(self, bbox_control_states, prompts:List[str], neg_prompts:List[str]):
-        index = 0
-        for i in range(0, len(bbox_control_states) - 10, 10):
-            enable, x, y ,w, h, p, neg, blend_mode, feather_radius, multiplier = bbox_control_states[i:i+10]
-            if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0 or p == '': continue
-            if blend_mode == 'Mix' and multiplier <= 0: continue
-            c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + p, self.p.styles) for prompt in prompts]
-            c_prompt, extra_network_data = extra_networks.parse_prompts(c_prompt)
-            if neg != '': c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + neg, self.p.styles) for prompt in neg_prompts]
-            else:         c_negative_prompt = neg_prompts
-            c_prompt = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, self.steps)
-            c_negative_prompt = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, self.steps)
-            old_bbox_obj:CustomBBox = self.custom_bboxes[index]
-            old_bbox_obj.prompt = c_prompt
-            old_bbox_obj.neg_prompt = c_negative_prompt
-            old_bbox_obj.extra_network_data = extra_network_data
-            index += 1
+    def refresh_prompt(self, prompts:List[str], neg_prompts:List[str]):
+        for bbox in self.custom_bboxes:
+            bbox.prepare_prompt(prompts, neg_prompts, self.p.styles, self.steps)
         self.all_pos_cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, self.steps)
         self.all_neg_cond = prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompts, self.steps)
 
@@ -385,7 +390,7 @@ class TiledDiffusion(ABC):
                 single_batch_tensors = []
                 for bbox in bboxes:
                     if len(control_tensor.shape) == 3:
-                        control_tile = control_tensor[:, bbox[1] * 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
+                        control_tile = control_tensor[:, bbox[1]* 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
                     else:
                         control_tile = control_tensor[:, :, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
                     single_batch_tensors.append(control_tile)
@@ -416,7 +421,7 @@ class TiledDiffusion(ABC):
                     for i in range(tile_batch_size):
                         this_control_tile = [control_tile[i].unsqueeze(0)] * x_batch_size
                         all_control_tile.append(torch.cat(this_control_tile, dim=0))
-                    control_tile = torch.cat(all_control_tile, dim=0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+                    control_tile = torch.cat(all_control_tile, dim=0)                                           
                 else:
                     control_tile = control_tile.repeat([x_batch_size if is_denoise else x_batch_size * 2, 1, 1, 1])
                 self.control_params[param_id].hint_cond = control_tile.to(devices.device)

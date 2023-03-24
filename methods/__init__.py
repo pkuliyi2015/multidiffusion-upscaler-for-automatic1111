@@ -1,6 +1,6 @@
 import math
 
-from methods.abstractdiffusion import TiledDiffusion, BlendMode
+from methods.abstractdiffusion import TiledDiffusion, BBox, CustomBBox, BlendMode
 from methods.multidiffusion import MultiDiffusion
 from methods.mixtureofdiffusers import MixtureOfDiffusers
 

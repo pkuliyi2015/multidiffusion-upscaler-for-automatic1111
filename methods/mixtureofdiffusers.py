@@ -6,7 +6,7 @@ from numpy import pi, exp, sqrt
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
-from methods.abstractdiffusion import TiledDiffusion
+from methods.abstractdiffusion import BlendMode, TiledDiffusion
 
 
 class MixtureOfDiffusers(TiledDiffusion):
@@ -50,17 +50,22 @@ class MixtureOfDiffusers(TiledDiffusion):
             self.rescale_factor = 1 / self.weights
             # Meanwhile, we rescale the custom weights in advance to save time of slicing
             for bbox_id, bbox in enumerate(self.custom_bboxes):
-                self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
-                self.custom_weights[bbox_id] *= self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                if bbox.blend_mode == BlendMode.BACKGROUND:
+                    self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
+                    self.custom_weights[bbox_id] *= self.rescale_factor[bbox.slice]
             
-    def init_custom_bbox(self, global_multiplier, bbox_control_states):
-        super().init_custom_bbox(global_multiplier, bbox_control_states)
+    def init_custom_bbox(self, draw_background, bbox_control_states):
+        super().init_custom_bbox(draw_background, bbox_control_states)
         for bbox in self.custom_bboxes:
-            gaussian_weights = self._gaussian_weights(bbox[2] - bbox[0], bbox[3] - bbox[1]) * bbox.multiplier
-            self.weights[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += gaussian_weights
-            self.custom_weights.append(gaussian_weights.unsqueeze(0).unsqueeze(0))
+            if bbox.blend_mode == BlendMode.BACKGROUND:
+                custom_weights = self._gaussian_weights(bbox.w, bbox.h)
+                self.weights[bbox.slice] += custom_weights
+                self.custom_weights.append(custom_weights.unsqueeze(0).unsqueeze(0))
+            else:
+                self.custom_weights.append(None)
 
-    def hook(self):
+    def hook(self, sampler):
+        super().hook(sampler)
         if not hasattr(shared.sd_model, 'md_org_apply_model'):
             shared.sd_model.md_org_apply_model = shared.sd_model.apply_model
         
@@ -102,21 +107,20 @@ class MixtureOfDiffusers(TiledDiffusion):
         self.init(x_in)
 
         # Global sampling
-        if self.global_multiplier > 0:
+        if self.draw_background:
             for batch_id, bboxes in enumerate(self.batched_bboxes):
                 if state.interrupted: return x_in
-                
                 x_tile_list = []
                 t_tile_list = []
                 attn_tile_list = []
                 image_cond_list = []
                 for bbox in bboxes:
-                    x_tile_list.append(x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]])
+                    x_tile_list.append(x_in[bbox.slice])
                     t_tile_list.append(t_in)
                     if c_in is not None and isinstance(cond, dict):
                         image_cond = cond['c_concat'][0]
                         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
-                            image_cond = image_cond[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                            image_cond = image_cond[bbox.slice]
                         image_cond_list.append(image_cond)
                         attn_tile = cond['c_crossattn'][0]
                         attn_tile_list.append(attn_tile)
@@ -133,25 +137,26 @@ class MixtureOfDiffusers(TiledDiffusion):
                 for i, bbox in enumerate(bboxes):
                     # This weights can be calcluated in advance, but will cost a lot of vram 
                     # when you have many tiles. So we calculate it here.
-                    w = self.per_tile_weights * self.rescale_factor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
-                    self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out[i*N:(i+1)*N, :, :, :] * w
+                    w = self.per_tile_weights * self.rescale_factor[bbox.slice]
+                    self.x_buffer[bbox.slice] += x_tile_out[i*N:(i+1)*N, :, :, :] * w
 
                 self.update_pbar()
 
         # Custom region sampling
         if len(self.custom_bboxes) > 0:
-            if self.global_multiplier > 0 and abs(self.global_multiplier - 1.0) > 1e-6:
-                self.x_buffer *= self.global_multiplier
             
             for bbox_id, bbox in enumerate(self.custom_bboxes):
                 # unpack sigma_in, x_in, image_cond
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.activate(self.p, bbox.extra_network_data)
-                x_tile = x_in[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                x_tile = x_in[bbox.slice]
                 x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox, bbox.prompt, bbox.neg_prompt)
-                x_tile_out *= self.custom_weights[bbox_id]
-                self.x_buffer[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]] += x_tile_out
+                if bbox.blend_mode == BlendMode.BACKGROUND:
+                    x_tile_out *= self.custom_weights[bbox_id]
+                    self.x_buffer[bbox.slice] += x_tile_out
+                elif bbox.blend_mode == BlendMode.FOREGROUND:
+                    self.x_buffer[bbox.slice] = x_tile_out * bbox.feather_mask + self.x_buffer[bbox.slice] * (1 - bbox.feather_mask)
                 self.update_pbar()
                 if not self.p.disable_extra_networks:
                     with devices.autocast():

@@ -135,8 +135,8 @@ class Script(scripts.Script):
                     with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(
                             label='Enable', value=False)
-                        global_multiplier = gr.Slider(
-                            minimum=0, maximum=10, step=0.1, label='Background Multiplier', value=1, interactive=True)
+                        draw_background = gr.Checkbox(
+                            label='Draw tiles as background (SLOW but save VRAM) ', value=False)
                     with gr.Row(variant='compact'):
                         create_button = gr.Button(
                             value="Create txt2img canvas" if not is_img2img else "From img2img")
@@ -166,16 +166,17 @@ class Script(scripts.Script):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label='Enable', value=False, elem_id=f'MD-enable-{i}')
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
-                                blend_mode = gr.Dropdown(label='Blend Mode', choices=['Mix', 'Feather'], value='Feather', 
-                                                         elem_id=f'MD-blend-{i}')
-                                feather_radius = gr.Slider(label='Multiplier', value=1, minimum=0, maximum=10, step=0.1, 
-                                                interactive=True, elem_id=f'MD-mt-{i}', visible=blend_mode.value == 'Feather')
-                                multiplier = gr.Slider(label='Radius', value=0.2, minimum=0, maximum=1, step=0.01, 
-                                              interactive=True, elem_id=f'MD-mt-{i}', visible=blend_mode.value == 'Mix')
+                                
+                                blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value, 
+                                                         elem_id=f'MD-blend-{i}', visible=True)
+                                
+                                feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, 
+                                            interactive=True, elem_id=f'MD-feather-{i}', visible=blend_mode.value == BlendMode.FOREGROUND.value)
                                 
                                 def on_blend_mode_change(x): 
-                                    return gr_show(x=='Mix'), gr_show(x=='Feather')
-                                blend_mode.change(fn=on_blend_mode_change, inputs=blend_mode, outputs=[feather_radius, multiplier])
+                                    return gr_show(x==BlendMode.FOREGROUND.value)
+                                blend_mode.change(fn=on_blend_mode_change, inputs=blend_mode, outputs=[feather_ratio])
+                                
 
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, 
@@ -192,12 +193,12 @@ class Script(scripts.Script):
                                 w.change(fn=None, inputs=w, outputs=w, _js=f'(v) => onBoxChange({is_t2i}, {i}, "w", v)')
                                 h.change(fn=None, inputs=h, outputs=h, _js=f'(v) => onBoxChange({is_t2i}, {i}, "h", v)')
 
-                            prompt   = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', 
+                            prompt   = gr.Text(show_label=False, placeholder=f'Prompt, will be appended to your {tab} prompt', 
                                           max_lines=2, elem_id=f'MD-p-{i}')
-                            neg_prompt = gr.Text(show_label=False, placeholder=f'Negative Prompt, will also be appended',         
+                            neg_prompt = gr.Text(show_label=False, placeholder=f'Negative Prompt, will be appended to your {tab} negative prompt',         
                                           max_lines=1, elem_id=f'MD-n-{i}')
 
-                        bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_radius, multiplier])
+                        bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
 
         controls = [
             enabled, method,
@@ -206,7 +207,7 @@ class Script(scripts.Script):
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control,
-            global_multiplier
+            draw_background
         ]
         for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
         return controls
@@ -216,7 +217,7 @@ class Script(scripts.Script):
             overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
             upscaler_index: str, scale_factor: float,
-            control_tensor_cpu: bool, enable_bbox_control: bool, global_multiplier: float, 
+            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: bool,
             *bbox_control_states
         ):
 
@@ -255,7 +256,7 @@ class Script(scripts.Script):
             p.height = image_height
 
         ''' sanitiy check '''
-        if not splitable(p.width, p.height, tile_width, tile_height, overlap):
+        if not enable_bbox_control and not splitable(p.width, p.height, tile_width, tile_height, overlap):
             print("[Tiled Diffusion] ignore due to image too small or tile size too large.")
             return
 
@@ -271,7 +272,7 @@ class Script(scripts.Script):
             overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
             upscaler_index: str, scale_factor: float,
-            control_tensor_cpu: bool, enable_bbox_control: bool, global_multiplier: float, 
+            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: float, 
             *bbox_control_states, batch_number, prompts, seeds, subseeds):
         '''
         compatible with the webui batch processing
@@ -298,7 +299,7 @@ class Script(scripts.Script):
             for script in p.scripts.scripts + p.scripts.alwayson_scripts:
                 if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
                     controlnet_script = script
-                    print("[Tiled Diffusion] ControlNet found, MultiDiffusion-ControlNet support is enabled.")
+                    print("[Tiled Diffusion] ControlNet found, support is enabled.")
                     break
         except ImportError:
             pass
@@ -326,13 +327,13 @@ class Script(scripts.Script):
                 else:
                     raise NotImplementedError(f"Method {method} not implemented.")
                 if enable_bbox_control:
-                    self.delegate.init_custom_bbox(global_multiplier, bbox_control_states)
+                    self.delegate.init_custom_bbox(draw_background, bbox_control_states)
         
             self.delegate.hook(sampler)
 
             if len(self.delegate.custom_bboxes) > 0:
                 neg_prompts = p.all_negative_prompts[n * p.batch_size:(n + 1) * p.batch_size]
-                self.delegate.refresh_prompt(bbox_control_states, prompts, neg_prompts)
+                self.delegate.refresh_prompt(prompts, neg_prompts)
 
             print(f"{method.value} hooked into {p.sampler_name} sampler. " +
                   f"Tile size: {tile_width}x{tile_height}, " +
@@ -350,7 +351,6 @@ class Script(scripts.Script):
     
     def postprocess(self, p, processed, *args):
         if self.delegate is None: return
-        self.delegate = None
         self.delegate = None
         if hasattr(sd_samplers, "md_org_create_sampler"):
             sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
