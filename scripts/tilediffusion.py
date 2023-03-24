@@ -262,8 +262,9 @@ class Script(scripts.Script):
         if hasattr(sd_samplers, "md_org_create_sampler"):
             sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
             del sd_samplers.md_org_create_sampler
-            MixtureOfDiffusers.unhook()
-            self.delegate = None
+
+        MixtureOfDiffusers.unhook()
+        self.delegate = None
 
         if not enabled: return
 
@@ -365,10 +366,9 @@ class Script(scripts.Script):
 
     
     def postprocess(self, p, processed, *args):
-        if self.delegate is None: return
         self.delegate = None
         if hasattr(sd_samplers, "md_org_create_sampler"):
             sd_samplers.create_sampler = sd_samplers.md_org_create_sampler
             del sd_samplers.md_org_create_sampler
-            MixtureOfDiffusers.unhook()
+        MixtureOfDiffusers.unhook()
 
