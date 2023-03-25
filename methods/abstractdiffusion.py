@@ -402,6 +402,8 @@ class TiledDiffusion(ABC):
         # If the original prompt is with different length, 
         # kdiff will deal with the cond and uncond separately.
         # Hence we also deal with the tensor and uncond separately.
+        # get the start and end index of the current batch
+
         if a < tensor.shape[0]:
             # Deal with custom prompt tensor
             if not self.is_edit_model:

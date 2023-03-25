@@ -288,8 +288,11 @@ class Script(scripts.Script):
                 p.width = image.width
                 p.height = image.height
             elif upscaler.name != "None":
-                p.width *= scale_factor
-                p.height *= scale_factor
+                if not hasattr(p, "md_original_width"):
+                    p.md_original_width = p.width
+                    p.md_original_height = p.height
+                p.width = scale_factor * p.md_original_width
+                p.height = scale_factor * p.md_original_height
         elif overwrite_image_size:       # txt2img
             p.width = image_width
             p.height = image_height
@@ -333,7 +336,7 @@ class Script(scripts.Script):
 
         
         create_sampler = lambda name, model : self.custom_create_sampler(
-            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, p.all_prompts, 0)
+            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, p.all_prompts[:p.batch_size], 0)
 
         if not hasattr(sd_samplers, "md_org_create_sampler"):
             setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
