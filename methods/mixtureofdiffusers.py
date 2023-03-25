@@ -62,9 +62,9 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
 
-    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox, cond, uncond):
+    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox):
         if self.is_kdiff:
-            return self.kdiff_custom_forward(x_in, c_in, cond, uncond, t_in, bbox_id, bbox, forward_func=shared.sd_model.apply_model_original_md)
+            return self.kdiff_custom_forward(x_in, c_in, t_in, bbox_id, bbox, forward_func=shared.sd_model.apply_model_original_md)
         else:
             def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs):
                 # copy from p_sample_ddim in ddim.py
@@ -76,7 +76,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                         c_in[k] = torch.cat([unconditional_conditioning[k], c[k]])
                 self.set_controlnet_tensors(bbox_id, x.shape[0])
                 return shared.sd_model.apply_model_original_md(x, ts, c_in)
-            return self.ddim_custom_forward(x_in, c_in, cond, uncond, bbox, ts=t_in, forward_func=forward_func)
+            return self.ddim_custom_forward(x_in, c_in, bbox, ts=t_in, forward_func=forward_func)
 
     @torch.no_grad()
     @keep_signature
@@ -144,7 +144,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                         extra_networks.activate(self.p, bbox.extra_network_data)
 
                 x_tile = x_in[bbox.slicer]
-                x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox, bbox.cond, bbox.uncond)
+                x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
 
                 if bbox.blend_mode == BlendMode.BACKGROUND:
                     self.x_buffer[bbox.slicer] += x_tile_out * self.custom_weights[bbox_id]

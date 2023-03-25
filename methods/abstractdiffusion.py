@@ -33,20 +33,21 @@ class TiledDiffusion:
         # avoiding overhead of creating new tensors and weight summing
         self.x_buffer: Tensor = None
 
-        # For kdiff sampler, the step counting is extremely tricky
-        # FIXME: do not know dependencies
-        self.step_count = 0         # FIXME: not used?
-        self.inner_loop_count = 0   # FIXME: not used?
+        # FIXME: I'm trying to count the step correctly but it's not working
+        self.step_count = 0         
+        self.inner_loop_count = 0  
         self.kdiff_step = -1
 
 
+        # weights for background & grid bboxes
+        self.w: int = int(self.p.width // opt_f)
+        self.h: int = int(self.p.height // opt_f)
+        self.weights: Tensor = torch.zeros((1, 1, self.h, self.w), device=devices.device, dtype=torch.float32)
+
         # ext. Grid tiling painting (grid bbox)
         self.enable_grid_bbox: bool = False
-        self.w: int = None
-        self.h: int = None
         self.tile_w: int = None
         self.tile_h: int = None
-        self.weights: Tensor = None
         self.num_batches: int = None
         self.batched_bboxes: List[List[BBox]] = []
 
@@ -109,14 +110,13 @@ class TiledDiffusion:
     @grid_bbox
     def init_grid_bbox(self, tile_w:int, tile_h:int, overlap:int, tile_bs:int):
         self.enable_grid_bbox = True
-
-        self.w, self.h = self.p.width // opt_f, self.p.height // opt_f
         self.tile_w = min(tile_w, self.w)
         self.tile_h = min(tile_h, self.h)
         overlap = max(0, min(overlap, min(tile_w, tile_h) - 4))
         # split the latent into overlapped tiles, then batching
         # weights basically indicate how many times a pixel is painted
-        bboxes, self.weights = split_bboxes(self.w, self.h, self.tile_w, self.tile_h, overlap, self.get_tile_weights())
+        bboxes, weights = split_bboxes(self.w, self.h, self.tile_w, self.tile_h, overlap, self.get_tile_weights())
+        self.weights += weights
         self.num_batches = math.ceil(len(bboxes) / tile_bs)
         BS = math.ceil(len(bboxes) / self.num_batches)          # optimal_batch_size
         self.batched_bboxes = [bboxes[i*BS:(i+1)*BS] for i in range(self.num_batches)]
@@ -135,12 +135,13 @@ class TiledDiffusion:
         if not draw_background and self.weights is not None:
             self.weights.zero_()
 
-        n_controls = 9      # FIXME: magic number
+        # The number parameters needed to initialize the CustomBBox is 9 currently.
+        # Need to be the same as the number of parameters in the `bbox_control_states` list.
+        n_controls = 9
         self.custom_bboxes: List[CustomBBox] = []
-        for i in range(0, len(bbox_control_states) - n_controls, n_controls):
+        for i in range(0, len(bbox_control_states), n_controls):
             e, x, y, w, h, p, n, blend_mode, feather_ratio = bbox_control_states[i:i+n_controls]
             if not e or x > 1.0 or y > 1.0 or w <= 0.0 or h <= 0.0: continue
-
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)
@@ -150,15 +151,18 @@ class TiledDiffusion:
             w = min(self.w - x, w)
             h = min(self.h - y, h)
             self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, BlendMode(blend_mode), feather_ratio))
+
         if len(self.custom_bboxes) == 0: return
 
         # prepare cond
         p = self.p
+        prompts = p.all_prompts[:p.batch_size]
+        neg_prompts = p.all_negative_prompts[:p.batch_size]
         for bbox in self.custom_bboxes:
-            bbox.cond, bbox.extra_network_data = Condition.get_cond(Prompt.append_prompt(p.all_prompts, bbox.prompt), p.steps, p.styles)
-            bbox.uncond = Condition.get_uncond(Prompt.append_prompt(p.all_negative_prompts, bbox.neg_prompt), p.steps, p.styles)
-        self.cond_basis = Condition.get_cond(p.all_prompts, p.steps)
-        self.uncond_basis = Condition.get_uncond(p.all_negative_prompts, p.steps)
+            bbox.cond, bbox.extra_network_data = Condition.get_cond(Prompt.append_prompt(prompts, bbox.prompt), p.steps, p.styles)
+            bbox.uncond = Condition.get_uncond(Prompt.append_prompt(neg_prompts, bbox.neg_prompt), p.steps, p.styles)
+        self.cond_basis, _ = Condition.get_cond(prompts, p.steps)
+        self.uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
 
     @custom_bbox
     def reconstruct_custom_cond(self, org_cond, custom_cond, custom_uncond, bbox):
@@ -177,8 +181,7 @@ class TiledDiffusion:
     @custom_bbox
     def kdiff_custom_forward(self, 
             x_tile:Tensor, sigma_in:Tensor, 
-            original_cond:CondDict, custom_cond:Cond, uncond:Tensor, 
-            bbox_id:int, bbox:CustomBBox, forward_func,
+            original_cond:CondDict, bbox_id:int, bbox:CustomBBox, forward_func,
         ):
         ''' draw custom bbox '''
         '''
@@ -209,7 +212,7 @@ class TiledDiffusion:
             # When a new step starts for a bbox, we need to judge whether the tensor is batched.
             self.kdiff_step_bbox[bbox_id] = self.sampler.step
 
-            _, tensor, uncond, image_cond_in = self.reconstruct_custom_cond(original_cond, custom_cond, uncond, bbox)
+            _, tensor, uncond, image_cond_in = self.reconstruct_custom_cond(original_cond, bbox.cond, bbox.uncond, bbox)
 
             if self.real_tensor.shape[1] == self.real_uncond.shape[1]:
                 if shared.batch_cond_uncond:
@@ -374,13 +377,12 @@ class TiledDiffusion:
 
     @custom_bbox
     def ddim_custom_forward(self, x:Tensor, 
-            cond_in:CondDict, cond:Cond, uncond:Tensor, 
-            bbox:CustomBBox, ts, forward_func, 
+            cond_in:CondDict, bbox:CustomBBox, ts, forward_func, 
             *args, **kwargs
         ):
         ''' draw custom bbox '''
 
-        conds_list, tensor, uncond, image_conditioning = self.reconstruct_custom_cond(cond_in, cond, uncond, bbox)
+        conds_list, tensor, uncond, image_conditioning = self.reconstruct_custom_cond(cond_in, bbox.cond, bbox.uncond, bbox)
         assert all([len(conds) == 1 for conds in conds_list]), \
             'composition via AND is not supported for DDIM/PLMS samplers'
 

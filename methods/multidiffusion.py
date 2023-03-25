@@ -99,8 +99,8 @@ class MultiDiffusion(TiledDiffusion):
             x_tile_out = self.sampler_forward(x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
 
-        def custom_func(x, custom_cond, uncond, bbox_id, bbox):
-            return self.kdiff_custom_forward(x, cond, custom_cond, uncond, sigma_in, bbox_id, bbox, self.sampler_forward)
+        def custom_func(x, bbox_id, bbox):
+            return self.kdiff_custom_forward(x, sigma_in, cond, bbox_id, bbox, self.sampler_forward)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
@@ -135,12 +135,12 @@ class MultiDiffusion(TiledDiffusion):
                 *args, **kwargs)
             return x_tile_out, x_pred
 
-        def custom_func(x, cond:Cond, uncond:Tensor, bbox_id:int, bbox:CustomBBox):
+        def custom_func(x, bbox_id:int, bbox:CustomBBox):
             # before the final forward, we can set the control tensor
             def forward_func(x, *args, **kwargs):
                 self.set_controlnet_tensors(bbox_id, 2*x.shape[0])
                 return self.sampler_forward(x, *args, **kwargs)
-            return self.ddim_custom_forward(x, cond_in, cond, uncond, bbox, ts, forward_func, *args, **kwargs)
+            return self.ddim_custom_forward(x, cond_in, bbox, ts, forward_func, *args, **kwargs)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
@@ -205,7 +205,7 @@ class MultiDiffusion(TiledDiffusion):
 
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
-                    x_tile_out = custom_func(x_tile, bbox.cond, bbox.uncond, index, bbox)
+                    x_tile_out = custom_func(x_tile, index, bbox)
 
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer[bbox.slicer] += x_tile_out
@@ -218,7 +218,7 @@ class MultiDiffusion(TiledDiffusion):
                         x_feather_mask  [bbox.slicer] += bbox.feather_mask
                         x_feather_count [bbox.slicer] += 1
                 else:
-                    x_tile_out, x_tile_pred = custom_func(x_tile, bbox.cond, bbox.uncond, index, bbox)
+                    x_tile_out, x_tile_pred = custom_func(x_tile, index, bbox)
 
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer     [bbox.slicer] += x_tile_out
