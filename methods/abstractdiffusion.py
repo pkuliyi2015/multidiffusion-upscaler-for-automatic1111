@@ -1,205 +1,146 @@
 import math
-from enum import Enum
-from typing import List, Dict, Any
-
 import torch
-from torch import Tensor
 from tqdm import tqdm
 
-from modules import devices, shared, prompt_parser, extra_networks
+from modules import devices, shared, prompt_parser
 from modules.shared import state
 from modules.processing import opt_f, StableDiffusionProcessing
-from modules.prompt_parser import MulticondLearnedConditioning, ScheduledPromptConditioning
 
-from typing import Union
-from modules.sd_samplers_compvis import VanillaStableDiffusionSampler
-from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiser
-
-from methods.utils import BBox, feather_mask, split_bboxes, controlnet
-
-
-class Method(Enum):
-    MULTI_DIFF = 'MultiDiffusion'
-    MIX_DIFF   = 'Mixture of Diffusers'
-
-
-class BlendMode(Enum):      # LayerType
-    FOREGROUND = 'Foreground'
-    BACKGROUND = 'Background'
-
-
-class CustomBBox(BBox):
-
-    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:BlendMode, feather_radio:float):
-        super().__init__(x, y, w, h)
-
-        self.prompt_cache = prompt      # main-prompts, will be appended to sub-prompts
-        self.neg_prompt_cache = neg_prompt or ''
-        self.cond: MulticondLearnedConditioning = None
-        self.uncond: List[ScheduledPromptConditioning] = None
-        self.blend_mode = blend_mode
-        self.feather_ratio = max(min(feather_radio,1),0)
-        self.extra_network_data = None
-        self.feather_mask = feather_mask(self.w, self.h, self.feather_ratio) if self.blend_mode == BlendMode.FOREGROUND else None
-
-    def prepare_cond(self, prompts:List[str], neg_prompts:List[str], styles, steps:int):
-        ''' each CustomBBox is a relative independent subplot, so prepare for its own set of prompts (cond/uncond) '''
-        c_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.prompt_cache, styles) for prompt in prompts]
-        c_prompt, self.extra_network_data = extra_networks.parse_prompts(c_prompt)
-        if self.neg_prompt_cache != '': 
-            c_negative_prompt = [shared.prompt_styles.apply_styles_to_prompt(prompt + ', ' + self.neg_prompt_cache, styles)  for prompt in neg_prompts]
-        else:
-            c_negative_prompt = neg_prompts
-        self.cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, c_prompt, steps)
-        self.uncond = prompt_parser.get_learned_conditioning(shared.sd_model, c_negative_prompt, steps)
+from methods.utils import *
+from methods.typing import *
 
 
 class TiledDiffusion:
 
-    def __init__(self, 
-        p:StableDiffusionProcessing, 
-        sampler:Union[KDiffusionSampler, VanillaStableDiffusionSampler], 
-        tile_w=64, tile_h=64, overlap=32, tile_batch_size=1,
-        controlnet_script=None, control_tensor_cpu=False, 
-        causal_layers=False,
-    ):
+    def __init__(self, p:StableDiffusionProcessing, sampler:Sampler):
         self.method = self.__class__.__name__
-
-        self.is_kdiff = isinstance(sampler, KDiffusionSampler)
-        self.sampler_raw = sampler
-        if self.is_kdiff:
-            self.sampler: CFGDenoiser = sampler.model_wrap_cfg
-        else:
-            self.sampler: VanillaStableDiffusionSampler = sampler
-
         self.p = p
-        self.batch_size = p.batch_size
-        self.steps = p.steps        # total sampling steps
+        self.pbar = None
 
-        # initialize the grid tile bboxes and weights
-        self.w, self.h = p.width // opt_f, p.height // opt_f
-        if tile_w > self.w: tile_w = self.w
-        if tile_h > self.h: tile_h = self.h
-        min_tile_size = min(tile_w, tile_h)
-        if overlap >= min_tile_size: overlap = min_tile_size - 4
-        overlap = max(0, overlap)
-        self.tile_w = tile_w
-        self.tile_h = tile_h
+        # sampler
+        self.sampler_name = p.sampler_name
+        self.sampler_raw = sampler
+        if self.is_kdiff: self.sampler: CFGDenoiser = sampler.model_wrap_cfg
+        else: self.sampler: VanillaStableDiffusionSampler = sampler
 
-        # Split the latent into tiles
-        bboxes, weights = split_bboxes(self.w, self.h, tile_w, tile_h, overlap, self.init_tile_weights)
-        self.weights = weights.to(devices.device)
-        self.num_batches     = math.ceil(len(bboxes) / tile_batch_size)
-        self.tile_batch_size = math.ceil(len(bboxes) / self.num_batches)    # optimal_batch_size
-        self.batched_bboxes: List[List[CustomBBox]] = []    # grid tile bboxes
-        for i in range(self.num_batches):
-            start = i * self.tile_batch_size
-            end = min((i + 1) * self.tile_batch_size, len(bboxes))
-            self.batched_bboxes.append(bboxes[start:end])
-
-        # Avoid the overhead of creating a new tensor for each batch and weight summing
-        self.x_buffer = None        # current result, [B, C=4, H, W]
-
-        # Region prompt control
-        self.custom_bboxes = []     # custom tile bboxes
-        self.draw_background = True     # this must be True
-        self.causal_layers = causal_layers
-
-        # ControlNet
-        self.controlnet_script = controlnet_script
-        self.control_tensor_batch = None
-        self.control_params = None
-        self.control_tensor_cpu = control_tensor_cpu
-        self.control_tensor_custom = []
-
-        # Kdiff 'AND' support and image editing model support
+        # fix. Kdiff 'AND' support and image editing model support
         if self.is_kdiff and not hasattr(self, 'is_edit_model'):
-            self.is_edit_model = shared.sd_model.cond_stage_key == "edit" \
-                and self.sampler.image_cfg_scale is not None \
-                and self.sampler.image_cfg_scale != 1.0
+            self.is_edit_model = (shared.sd_model.cond_stage_key == "edit"      # "txt"
+                and self.sampler.image_cfg_scale is not None 
+                and self.sampler.image_cfg_scale != 1.0)
+
+        # cache. final result of current sampling step, [B, C=4, H//8, W//8]
+        # avoiding overhead of creating new tensors and weight summing
+        self.x_buffer: Tensor = None
 
         # For kdiff sampler, the step counting is extremely tricky
-        self.step_count = 0
-        self.inner_loop_count = 0
+        # FIXME: do not know dependencies
+        self.step_count = 0         # FIXME: not used?
+        self.inner_loop_count = 0   # FIXME: not used?
         self.kdiff_step = -1
 
-        # Progress bar
-        self.total_bboxes = (self.num_batches if self.draw_background else 0) + len(self.custom_bboxes)
-        assert self.total_bboxes > 0, "No region to sample! no background to draw and no custom bboxes were provided."
-        self.pbar = tqdm(total=(self.total_bboxes) * state.sampling_steps, desc=f"{self.method} Sampling: ")
 
-        # ControlNet support
-        self.reset_controlnet_tensors()
+        # ext. Grid tiling painting (grid bbox)
+        self.enable_grid_bbox: bool = False
+        self.w: int = None
+        self.h: int = None
+        self.tile_w: int = None
+        self.tile_h: int = None
+        self.weights: Tensor = None
+        self.num_batches: int = None
+        self.batched_bboxes: List[List[BBox]] = []
+
+        # ext. Region Prompt Control (custom bbox)
+        self.enable_custom_bbox: bool = False
+        self.custom_bboxes: List[CustomBBox] = []
+        self.cond_basis: Cond = None
+        self.uncond_basis: Uncond = None
+        self.draw_background: bool = True       # by default we draw major prompts in grid tiles
+        self.causal_layers: bool = None
+
+        # ext. ControlNet
+        self.enable_controlnet: bool = False
+        self.controlnet_script: Any = None
+        self.control_tensor_batch: Any = None
+        self.control_params: Any = None
+        self.control_tensor_cpu: bool = None
+        self.control_tensor_custom: List = []
 
     @property
-    def init_tile_weights(self) -> Union[Tensor, float]:
-        return 1.0
+    def is_kdiff(self):
+        return isinstance(self.sampler_raw, KDiffusionSampler)
 
-    def hook(self):
-        raise NotImplementedError
-        
-    @staticmethod
-    def unhook():
-        raise NotImplementedError
+    @property
+    def is_ddim(self):
+        return isinstance(self.sampler_raw, VanillaStableDiffusionSampler)
+
+    def update_pbar(self):
+        if self.pbar.n >= self.pbar.total:
+            self.pbar.close()
+        else:
+            if self.step_count == state.sampling_step:
+                self.inner_loop_count += 1
+                if self.inner_loop_count < self.total_bboxes:
+                    self.pbar.update()
+            else:
+                self.step_count = state.sampling_step
+                self.inner_loop_count = 0
 
     def reset_buffer(self, x_in:Tensor):
-        # reset result canvas
         if self.x_buffer is None:
-            self.x_buffer = torch.zeros_like(x_in, device=x_in.device)
+            self.x_buffer = torch.zeros_like(x_in, device=x_in.device, dtype=x_in.dtype)
         else:
             self.x_buffer.zero_()
 
-        # ControlNet support
-        self.prepare_controlnet_tensors()
+    def init_done(self):
+        '''
+          Call this after all `init_*`, settings are done, now perform:
+            - settings sanity check 
+            - pre-computations, cache init
+            - anything thing needed before denoising starts
+        '''
 
-    def init_custom_bbox(self, draw_background:bool, bbox_control_states:List[Any]):
-        ''' Prepare custom bboxes for region prompt, init weight of each tile '''
+        self.total_bboxes = (self.num_batches if self.draw_background else 0) + len(self.custom_bboxes)
+        assert self.total_bboxes > 0, "Nothing to paint! No background to draw and no custom bboxes were provided."
+        self.pbar = tqdm(total=(self.total_bboxes) * state.sampling_steps, desc=f"{self.method} Sampling: ")
 
-<<<<<<< HEAD
+    ''' ↓↓↓ extensive functionality ↓↓↓ '''
+
+    @grid_bbox
+    def init_grid_bbox(self, tile_w:int, tile_h:int, overlap:int, tile_bs:int):
+        self.enable_grid_bbox = True
+
+        self.w, self.h = self.p.width // opt_f, self.p.height // opt_f
+        self.tile_w = min(tile_w, self.w)
+        self.tile_h = min(tile_h, self.h)
+        overlap = max(0, min(overlap, min(tile_w, tile_h) - 4))
+        # split the latent into overlapped tiles, then batching
+        # weights basically indicate how many times a pixel is painted
+        bboxes, self.weights = split_bboxes(self.w, self.h, self.tile_w, self.tile_h, overlap, self.get_tile_weights())
+        self.num_batches = math.ceil(len(bboxes) / tile_bs)
+        BS = math.ceil(len(bboxes) / self.num_batches)          # optimal_batch_size
+        self.batched_bboxes = [bboxes[i*BS:(i+1)*BS] for i in range(self.num_batches)]
+
+    @grid_bbox
+    def get_tile_weights(self) -> Union[Tensor, float]:
+        return 1.0
+
+
+    @custom_bbox
+    def init_custom_bbox(self, bbox_control_states:BBoxControls, draw_background:bool, causal_layers:bool):
+        self.enable_custom_bbox = True
+
+        self.causal_layers = causal_layers
+        self.draw_background = draw_background
+        if not draw_background and self.weights is not None:
+            self.weights.zero_()
+
+        n_controls = 9      # FIXME: magic number
         self.custom_bboxes: List[CustomBBox] = []
-        for i in range(0, len(bbox_control_states) - 9, 9):
-            e, x, y, w, h, p, n, blend_mode, feather_ratio = bbox_control_states[i:i+9]
+        for i in range(0, len(bbox_control_states) - n_controls, n_controls):
+            e, x, y, w, h, p, n, blend_mode, feather_ratio = bbox_control_states[i:i+n_controls]
             if not e or x > 1.0 or y > 1.0 or w <= 0.0 or h <= 0.0: continue
 
-=======
-    def split_views(self, tile_w, tile_h, overlap):
-        non_overlap_width = tile_w - overlap
-        non_overlap_height = tile_h - overlap
-        w, h = self.w, self.h
-        cols = math.ceil((w - overlap) / non_overlap_width)
-        rows = math.ceil((h - overlap) / non_overlap_height)
-
-        dx = (w - tile_w) / (cols - 1) if cols > 1 else 0
-        dy = (h - tile_h) / (rows - 1) if rows > 1 else 0
-
-        bbox_list = []
-        count = torch.zeros((1, 1, h, w), device=devices.device, dtype=torch.float32)
-        for row in range(rows):
-            y = int(row * dy)
-            if y + tile_h >= h:
-                y = h - tile_h
-            for col in range(cols):
-                x = int(col * dx)
-                if x + tile_w >= w:
-                    x = w - tile_w
-                bbox = BBox(x, y, tile_w, tile_h)
-                bbox_list.append(bbox)
-                count[bbox.slice] += self.get_global_weights()
-        return bbox_list, count
-
-    @abstractmethod
-    def get_global_weights(self):
-        pass
-
-    def init_custom_bbox(self, draw_background, bbox_control_states):
-        '''
-        Prepare custom bboxes for region prompt
-        '''
-        self.custom_bboxes = []
-        for i in range(0, len(bbox_control_states), 9):
-            enable, x, y ,w, h, p, neg, blend_mode, feather_ratio = bbox_control_states[i:i+9]
-            if not enable or x >= 1 or y>=1 or w <= 0 or h <= 0: continue
->>>>>>> main
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)
@@ -208,19 +149,18 @@ class TiledDiffusion:
             y = max(0, y)
             w = min(self.w - x, w)
             h = min(self.h - y, h)
-            cbbox = CustomBBox(x, y, w, h, p, n, BlendMode(blend_mode), feather_ratio)
-            self.custom_bboxes.append(cbbox)
+            self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, BlendMode(blend_mode), feather_ratio))
         if len(self.custom_bboxes) == 0: return
 
-        self.draw_background = draw_background
-        if not draw_background: self.weights.zero_()
-
+        # prepare cond
+        p = self.p
         for bbox in self.custom_bboxes:
-            bbox.prepare_cond(self.p.all_prompts, self.p.all_negative_prompts, self.p.styles, self.steps)
-        # prepare_cond
-        self.all_pos_cond: MulticondLearnedConditioning = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, self.p.all_prompts, self.steps)
-        self.all_neg_cond: List[ScheduledPromptConditioning] = prompt_parser.get_learned_conditioning(shared.sd_model, self.p.all_negative_prompts, self.steps)
+            bbox.cond, bbox.extra_network_data = Condition.get_cond(Prompt.append_prompt(p.all_prompts, bbox.prompt), p.steps, p.styles)
+            bbox.uncond = Condition.get_uncond(Prompt.append_prompt(p.all_negative_prompts, bbox.neg_prompt), p.steps, p.styles)
+        self.cond_basis = Condition.get_cond(p.all_prompts, p.steps)
+        self.uncond_basis = Condition.get_uncond(p.all_negative_prompts, p.steps)
 
+    @custom_bbox
     def reconstruct_custom_cond(self, org_cond, custom_cond, custom_uncond, bbox):
         image_conditioning = None
         if isinstance(org_cond, dict):
@@ -234,11 +174,10 @@ class TiledDiffusion:
 
         return conds_list, tensor, custom_uncond, image_conditioning
 
+    @custom_bbox
     def kdiff_custom_forward(self, 
             x_tile:Tensor, sigma_in:Tensor, 
-            original_cond:Dict[str, Tensor], 
-            custom_cond:MulticondLearnedConditioning, 
-            uncond:ScheduledPromptConditioning, 
+            original_cond:CondDict, custom_cond:Cond, uncond:Tensor, 
             bbox_id:int, bbox:CustomBBox, forward_func,
         ):
         ''' draw custom bbox '''
@@ -261,8 +200,8 @@ class TiledDiffusion:
             self.uncond = {}        # {int: Tensor[cond]}
             self.image_cond_in = {}
             # Initialize global prompts just for estimate the behavior of kdiff
-            _, self.real_tensor = prompt_parser.reconstruct_multicond_batch(self.all_pos_cond, self.sampler.step)
-            self.real_uncond = prompt_parser.reconstruct_cond_batch(self.all_neg_cond, self.sampler.step)
+            self.real_tensor = Condition.reconstruct_cond(self.cond_basis, self.sampler.step)
+            self.real_uncond = Condition.reconstruct_uncond(self.uncond_basis, self.sampler.step)
             # reset the progress for all bboxes
             self.a = [0 for _ in range(len(self.custom_bboxes))]
 
@@ -348,12 +287,10 @@ class TiledDiffusion:
                     "c_crossattn": [uncond], 
                     "c_concat": [self.image_cond_in[bbox_id]]
                 })
-    
-    def ddim_custom_forward(self,
-            x:Tensor, 
-            cond_in:Dict[str, Tensor], 
-            cond:MulticondLearnedConditioning, 
-            uncond:ScheduledPromptConditioning, 
+
+    @custom_bbox
+    def ddim_custom_forward(self, x:Tensor, 
+            cond_in:CondDict, cond:Cond, uncond:Tensor, 
             bbox:CustomBBox, ts, forward_func, 
             *args, **kwargs
         ):
@@ -380,18 +317,27 @@ class TiledDiffusion:
         
         # We cannot determine the batch size here for different methods, so delay it to the forward_func.
         return forward_func(x, cond, ts, unconditional_conditioning=uncond, *args, **kwargs)
-    
-    def update_pbar(self):
-        if self.pbar.n >= self.pbar.total:
-            self.pbar.close()
-        else:
-            if self.step_count == state.sampling_step:
-                self.inner_loop_count += 1
-                if self.inner_loop_count < self.total_bboxes:
-                    self.pbar.update()
-            else:
-                self.step_count = state.sampling_step
-                self.inner_loop_count = 0
+
+
+    @controlnet
+    def init_controlnet(self, controlnet_script, control_tensor_cpu):
+        self.enable_controlnet = True
+
+        self.controlnet_script = controlnet_script
+        self.control_tensor_cpu = control_tensor_cpu
+        self.control_tensor_batch = None
+        self.control_params = None
+        self.control_tensor_custom = []
+
+        self.reset_controlnet_tensors()
+        self.prepare_controlnet_tensors()
+
+    @controlnet
+    def reset_controlnet_tensors(self):
+        if self.control_tensor_batch is None: return
+
+        for param_id in range(len(self.control_params)):
+            self.control_params[param_id].hint_cond = self.org_control_tensor_batch[param_id]
 
     @controlnet
     def prepare_controlnet_tensors(self):
@@ -414,9 +360,8 @@ class TiledDiffusion:
                 single_batch_tensors = []
                 for bbox in bboxes:
                     if len(control_tensor.shape) == 3:
-                        control_tile = control_tensor[:, bbox[1]* 8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
-                    else:
-                        control_tile = control_tensor[:, :, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
+                        control_tensor.unsqueeze_(0)
+                    control_tile = control_tensor[:, :, bbox[1]*opt_f:bbox[3]*opt_f, bbox[0]*opt_f:bbox[2]*opt_f]
                     single_batch_tensors.append(control_tile)
                 control_tile = torch.cat(single_batch_tensors, dim=0)
                 if self.control_tensor_cpu:
@@ -428,9 +373,8 @@ class TiledDiffusion:
                 custom_control_tile_list = []
                 for bbox in self.custom_bboxes:
                     if len(control_tensor.shape) == 3:
-                        control_tile = control_tensor[:, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8].unsqueeze(0)
-                    else:
-                        control_tile = control_tensor[:, :, bbox[1]*8:bbox[3]*8, bbox[0]*8:bbox[2]*8]
+                        control_tensor.unsqueeze_(0)
+                    control_tile = control_tensor[:, :, bbox[1]*opt_f:bbox[3]*opt_f, bbox[0]*opt_f:bbox[2]*opt_f]
                     if self.control_tensor_cpu:
                         control_tile = control_tile.cpu()
                     custom_control_tile_list.append(control_tile)
@@ -459,10 +403,3 @@ class TiledDiffusion:
         for param_id in range(len(self.control_params)):
             control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
-
-    @controlnet
-    def reset_controlnet_tensors(self):
-        if self.control_tensor_batch is None: return
-
-        for param_id in range(len(self.control_params)):
-            self.control_params[param_id].hint_cond = self.org_control_tensor_batch[param_id]

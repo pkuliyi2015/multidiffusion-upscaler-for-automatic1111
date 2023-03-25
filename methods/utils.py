@@ -1,15 +1,28 @@
+
 import math
-from typing import List, Tuple, Union
+from enum import Enum
 
 import torch
-from torch import Tensor
 import numpy as np
 
-from modules import devices
+from modules import devices, shared, prompt_parser, extra_networks
 from modules.processing import opt_f
+
+from methods.typing import *
+
+
+class Method(Enum):
+    MULTI_DIFF = 'MultiDiffusion'
+    MIX_DIFF   = 'Mixture of Diffusers'
+
+class BlendMode(Enum):  # i.e. LayerType
+    FOREGROUND = 'Foreground'
+    BACKGROUND = 'Background'
 
 
 class BBox:
+
+    ''' grid bbox '''
 
     def __init__(self, x:int, y:int, w:int, h:int):
         self.x = x
@@ -21,6 +34,64 @@ class BBox:
 
     def __getitem__(self, idx:int) -> int:
         return self.box[idx]
+
+class CustomBBox(BBox):
+
+    ''' region control bbox '''
+
+    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:BlendMode, feather_radio:float):
+        super().__init__(x, y, w, h)
+
+        self.prompt = prompt
+        self.neg_prompt = neg_prompt
+        self.blend_mode = blend_mode
+        self.feather_ratio = max(min(feather_radio, 1.0), 0.0)
+        self.feather_mask = feather_mask(self.w, self.h, self.feather_ratio) if self.blend_mode == BlendMode.FOREGROUND else None
+
+        self.cond: MulticondLearnedConditioning = None
+        self.extra_network_data: DefaultDict[List[ExtraNetworkParams]] = None
+        self.uncond: List[List[ScheduledPromptConditioning]] = None
+
+
+class Prompt:
+
+    ''' prompts handler '''
+
+    @staticmethod
+    def apply_styles(prompts:List[str], styles=None) -> List[str]:
+        if not styles: return prompts
+        return [shared.prompt_styles.apply_styles_to_prompt(p, styles) for p in prompts]
+
+    @staticmethod
+    def append_prompt(prompts:List[str], prompt:str='') -> List[str]:
+        if not prompt: return prompts
+        return [f'{p}, {prompt}' for p in prompts]
+
+class Condition:
+
+    ''' CLIP cond handler '''
+
+    @staticmethod
+    def get_cond(prompts:List[str], steps:int, styles=None) -> Tuple[Cond, ExtraNetworkData]:
+        prompts = Prompt.apply_styles(prompts, styles)
+        prompts, extra_network_data = extra_networks.parse_prompts(prompts)
+        cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, steps)
+        return cond, extra_network_data 
+
+    @staticmethod
+    def get_uncond(neg_prompts:List[str], steps:int, styles=None) -> Uncond:
+        neg_prompts = Prompt.apply_styles(neg_prompts, styles)
+        uncond = prompt_parser.get_learned_conditioning(shared.sd_model, neg_prompts, steps)
+        return uncond
+
+    @staticmethod
+    def reconstruct_cond(cond:Cond, step:int) -> Tuple[List, Tensor]:
+        list_of_what, tensor = prompt_parser.reconstruct_multicond_batch(cond, step)
+        return tensor
+
+    def reconstruct_uncond(uncond:Uncond, step:int):
+        tensor = prompt_parser.reconstruct_cond_batch(uncond, step)
+        return tensor
 
 
 def splitable(w:int, h:int, tile_w:int, tile_h:int, overlap:int=16) -> bool:
@@ -41,13 +112,9 @@ def split_bboxes(w:int, h:int, tile_w:int, tile_h:int, overlap:int=16, init_weig
     bbox_list: List[BBox] = []
     weight = torch.zeros((1, 1, h, w), device=devices.device, dtype=torch.float32)
     for row in range(rows):
-        y = int(row * dy)
-        if y + tile_h >= h:
-            y = h - tile_h
+        y = min(int(row * dy), h - tile_h)
         for col in range(cols):
-            x = int(col * dx)
-            if x + tile_w >= w:
-                x = w - tile_w
+            x = min(int(col * dx), w - tile_w)
 
             bbox = BBox(x, y, tile_w, tile_h)
             bbox_list.append(bbox)
@@ -74,8 +141,8 @@ def gaussian_weights(tile_w:int, tile_h:int) -> Tensor:
 
 def feather_mask(w:int, h:int, ratio:float) -> Tensor:
     '''Generate a feather mask for the bbox'''
-    mask = np.ones((h, w), dtype=np.float32)
 
+    mask = np.ones((h, w), dtype=np.float32)
     feather_radius = int(min(w//2, h//2) * ratio)
     # Generate the mask via gaussian weights
     # adjust the weight near the edge. the closer to the edge, the lower the weight
@@ -98,4 +165,7 @@ def null_decorator(fn):
         return fn(*args, **kwargs)
     return wrapper
 
-controlnet = null_decorator
+keep_signature = null_decorator
+controlnet     = null_decorator
+grid_bbox      = null_decorator
+custom_bbox    = null_decorator

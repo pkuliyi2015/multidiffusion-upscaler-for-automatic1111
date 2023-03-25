@@ -1,14 +1,11 @@
 import torch
-from torch import Tensor
 
 from modules import devices, shared, extra_networks
 from modules.shared import state
-from modules.prompt_parser import MulticondLearnedConditioning
 
 from methods.abstractdiffusion import TiledDiffusion, BlendMode
-from methods.utils import gaussian_weights
-
-from ldm.models.diffusion.ddpm import LatentDiffusion
+from methods.utils import *
+from methods.typing import *
 
 
 class MixtureOfDiffusers(TiledDiffusion):
@@ -20,12 +17,8 @@ class MixtureOfDiffusers(TiledDiffusion):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.custom_weights = []
-        self.per_tile_weights = gaussian_weights(self.tile_w, self.tile_h)
-
-    @property
-    def init_tile_weights(self) -> Tensor:
-        return self.per_tile_weights
+        # weights for custom bboxes
+        self.custom_weights: List[Tensor] = []
 
     def hook(self):
         if not hasattr(shared.sd_model, 'apply_model_original_md'):
@@ -38,8 +31,26 @@ class MixtureOfDiffusers(TiledDiffusion):
             shared.sd_model.apply_model = shared.sd_model.apply_model_original_md
             del shared.sd_model.apply_model_original_md
 
-    def init_custom_bbox(self, draw_background, bbox_control_states):
-        super().init_custom_bbox(draw_background, bbox_control_states)
+    def init_done(self):
+        super().init_done()
+
+        # The original gaussian weights can be extremely small, so we rescale them for numerical stability
+        self.rescale_factor = 1 / self.weights
+        # Meanwhile, we rescale the custom weights in advance to save time of slicing
+        for bbox_id, bbox in enumerate(self.custom_bboxes):
+            if bbox.blend_mode == BlendMode.BACKGROUND:
+                self.custom_weights[bbox_id] *= self.rescale_factor[bbox.slicer]
+
+    @grid_bbox
+    def get_tile_weights(self) -> Tensor:
+        # weights for grid bboxes
+        if not hasattr(self, 'tile_weights'):
+            self.tile_weights = gaussian_weights(self.tile_w, self.tile_h)
+        return self.tile_weights
+
+    @custom_bbox
+    def init_custom_bbox(self, *args):
+        super().init_custom_bbox(*args)
 
         for bbox in self.custom_bboxes:
             if bbox.blend_mode == BlendMode.BACKGROUND:
@@ -49,17 +60,7 @@ class MixtureOfDiffusers(TiledDiffusion):
             else:
                 self.custom_weights.append(None)
 
-    def reset_buffer(self, x_in:Tensor):
-        super().reset_buffer(x_in)
-
-        if not hasattr(self, 'rescale_factor'):
-            # The original gaussian weights can be extremely small, so we rescale them for numerical stability
-            self.rescale_factor = 1 / self.weights
-            # Meanwhile, we rescale the custom weights in advance to save time of slicing
-            for bbox_id, bbox in enumerate(self.custom_bboxes):
-                if bbox.blend_mode == BlendMode.BACKGROUND:
-                    self.custom_weights[bbox_id] = self.custom_weights[bbox_id].to(device=x_in.device, dtype=x_in.dtype)
-                    self.custom_weights[bbox_id] *= self.rescale_factor[bbox.slicer]
+    ''' ↓↓↓ kernel hijacks ↓↓↓ '''
 
     def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox, cond, uncond):
         if self.is_kdiff:
@@ -78,9 +79,8 @@ class MixtureOfDiffusers(TiledDiffusion):
             return self.ddim_custom_forward(x_in, c_in, cond, uncond, bbox, ts=t_in, forward_func=forward_func)
 
     @torch.no_grad()
-    def apply_model_hijack(self, x_in:Tensor, t_in:Tensor, cond:MulticondLearnedConditioning):
-        ''' Hook to UNet when predicting noise '''
-
+    @keep_signature
+    def apply_model_hijack(self, x_in:Tensor, t_in:Tensor, cond:CondDict):
         assert LatentDiffusion.apply_model
 
         # KDiffusion Compatibility
@@ -90,55 +90,51 @@ class MixtureOfDiffusers(TiledDiffusion):
 
         self.reset_buffer(x_in)
 
-        breakpoint()
-
         # Global sampling
         if self.draw_background:
-            for batch_id, bboxes in enumerate(self.batched_bboxes):
+            for batch_id, bboxes in enumerate(self.batched_bboxes):     # batch_id is the `Latent tile batch size`
                 if state.interrupted: return x_in
 
-                x_tile_list = []
-                t_tile_list = []
-                attn_tile_list = []
+                # batching
+                x_tile_list     = []
+                t_tile_list     = []
+                attn_tile_list  = []
                 image_cond_list = []
                 for bbox in bboxes:
                     x_tile_list.append(x_in[bbox.slicer])
                     t_tile_list.append(t_in)
-                    if c_in is not None and isinstance(cond, dict):
-                        image_cond = cond['c_concat'][0]
+                    if c_in is not None and isinstance(c_in, dict):
+                        image_cond = c_in['c_concat'][0]        # dummy for txt2img, latent mask for img2img
                         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
                             image_cond = image_cond[bbox.slicer]
                         image_cond_list.append(image_cond)
-                        attn_tile = cond['c_crossattn'][0]
+                        attn_tile = c_in['c_crossattn'][0]      # cond, [1, 77, 768]
                         attn_tile_list.append(attn_tile)
-                x_tile = torch.cat(x_tile_list, dim=0)
-                t_tile = torch.cat(t_tile_list, dim=0)
-                attn_tile = torch.cat(attn_tile_list, dim=0)
-                image_cond_tile = torch.cat(image_cond_list, dim=0)
+                x_tile          = torch.cat(x_tile_list,     dim=0)     # differs each
+                t_tile          = torch.cat(t_tile_list,     dim=0)     # just repeat
+                attn_tile       = torch.cat(attn_tile_list,  dim=0)     # just repeat
+                image_cond_tile = torch.cat(image_cond_list, dim=0)     # differs each
                 c_tile = {'c_concat': [image_cond_tile], 'c_crossattn': [attn_tile]}
-                
-                # Controlnet tiling
-                self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
-                x_tile_out = shared.sd_model.apply_model_original_md(x_tile, t_tile, c_tile)  # here the x is the noise
 
+                # controlnet
+                self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
+                
+                # denoising: here the x is the noise
+                x_tile_out = shared.sd_model.apply_model_original_md(x_tile, t_tile, c_tile)
+
+                # de-batching
                 for i, bbox in enumerate(bboxes):
                     # This weights can be calcluated in advance, but will cost a lot of vram 
                     # when you have many tiles. So we calculate it here.
-                    w = self.per_tile_weights * self.rescale_factor[bbox.slicer]
+                    w = self.tile_weights * self.rescale_factor[bbox.slicer]
                     self.x_buffer[bbox.slicer] += x_tile_out[i*N:(i+1)*N, :, :, :] * w
 
                 self.update_pbar()
         
-        breakpoint()
-
         # Custom region sampling
-        if len(self.custom_bboxes) > 0 and bbox.blend_mode == BlendMode.FOREGROUND:
-            x_feather_buffer = torch.zeros_like(self.x_buffer)
-            x_feather_mask   = torch.zeros_like(self.x_buffer)
-            x_feather_count  = torch.zeros_like(self.x_buffer)
-        else:
-            x_feather_buffer = None
-
+        x_feather_buffer = None
+        x_feather_mask   = None
+        x_feather_count  = None
         if len(self.custom_bboxes) > 0:
             for bbox_id, bbox in enumerate(self.custom_bboxes):
                 if not self.p.disable_extra_networks:
@@ -151,6 +147,10 @@ class MixtureOfDiffusers(TiledDiffusion):
                 if bbox.blend_mode == BlendMode.BACKGROUND:
                     self.x_buffer[bbox.slicer] += x_tile_out * self.custom_weights[bbox_id]
                 elif bbox.blend_mode == BlendMode.FOREGROUND:
+                    if x_feather_buffer is None:
+                        x_feather_buffer = torch.zeros_like(self.x_buffer)
+                        x_feather_mask   = torch.zeros_like(self.x_buffer)
+                        x_feather_count  = torch.zeros_like(self.x_buffer)
                     x_feather_buffer[bbox.slicer] += x_tile_out
                     x_feather_mask  [bbox.slicer] += bbox.feather_mask
                     x_feather_count [bbox.slicer] += 1
@@ -160,16 +160,13 @@ class MixtureOfDiffusers(TiledDiffusion):
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p, bbox.extra_network_data)
-        breakpoint()
 
         x_out = self.x_buffer
         if x_feather_buffer is not None:
             # Average overlapping feathered regions
             x_feather_buffer = torch.where(x_feather_count > 1, x_feather_buffer / x_feather_count, x_feather_buffer)
-            x_feather_mask   = torch.where(x_feather_count > 1, x_feather_mask / x_feather_count, x_feather_mask)
+            x_feather_mask   = torch.where(x_feather_count > 1, x_feather_mask   / x_feather_count, x_feather_mask)
             # Weighted average with original x_buffer
             x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + x_feather_buffer * x_feather_mask, x_out)
-
-        breakpoint()
 
         return x_out

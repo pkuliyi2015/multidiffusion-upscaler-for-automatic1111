@@ -51,23 +51,27 @@
 # ------------------------------------------------------------------------
 '''
 
-from typing import List, Tuple
-
 import torch
 import numpy as np
 import gradio as gr
 
 from modules import sd_samplers, images, shared, scripts, devices
 from modules.shared import opts
+from modules.processing import opt_f
 from modules.ui import gr_show
-from modules.processing import StableDiffusionProcessing, opt_f
 
-from ldm.models.diffusion.ddpm import LatentDiffusion
+if 'debug quick reload':
+    from importlib import reload
+    from methods import abstractdiffusion, multidiffusion, mixtureofdiffusers, utils
+    abstractdiffusion  = reload(abstractdiffusion)
+    multidiffusion     = reload(multidiffusion)
+    mixtureofdiffusers = reload(mixtureofdiffusers)
+    utils              = reload(utils)
 
-from methods.abstractdiffusion import Method, BlendMode
 from methods.multidiffusion import MultiDiffusion
 from methods.mixtureofdiffusers import MixtureOfDiffusers
-from methods.utils import splitable
+from methods.utils import Method, BlendMode, splitable
+from methods.typing import *
 
 
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
@@ -120,19 +124,21 @@ class Script(scripts.Script):
 
             with gr.Row(variant='compact'):
                 overwrite_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img)
-                if not is_img2img:
-                    overwrite_image_size.change(fn=lambda x: gr_show(x), inputs=overwrite_image_size, outputs=tab_size)
+                overwrite_image_size.change(fn=lambda x: gr_show(x), inputs=overwrite_image_size, outputs=tab_size)
 
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img)
                 control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
+
+                reset_status = gr.Button(value='↻', variant='tool')
+                reset_status.click(fn=self.reset_and_gc, show_progress=False)
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
             with gr.Group(variant='panel', elem_id=f'MD-bbox-control-{tab}'):
                 with gr.Accordion('Region Prompt Control', open=False):
                     with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(label='Enable', value=False)
-                        draw_background = gr.Checkbox(label='Draw tiles as background (SLOW but save VRAM) ', value=False)
-                        causal_layers = gr.Checkbox(label='Causalize layers', value=False)
+                        draw_background = gr.Checkbox(label='Draw full canvas background', value=False)
+                        causal_layers = gr.Checkbox(label='Causalize layers', value=False, visible=False)
 
                     with gr.Row(variant='compact'):
                         create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
@@ -164,7 +170,7 @@ class Script(scripts.Script):
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
 
                                 blend_mode = gr.Radio(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value)
-                                feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False)
+                                feather_ratio = gr.Dropdown(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False)
 
                                 blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio)
 
@@ -194,41 +200,6 @@ class Script(scripts.Script):
         ]
         for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
         return controls
-    
-    def create_sampler_hijack(
-            self, name: str, model: LatentDiffusion, p: StableDiffusionProcessing, method: Method, 
-            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int, 
-            control_tensor_cpu: bool,
-            enable_bbox_control: bool, draw_background: bool, causal_layers: bool,
-            bbox_control_states: List[gr.components.Component],
-        ):
-        
-        #if self.delegate is not None: return self.delegate.sampler_raw
-
-        # create the sampler with the original function
-        sampler = sd_samplers.create_sampler_original_md(name, model)
-        if method == Method.MULTI_DIFF: delegate_cls = MultiDiffusion
-        elif method == Method.MIX_DIFF: delegate_cls = MixtureOfDiffusers
-        else: raise NotImplementedError(f"Method {method} not implemented.")
-
-        self.delegate = delegate_cls(
-            p, sampler,
-            tile_width, tile_height, overlap, tile_batch_size,
-            controlnet_script=self.controlnet_script,
-            control_tensor_cpu=control_tensor_cpu,
-            causal_layers=causal_layers,
-        )
-        self.delegate.hook()
-
-        if enable_bbox_control:
-            self.delegate.init_custom_bbox(draw_background, bbox_control_states)
-
-        print(f"{method.value} hooked into {p.sampler_name} sampler. " +
-                f"Tile size: {tile_width}x{tile_height}, " +
-                f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
-                f"Batch size:", tile_batch_size)
-
-        return sampler
 
     def process(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
@@ -237,15 +208,14 @@ class Script(scripts.Script):
             upscaler_index: str, scale_factor: float,
             control_tensor_cpu: bool, 
             enable_bbox_control: bool, draw_background: bool, causal_layers: bool, 
-            *bbox_control_states,
+            *bbox_control_states: BBoxControls,
         ):
 
-        ''' unhijack & clear all '''
+        ''' save original `create_sampler` (only once) '''
         if not hasattr(sd_samplers, "create_sampler_original_md"):
-            sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
-            del sd_samplers.create_sampler_original_md
-        MixtureOfDiffusers.unhook()
-        self.delegate = None
+            sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
+
+        self.reset()
 
         if not enabled: return
 
@@ -288,28 +258,27 @@ class Script(scripts.Script):
             p.extra_generation_params["Tiled Diffusion batch size"]  = tile_batch_size
 
         ''' ControlNet hackin '''
-        if self.controlnet_script is None:
-            try:
-                from scripts.cldm import ControlNet
-                # fix controlnet multi-batch issue
+        try:
+            from scripts.cldm import ControlNet
+            # fix controlnet multi-batch issue
 
-                def align(self, hint, h, w):
-                    if len(hint.shape) == 3:
-                        hint = hint.unsqueeze(0)
-                    _, _, h1, w1 = hint.shape
-                    if h != h1 or w != w1:
-                        hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
-                    return hint
-                
-                ControlNet.align = align
+            def align(self, hint, h, w):
+                if len(hint.shape) == 3:
+                    hint = hint.unsqueeze(0)
+                _, _, h1, w1 = hint.shape
+                if h != h1 or w != w1:
+                    hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
+                return hint
+            
+            ControlNet.align = align
 
-                for script in p.scripts.scripts + p.scripts.alwayson_scripts:
-                    if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
-                        self.controlnet_script = script
-                        print("[Tiled Diffusion] ControlNet found, support is enabled.")
-                        break
-            except ImportError:
-                pass
+            for script in p.scripts.scripts + p.scripts.alwayson_scripts:
+                if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
+                    self.controlnet_script = script
+                    print("[Tiled Diffusion] ControlNet found, support is enabled.")
+                    break
+        except ImportError:
+            pass
 
         ''' hijack create_sampler() '''
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
@@ -320,22 +289,76 @@ class Script(scripts.Script):
             bbox_control_states,
         )
 
-    def process_batch(self, p: StableDiffusionProcessing, enabled: bool, *args, **kwargs):
-        if not enabled: return
-
-        batch_idx = kwargs['batch_number']
-        prompts   = kwargs['prompts']
-
-        print('batch_idx:', batch_idx)
-        print('prompts:', prompts)
-        print('delegate:', self.delegate)
-        print('sd_samplers.create_sampler:', sd_samplers.create_sampler)
-        print('sd_samplers.create_sampler_original_md:', sd_samplers.create_sampler_original_md)
-
     def postprocess(self, p, processed, *args):
+        self.reset()
+
+    ''' ↓↓↓ helper methods ↓↓↓ '''
+
+    def create_sampler_hijack(
+            self, name: str, model: LatentDiffusion, p: StableDiffusionProcessing, method: Method, 
+            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int, 
+            control_tensor_cpu: bool,
+            enable_bbox_control: bool, draw_background: bool, causal_layers: bool,
+            bbox_control_states: BBoxControls,
+        ):
+
+        # samplers are stateless, we reuse it if possible
+        if self.delegate is not None:
+            if self.delegate.sampler_name == name:
+                return self.delegate.sampler_raw
+            else:
+                self.reset()
+
+        # create a sampler with the original function
+        sampler = sd_samplers.create_sampler_original_md(name, model)
+        if method == Method.MULTI_DIFF: delegate_cls = MultiDiffusion
+        elif method == Method.MIX_DIFF: delegate_cls = MixtureOfDiffusers
+        else: raise NotImplementedError(f"Method {method} not implemented.")
+
+        # delegate hacks into the `sampler` with context of `p`
+        delegate = delegate_cls(p, sampler)
+        # setup **optional** supports through `init_*`, make everything relatively pluggable!!
+        if not enable_bbox_control or draw_background:
+            delegate.init_grid_bbox(tile_width, tile_height, overlap, tile_batch_size)
+        if enable_bbox_control:
+            delegate.init_custom_bbox(bbox_control_states, draw_background, causal_layers)
+        if self.controlnet_script:
+            delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
+        # init everything done, perform sanity check & pre-computations
+        delegate.init_done()
+
+        # hijack the behaviours
+        delegate.hook()
+        self.delegate = delegate
+
+        print(f"{method.value} hooked into {name} sampler. " +
+              f"Tile size: {tile_width}x{tile_height}, " +
+              f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
+              f"Batch size:", tile_batch_size)
+
+        return delegate.sampler_raw
+
+    def reset(self):
         if hasattr(sd_samplers, "create_sampler_original_md"):
             sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
-            del sd_samplers.create_sampler_original_md
+            #del sd_samplers.create_sampler_original_md
+        MultiDiffusion.unhook()
         MixtureOfDiffusers.unhook()
         self.delegate = None
+
+    def reset_and_gc(self):
+        self.reset()
+
+        import gc; gc.collect()
         devices.torch_gc()
+
+        try:
+            import os
+            import psutil
+            mem = psutil.Process(os.getpid()).memory_info()
+            print(f'[Mem] rss: {mem.rss/2**30:.3f} GB, vms: {mem.vms/2**30:.3f} GB')
+            from modules.shared import mem_mon as vram_mon
+            free, total = vram_mon.cuda_mem_get_info()
+            print(f'[VRAM] free: {free/2**30:.3f} GB, total: {total/2**30:.3f} GB')
+        except:
+            pass

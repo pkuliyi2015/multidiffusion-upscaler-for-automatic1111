@@ -1,17 +1,11 @@
-from typing import List, Dict, Callable
-
 import torch
-from torch import Tensor
 
 from modules import devices, extra_networks
 from modules.shared import state
-from modules.prompt_parser import ScheduledPromptConditioning
-from modules.sd_samplers_kdiffusion import CFGDenoiser
-from modules.sd_samplers_compvis import VanillaStableDiffusionSampler
-
-from k_diffusion.external import CompVisDenoiser
 
 from methods.abstractdiffusion import TiledDiffusion, CustomBBox, BlendMode
+from methods.utils import custom_bbox, keep_signature
+from methods.typing import *
 
 
 class MultiDiffusion(TiledDiffusion):
@@ -20,7 +14,7 @@ class MultiDiffusion(TiledDiffusion):
         https://arxiv.org/abs/2302.08113
     """
 
-    def __init__(self, p, *args, **kwargs):
+    def __init__(self, p:StableDiffusionProcessing, *args, **kwargs):
         super().__init__(p, *args, **kwargs)
         assert p.sampler_name != 'UniPC', 'MultiDiffusion is not compatible with UniPC!'
 
@@ -31,38 +25,41 @@ class MultiDiffusion(TiledDiffusion):
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
-            sampler: CFGDenoiser = self.sampler
-            self.sampler_forward = sampler.inner_model.forward
-            sampler.inner_model.forward = self.kdiff_forward
+            self.sampler: CFGDenoiser
+            self.sampler_forward = self.sampler.inner_model.forward
+            self.sampler.inner_model.forward = self.kdiff_forward
         else:
-            sampler: VanillaStableDiffusionSampler = self.sampler
-            self.sampler_forward = sampler.orig_p_sample_ddim
-            sampler.orig_p_sample_ddim = self.ddim_forward
+            self.sampler: VanillaStableDiffusionSampler
+            self.sampler_forward = self.sampler.orig_p_sample_ddim
+            self.sampler.orig_p_sample_ddim = self.ddim_forward
 
     @staticmethod
     def unhook():
-        # NOTE: no need to unhook MultiDiffusion as it only hook the sampler,
+        # no need to unhook MultiDiffusion as it only hook the sampler,
         # which will be destroyed after the painting is done
         pass
-    
-    def init_custom_bbox(self, draw_background:bool, bbox_control_states):
-        super().init_custom_bbox(draw_background, bbox_control_states)
 
-        for bbox in self.custom_bboxes:
-            if bbox.blend_mode == BlendMode.BACKGROUND:
-                self.weights[bbox.slicer] += 1
-
-    def reset_buffer(self, x_in: Tensor):
+    def reset_buffer(self, x_in:Tensor):
         super().reset_buffer(x_in)
         
         # ddim needs to cache pred0
-        if not self.is_kdiff:
+        if self.is_ddim:
             if self.x_pred_buffer is None:
                 self.x_pred_buffer = torch.zeros_like(x_in, device=x_in.device)
             else:
                 self.x_pred_buffer.zero_()
 
-    def repeat_cond_dict(self, cond_input, bboxes:List[CustomBBox]):
+    @custom_bbox
+    def init_custom_bbox(self, *args):
+        super().init_custom_bbox(*args)
+
+        for bbox in self.custom_bboxes:
+            if bbox.blend_mode == BlendMode.BACKGROUND:
+                self.weights[bbox.slicer] += 1.0
+
+    ''' ↓↓↓ kernel hijacks ↓↓↓ '''
+
+    def repeat_cond_dict(self, cond_input:CondDict, bboxes:List[CustomBBox]) -> CondDict:
         cond = cond_input['c_crossattn'][0]
         # repeat the condition on its first dim
         cond_shape = cond.shape
@@ -79,7 +76,8 @@ class MultiDiffusion(TiledDiffusion):
         return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
 
     @torch.no_grad()
-    def kdiff_forward(self, x_in:Tensor, sigma_in:Tensor, cond:Dict[str, Tensor]):
+    @keep_signature
+    def kdiff_forward(self, x_in:Tensor, sigma_in:Tensor, cond:CondDict):
         '''
         This function hijacks `k_diffusion.external.CompVisDenoiser.forward()`
         So its signature should be the same as the original function, especially the "cond" should be with exactly the same name
@@ -105,7 +103,8 @@ class MultiDiffusion(TiledDiffusion):
         return self.sample_one_step(x_in, repeat_func, custom_func)
 
     @torch.no_grad()
-    def ddim_forward(self, x_in:Tensor, cond_in, ts:Tensor, unconditional_conditioning:ScheduledPromptConditioning, *args, **kwargs):
+    @keep_signature
+    def ddim_forward(self, x_in:Tensor, cond_in:CondDict, ts:Tensor, unconditional_conditioning:Tensor, *args, **kwargs):
         '''
         This function will replace the original p_sample_ddim function in ldm/diffusionmodels/ddim.py
         So its signature should be the same as the original function,
@@ -113,7 +112,6 @@ class MultiDiffusion(TiledDiffusion):
         '''
 
         assert VanillaStableDiffusionSampler.p_sample_ddim_hook
-        breakpoint()
 
         def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
@@ -132,7 +130,7 @@ class MultiDiffusion(TiledDiffusion):
                 *args, **kwargs)
             return x_tile_out, x_pred
 
-        def custom_func(x, cond, uncond, bbox_id, bbox):
+        def custom_func(x, cond:Cond, uncond:Tensor, bbox_id:int, bbox:CustomBBox):
             # before the final forward, we can set the control tensor
             def forward_func(x, *args, **kwargs):
                 self.set_controlnet_tensors(bbox_id, 2*x.shape[0])
@@ -155,17 +153,19 @@ class MultiDiffusion(TiledDiffusion):
         # clear buffer canvas
         self.reset_buffer(x_in)
 
-        # Background sampling
+        # Background sampling (grid bbox)
         if self.draw_background:
             for batch_id, bboxes in enumerate(self.batched_bboxes):
                 if state.interrupted: return x_in
 
+                # batching
                 x_tile_list = []
                 for bbox in bboxes:
                     x_tile_list.append(x_in[bbox.slicer])
                 x_tile = torch.cat(x_tile_list, dim=0)
 
                 # controlnet tiling
+                # FIXME: is_denoise is default to False, however it is set to True in case of MixtureOfDiffusers
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes))
 
                 # compute tiles
@@ -182,7 +182,7 @@ class MultiDiffusion(TiledDiffusion):
                 # update progress bar
                 self.update_pbar()
 
-        # Custom region sampling
+        # Custom region sampling (custom bbox)
         x_feather_buffer      = None
         x_feather_mask        = None
         x_feather_count       = None
@@ -191,11 +191,11 @@ class MultiDiffusion(TiledDiffusion):
             for index, bbox in enumerate(self.custom_bboxes):
                 if state.interrupted: return x_in
 
-                x_tile = x_in[bbox.slicer]
-
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.activate(self.p, bbox.extra_network_data)
+
+                x_tile = x_in[bbox.slicer]
 
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
@@ -213,6 +213,7 @@ class MultiDiffusion(TiledDiffusion):
                         x_feather_count [bbox.slicer] += 1
                 else:
                     x_tile_out, x_tile_pred = custom_func(x_tile, bbox.cond, bbox.uncond, index, bbox)
+
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer     [bbox.slicer] += x_tile_out
                         self.x_pred_buffer[bbox.slicer] += x_tile_pred
@@ -229,14 +230,14 @@ class MultiDiffusion(TiledDiffusion):
 
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
-                        extra_networks.deactivate(self.p,bbox.extra_network_data)
+                        extra_networks.deactivate(self.p, bbox.extra_network_data)
 
                 # update progress bar
                 self.update_pbar()
 
         # Averaging background buffer
         x_out = torch.where(self.weights > 1, self.x_buffer / self.weights, self.x_buffer)
-        if not self.is_kdiff:
+        if self.is_ddim:
             x_pred_out = torch.where(self.weights > 1, self.x_pred_buffer / self.weights, self.x_pred_buffer)
         
         # Foreground Feather blending
@@ -245,9 +246,8 @@ class MultiDiffusion(TiledDiffusion):
             x_feather_buffer = torch.where(x_feather_count > 1, x_feather_buffer / x_feather_count, x_feather_buffer)
             x_feather_mask   = torch.where(x_feather_count > 1, x_feather_mask   / x_feather_count, x_feather_mask)
             # Weighted average with original x_buffer
-            
             x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + x_feather_buffer * x_feather_mask, x_out)
-            if not self.is_kdiff:
+            if self.is_ddim:
                 x_feather_pred_buffer = torch.where(x_feather_count > 1, x_feather_pred_buffer / x_feather_count, x_feather_pred_buffer)
                 x_pred_out            = torch.where(x_feather_count > 0, x_pred_out * (1 - x_feather_mask) + x_feather_pred_buffer * x_feather_mask, x_pred_out)
         
