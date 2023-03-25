@@ -63,6 +63,9 @@ class MultiDiffusion(TiledDiffusion):
         So its signature should be the same as the original function, 
         especially the "cond" should be with exactly the same name
         '''
+        def org_func(x):
+            return self.sampler_func(x, sigma_in, cond=cond)
+        
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is:
             #   = batch_size * (num_AND + 1)   if not an edit model
@@ -76,7 +79,7 @@ class MultiDiffusion(TiledDiffusion):
             return self.kdiff_custom_forward(x, cond, custom_cond, uncond, bbox_id, bbox, 
                                              sigma_in, self.sampler_func)
 
-        return self.compute_x_tile(x_in, repeat_func, custom_func)
+        return self.compute_x_tile(x_in, org_func, repeat_func, custom_func)
 
     @torch.no_grad()
     def ddim_repeat(self, x_in, cond_in, ts, unconditional_conditioning, *args, **kwargs):
@@ -85,6 +88,9 @@ class MultiDiffusion(TiledDiffusion):
         So its signature should be the same as the original function,
         Particularly, the unconditional_conditioning should be with exactly the same name
         '''
+        def org_func(x):
+            return self.sampler_func(x, cond_in, ts, unconditional_conditioning, *args, **kwargs)
+        
         def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
                 ts_tile = ts.repeat(len(bboxes))
@@ -111,11 +117,12 @@ class MultiDiffusion(TiledDiffusion):
             return self.ddim_custom_forward(x, cond_in, cond, uncond, bbox, ts, 
                                             forward_func, *args, **kwargs)
         
-        return self.compute_x_tile(x_in, repeat_func, custom_func)
+        return self.compute_x_tile(x_in, org_func, repeat_func, custom_func)
 
-    def compute_x_tile(self, x_in, func, custom_func):
+    def compute_x_tile(self, x_in, org_func, func, custom_func):
         N, C, H, W = x_in.shape
-        assert H == self.h and W == self.w
+        if H != self.h or W != self.w:
+            return org_func(x_in)
 
         self.init(x_in)
 
@@ -142,16 +149,14 @@ class MultiDiffusion(TiledDiffusion):
                 if self.is_kdiff:
                     x_tile_out = func(x_tile, bboxes)
                     for i, bbox in enumerate(bboxes):
-                        x = x_tile_out[i*N:(i+1)*N, :, :, :]
-                        self.x_buffer[bbox.slice] += x
+                        self.x_buffer[bbox.slice] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                    del x_tile_out
                 else:
                     x_tile_out, x_tile_pred = func(x_tile, bboxes)
                     for i, bbox in enumerate(bboxes):
-                        x_o = x_tile_out [i*N:(i+1)*N, :, :, :]
-                        x_p = x_tile_pred[i*N:(i+1)*N, :, :, :]
-                        self.x_buffer     [bbox.slice] += x_o
-                        self.x_pred_buffer[bbox.slice] += x_p
-                
+                        self.x_buffer     [bbox.slice] += x_tile_out[i*N:(i+1)*N, :, :, :]
+                        self.x_pred_buffer[bbox.slice] += x_tile_pred[i*N:(i+1)*N, :, :, :]
+                    del x_tile_out, x_tile_pred
                 # update progress bar
                 self.update_pbar()
 
@@ -181,6 +186,7 @@ class MultiDiffusion(TiledDiffusion):
                         x_feather_buffer[bbox.slice] += x_tile_out
                         x_feather_mask[bbox.slice] += bbox.feather_mask
                         x_feather_count[bbox.slice] += 1
+                    del x_tile_out
                 else:
                     x_tile_out, x_tile_pred = custom_func(x_tile, bbox.prompt, bbox.neg_prompt, index, bbox)
                     if bbox.blend_mode == BlendMode.BACKGROUND:
@@ -197,6 +203,7 @@ class MultiDiffusion(TiledDiffusion):
                         if x_feather_pred_buffer is None:
                             x_feather_pred_buffer = torch.zeros_like(self.x_pred_buffer)
                         x_feather_pred_buffer[bbox.slice] += x_tile_pred
+                    del x_tile_out, x_tile_pred
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
                         extra_networks.deactivate(self.p,bbox.extra_network_data)
@@ -221,6 +228,8 @@ class MultiDiffusion(TiledDiffusion):
                 x_feather_pred_buffer = torch.where(x_feather_count > 1, x_feather_pred_buffer / x_feather_count, x_feather_pred_buffer)
                 x_pred_out = torch.where(x_feather_count > 0, x_pred_out * (1 - x_feather_mask) + 
                                     x_feather_mask * x_feather_pred_buffer, x_pred_out)
+                del x_feather_pred_buffer
+            del x_feather_buffer, x_feather_mask, x_feather_count
         
         return x_out if self.is_kdiff else (x_out, x_pred_out)
     

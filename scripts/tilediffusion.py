@@ -56,7 +56,7 @@ import numpy as np
 from enum import Enum
 import gradio as gr
 
-from modules import sd_samplers, images, shared, scripts
+from modules import sd_samplers, images, shared, scripts, devices
 from modules.shared import opts
 from modules.ui import gr_show
 from modules.processing import StableDiffusionProcessing
@@ -77,6 +77,7 @@ class Script(scripts.Script):
     def __init__(self):
         self.controlnet_script = None
         self.delegate = None
+        self.torch_obj = {}
 
     def title(self):
         return "Tiled Diffusion"
