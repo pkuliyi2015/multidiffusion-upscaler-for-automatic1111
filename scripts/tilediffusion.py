@@ -82,6 +82,7 @@ class Script(scripts.Script):
     def __init__(self):
         self.controlnet_script = None
         self.delegate = None
+        self.torch_obj = {}
 
     def title(self):
         return "Tiled Diffusion"
@@ -239,8 +240,16 @@ class Script(scripts.Script):
                 p.width  = image.width
                 p.height = image.height
             elif upscaler.name != "None":
+<<<<<<< HEAD
                 p.width  *= scale_factor
                 p.height *= scale_factor
+=======
+                if not hasattr(p, "md_original_width"):
+                    p.md_original_width = p.width
+                    p.md_original_height = p.height
+                p.width = scale_factor * p.md_original_width
+                p.height = scale_factor * p.md_original_height
+>>>>>>> main
         elif overwrite_image_size:       # txt2img
             p.width  = image_width
             p.height = image_height
@@ -258,6 +267,7 @@ class Script(scripts.Script):
             p.extra_generation_params["Tiled Diffusion batch size"]  = tile_batch_size
 
         ''' ControlNet hackin '''
+<<<<<<< HEAD
         try:
             from scripts.cldm import ControlNet
             # fix controlnet multi-batch issue
@@ -288,6 +298,55 @@ class Script(scripts.Script):
             enable_bbox_control, draw_background, causal_layers,
             bbox_control_states,
         )
+=======
+        # try to hook into controlnet tensors
+        if self.controlnet_script is None:
+            try:
+                from scripts.cldm import ControlNet
+                # fix controlnet multi-batch issue
+
+                def align(self, hint, h, w):
+                    if (len(hint.shape) == 3):
+                        hint = hint.unsqueeze(0)
+                    _, _, h1, w1 = hint.shape
+                    if h != h1 or w != w1:
+                        hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
+                    return hint
+                
+                ControlNet.align = align
+
+                for script in p.scripts.scripts + p.scripts.alwayson_scripts:
+                    if hasattr(script, "latest_network") and script.title().lower() == "controlnet":
+                        self.controlnet_script = script
+                        print("[Tiled Diffusion] ControlNet found, support is enabled.")
+                        break
+
+            except ImportError:
+                pass
+
+        
+        create_sampler = lambda name, model : self.custom_create_sampler(
+            name, model, method, p, tile_width, tile_height, overlap, tile_batch_size, control_tensor_cpu, enable_bbox_control, draw_background, bbox_control_states, p.all_prompts[:p.batch_size], 0)
+
+        if not hasattr(sd_samplers, "md_org_create_sampler"):
+            setattr(sd_samplers, "md_org_create_sampler", sd_samplers.create_sampler)
+        sd_samplers.create_sampler = create_sampler
+
+
+        
+    def process_batch(self, p: StableDiffusionProcessing,
+            enabled: bool, method: str,
+            overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
+            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
+            upscaler_index: str, scale_factor: float,
+            control_tensor_cpu: bool, enable_bbox_control: bool, draw_background: float, 
+            *bbox_control_states, batch_number, prompts, seeds, subseeds):
+        '''
+        compatible with the webui batch processing
+        '''
+        if not enabled: return
+        n = batch_number
+>>>>>>> main
 
     def postprocess(self, p, processed, *args):
         self.reset()

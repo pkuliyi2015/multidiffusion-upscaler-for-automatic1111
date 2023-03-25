@@ -87,6 +87,8 @@ class MultiDiffusion(TiledDiffusion):
         # x_in: [B, C=4, H=64, W=64]
         # sigma_in： [1]
         # cond['c_crossattn'][0]: [1, 77, 768]
+        def org_func(x):
+            return self.sampler_forward(x, sigma_in, cond)
 
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is:
@@ -100,7 +102,7 @@ class MultiDiffusion(TiledDiffusion):
         def custom_func(x, custom_cond, uncond, bbox_id, bbox):
             return self.kdiff_custom_forward(x, cond, custom_cond, uncond, sigma_in, bbox_id, bbox, self.sampler_forward)
 
-        return self.sample_one_step(x_in, repeat_func, custom_func)
+        return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
     @torch.no_grad()
     @keep_signature
@@ -112,6 +114,9 @@ class MultiDiffusion(TiledDiffusion):
         '''
 
         assert VanillaStableDiffusionSampler.p_sample_ddim_hook
+
+        def org_func(x):
+            return self.sampler_forward(x, cond_in, ts, unconditional_conditioning, *args, **kwargs)
 
         def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
@@ -137,9 +142,9 @@ class MultiDiffusion(TiledDiffusion):
                 return self.sampler_forward(x, *args, **kwargs)
             return self.ddim_custom_forward(x, cond_in, cond, uncond, bbox, ts, forward_func, *args, **kwargs)
 
-        return self.sample_one_step(x_in, repeat_func, custom_func)
+        return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
-    def sample_one_step(self, x_in:Tensor, repeat_func:Callable, custom_func:Callable):
+    def sample_one_step(self, x_in:Tensor, org_func: Callable, repeat_func:Callable, custom_func:Callable):
         '''
         this method splits the whole latent and process in tiles
             - x_in: current whole U-Net latent
@@ -148,7 +153,8 @@ class MultiDiffusion(TiledDiffusion):
         '''
 
         N, C, H, W = x_in.shape
-        assert H == self.h and W == self.w
+        if H != self.h or W != self.w:
+            return org_func(x_in)
 
         # clear buffer canvas
         self.reset_buffer(x_in)
@@ -250,5 +256,5 @@ class MultiDiffusion(TiledDiffusion):
             if self.is_ddim:
                 x_feather_pred_buffer = torch.where(x_feather_count > 1, x_feather_pred_buffer / x_feather_count, x_feather_pred_buffer)
                 x_pred_out            = torch.where(x_feather_count > 0, x_pred_out * (1 - x_feather_mask) + x_feather_pred_buffer * x_feather_mask, x_pred_out)
-        
+
         return x_out if self.is_kdiff else (x_out, x_pred_out)

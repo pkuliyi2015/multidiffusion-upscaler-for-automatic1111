@@ -86,7 +86,9 @@ class MixtureOfDiffusers(TiledDiffusion):
         # KDiffusion Compatibility
         c_in = cond
         N, C, H, W = x_in.shape
-        assert H == self.h and W == self.w
+        if H != self.h or W != self.w:
+            # We don't tile highres, let's just use the original apply_model
+            return shared.sd_model.apply_model_original_md(x_in, t_in, c_in)
 
         self.reset_buffer(x_in)
 

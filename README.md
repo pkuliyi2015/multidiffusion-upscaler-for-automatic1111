@@ -7,6 +7,18 @@ Introducing revolutionary **ultra-large image generation** via Tiled Diffusion &
 - My optimized reimplementation of two state-of-the-art training-free compositional methods: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
 - My original Tiled VAE algorithm, which is seam-free and **extremely powerful** in VRAM saving.
 
+## Update on 2023.3.25
+- Add Foreground and Background mode, which allow you to fuse any object/character into any background in txt2img; and in Img2img upscaling, you can also use this feature to emphasize important region you want to upscale.
+- Add compatibility to masked-inpainting, so that you can keep anywhere you want by masking them before upscaling. 
+- Tons of bug fixes, including:
+  - Fixed most incompatibilities with samplers,  except MultiDiffusion + UniPC
+  - Fixed errors when use custom region with batch size or batch count > 1
+  - Fixed errors when use custom region together with --lowvram or --medvram
+  - Fixed GPU leakage & AMD GPU out of memory errors
+  - Fixed ControlNet stretch problem when batch count > 1
+  - Fixed postive & Negative prompt max-length (now unlimited)
+  - Fixed the broken Region 8
+- A new README is now in progress.
 
 ## Important Update on 2023.3.22
 - **Fixed Logic erros in region prompt control**. Please update as previous versions cannot correctly deal with more than 1 custom region, it wrongly uses positive prompt as the negative condition so cannot draw meaningful objects.
