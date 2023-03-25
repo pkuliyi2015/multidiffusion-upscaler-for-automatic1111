@@ -660,6 +660,7 @@ class VAEHook:
                 downsampled_z, dim=[0, 2, 3], keepdim=True)
             downsampled_z = (downsampled_z - mean_new) / \
                 std_new * std_old + mean_old
+            del std_old, mean_old, std_new, mean_new
             # occasionally the std_new is too small or too large, which exceeds the range of float16
             # so we need to clamp it to max z's range.
             downsampled_z = torch.clamp_(
@@ -667,6 +668,7 @@ class VAEHook:
             estimate_task_queue = clone_task_queue(single_task_queue)
             if self.estimate_group_norm(downsampled_z, estimate_task_queue, color_fix=self.color_fix):
                 single_task_queue = estimate_task_queue
+            del downsampled_z
 
         task_queues = [clone_task_queue(single_task_queue)
                        for _ in range(num_tiles)]
@@ -838,3 +840,17 @@ class Script(scripts.Script):
             encoder, encoder_tile_size, is_decoder=False, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
         decoder.forward = VAEHook(
             decoder, decoder_tile_size, is_decoder=True, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
+
+    def postprocess(self, p, processed, *args):
+        # release vram for the next run
+        vae = p.sd_model.first_stage_model
+        encoder = vae.encoder
+        decoder = vae.decoder
+        if isinstance(encoder.forward, VAEHook): 
+            encoder.forward.net = None
+            encoder.forward = encoder.original_forward
+        if isinstance(decoder.forward, VAEHook): 
+            decoder.forward.net = None
+            decoder.forward = decoder.original_forward
+        gc.collect()
+        devices.torch_gc()
