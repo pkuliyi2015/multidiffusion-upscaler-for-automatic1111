@@ -148,6 +148,7 @@ class MultiDiffusion(TiledDiffusion):
         '''
         this method splits the whole latent and process in tiles
             - x_in: current whole U-Net latent
+            - org_func: original forward function, when use highres
             - denoise_func: one step denoiser for grid tile
             - denoise_custom_func: one step denoiser for custom tile
         '''

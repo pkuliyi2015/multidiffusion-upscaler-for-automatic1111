@@ -171,7 +171,7 @@ class Script(scripts.Script):
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
 
                                 blend_mode = gr.Radio(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value)
-                                feather_ratio = gr.Dropdown(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False)
+                                feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False)
 
                                 blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio)
 
