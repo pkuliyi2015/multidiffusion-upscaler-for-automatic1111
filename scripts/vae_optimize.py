@@ -785,7 +785,7 @@ class Script(scripts.Script):
                 fast_encoder_tips = gr.HTML(
                     '<p style="margin-bottom:0.8em">Fast Encoder may change colors; Can fix it with more RAM and lower speed.</p>')
                 color_fix = gr.Checkbox(
-                    label='Encoder Color Fix', value=0)
+                    label='Encoder Color Fix', value=False)
 
             def on_fast_encoder(value):
                 if value:
