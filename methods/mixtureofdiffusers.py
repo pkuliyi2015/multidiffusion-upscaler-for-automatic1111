@@ -88,6 +88,7 @@ class MixtureOfDiffusers(TiledDiffusion):
         N, C, H, W = x_in.shape
         if H != self.h or W != self.w:
             # We don't tile highres, let's just use the original apply_model
+            self.reset_controlnet_tensors()
             return shared.sd_model.apply_model_original_md(x_in, t_in, c_in)
 
         self.reset_buffer(x_in)

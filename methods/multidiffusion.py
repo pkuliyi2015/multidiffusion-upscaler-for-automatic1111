@@ -154,6 +154,7 @@ class MultiDiffusion(TiledDiffusion):
 
         N, C, H, W = x_in.shape
         if H != self.h or W != self.w:
+            self.reset_controlnet_tensors()
             return org_func(x_in)
 
         # clear buffer canvas
