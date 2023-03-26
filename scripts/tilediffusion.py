@@ -60,15 +60,6 @@ from modules.shared import opts
 from modules.processing import opt_f
 from modules.ui import gr_show
 
-if 'debug quick reload':
-    from importlib import reload
-    from methods import abstractdiffusion, multidiffusion, mixtureofdiffusers
-    import utils
-    abstractdiffusion  = reload(abstractdiffusion)
-    multidiffusion     = reload(multidiffusion)
-    mixtureofdiffusers = reload(mixtureofdiffusers)
-    utils              = reload(utils)
-
 from methods import MultiDiffusion, MixtureOfDiffusers
 from utils import *
 
