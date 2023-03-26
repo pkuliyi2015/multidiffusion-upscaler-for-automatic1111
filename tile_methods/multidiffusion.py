@@ -3,7 +3,7 @@ import torch
 from modules import devices, extra_networks
 from modules.shared import state
 
-from utils import *
+from tile_utils import *
 from .abstractdiffusion import TiledDiffusion
 
 
