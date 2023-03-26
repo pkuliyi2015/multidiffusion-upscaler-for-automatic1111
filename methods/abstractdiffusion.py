@@ -6,8 +6,8 @@ from modules import devices, shared, prompt_parser
 from modules.shared import state
 from modules.processing import opt_f, StableDiffusionProcessing
 
-from methods.utils import *
-from methods.typing import *
+from utils import *
+
 
 
 class TiledDiffusion:
@@ -150,7 +150,7 @@ class TiledDiffusion:
             y = max(0, y)
             w = min(self.w - x, w)
             h = min(self.h - y, h)
-            self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, BlendMode(blend_mode), feather_ratio))
+            self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, blend_mode, feather_ratio))
 
         if len(self.custom_bboxes) == 0: return
 

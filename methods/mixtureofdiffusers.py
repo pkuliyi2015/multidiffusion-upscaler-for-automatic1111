@@ -3,9 +3,9 @@ import torch
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
-from methods.abstractdiffusion import TiledDiffusion, BlendMode
-from methods.utils import *
-from methods.typing import *
+from utils import *
+from .abstractdiffusion import TiledDiffusion
+
 
 
 class MixtureOfDiffusers(TiledDiffusion):
@@ -64,7 +64,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox):
         if self.is_kdiff:
-            return self.kdiff_custom_forward(x_in, c_in, t_in, bbox_id, bbox, forward_func=shared.sd_model.apply_model_original_md)
+            return self.kdiff_custom_forward(x_in, t_in, c_in, bbox_id, bbox, forward_func=shared.sd_model.apply_model_original_md)
         else:
             def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs):
                 # copy from p_sample_ddim in ddim.py

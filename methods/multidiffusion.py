@@ -3,9 +3,8 @@ import torch
 from modules import devices, extra_networks
 from modules.shared import state
 
-from methods.abstractdiffusion import TiledDiffusion, CustomBBox, BlendMode
-from methods.utils import custom_bbox, keep_signature
-from methods.typing import *
+from utils import *
+from .abstractdiffusion import TiledDiffusion
 
 
 class MultiDiffusion(TiledDiffusion):
@@ -88,7 +87,7 @@ class MultiDiffusion(TiledDiffusion):
         # sigma_in： [1]
         # cond['c_crossattn'][0]: [1, 77, 768]
         def org_func(x):
-            return self.sampler_forward(x, sigma_in, cond)
+            return self.sampler_forward(x, sigma_in, cond=cond)
 
         def repeat_func(x_tile, bboxes):
             # For kdiff sampler, the dim 0 of input x_in is:
@@ -116,7 +115,7 @@ class MultiDiffusion(TiledDiffusion):
         assert VanillaStableDiffusionSampler.p_sample_ddim_hook
 
         def org_func(x):
-            return self.sampler_forward(x, cond_in, ts, unconditional_conditioning, *args, **kwargs)
+            return self.sampler_forward(x, cond_in, ts, unconditional_conditioning=unconditional_conditioning, *args, **kwargs)
 
         def repeat_func(x_tile, bboxes):
             if isinstance(cond_in, dict):
@@ -195,7 +194,7 @@ class MultiDiffusion(TiledDiffusion):
         x_feather_count       = None
         x_feather_pred_buffer = None
         if len(self.custom_bboxes) > 0:
-            for index, bbox in enumerate(self.custom_bboxes):
+            for bbox_id, bbox in enumerate(self.custom_bboxes):
                 if state.interrupted: return x_in
 
                 if not self.p.disable_extra_networks:
@@ -206,7 +205,7 @@ class MultiDiffusion(TiledDiffusion):
 
                 if self.is_kdiff:
                     # retrieve original x_in from construncted input
-                    x_tile_out = custom_func(x_tile, index, bbox)
+                    x_tile_out = custom_func(x_tile, bbox_id, bbox)
 
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer[bbox.slicer] += x_tile_out
@@ -219,7 +218,7 @@ class MultiDiffusion(TiledDiffusion):
                         x_feather_mask  [bbox.slicer] += bbox.feather_mask
                         x_feather_count [bbox.slicer] += 1
                 else:
-                    x_tile_out, x_tile_pred = custom_func(x_tile, index, bbox)
+                    x_tile_out, x_tile_pred = custom_func(x_tile, bbox_id, bbox)
 
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         self.x_buffer     [bbox.slicer] += x_tile_out

@@ -8,17 +8,32 @@ import numpy as np
 from modules import devices, shared, prompt_parser, extra_networks
 from modules.processing import opt_f
 
-from methods.typing import *
+from .typing import *
 
 
 class Method(Enum):
     MULTI_DIFF = 'MultiDiffusion'
     MIX_DIFF   = 'Mixture of Diffusers'
 
+    def __eq__(self, __value: object) -> bool:
+        if isinstance(__value, str):
+            return self.value == __value
+        elif isinstance(__value, Method):
+            return self.value == __value.value
+        else:
+            raise TypeError(f'unsupported type: {type(__value)}')    
+
 class BlendMode(Enum):  # i.e. LayerType
     FOREGROUND = 'Foreground'
     BACKGROUND = 'Background'
-
+    
+    def __eq__(self, __value: object) -> bool:
+        if isinstance(__value, str):
+            return self.value == __value
+        elif isinstance(__value, BlendMode):
+            return self.value == __value.value
+        else:
+            raise TypeError(f'unsupported type: {type(__value)}')
 
 class BBox:
 
@@ -39,15 +54,14 @@ class CustomBBox(BBox):
 
     ''' region control bbox '''
 
-    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:BlendMode, feather_radio:float):
+    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:str, feather_radio:float):
         super().__init__(x, y, w, h)
 
         self.prompt = prompt
         self.neg_prompt = neg_prompt
-        self.blend_mode = blend_mode
+        self.blend_mode = BlendMode(blend_mode)
         self.feather_ratio = max(min(feather_radio, 1.0), 0.0)
         self.feather_mask = feather_mask(self.w, self.h, self.feather_ratio) if self.blend_mode == BlendMode.FOREGROUND else None
-
         self.cond: MulticondLearnedConditioning = None
         self.extra_network_data: DefaultDict[List[ExtraNetworkParams]] = None
         self.uncond: List[List[ScheduledPromptConditioning]] = None

@@ -62,16 +62,15 @@ from modules.ui import gr_show
 
 if 'debug quick reload':
     from importlib import reload
-    from methods import abstractdiffusion, multidiffusion, mixtureofdiffusers, utils
+    from methods import abstractdiffusion, multidiffusion, mixtureofdiffusers
+    import utils
     abstractdiffusion  = reload(abstractdiffusion)
     multidiffusion     = reload(multidiffusion)
     mixtureofdiffusers = reload(mixtureofdiffusers)
     utils              = reload(utils)
 
-from methods.multidiffusion import MultiDiffusion
-from methods.mixtureofdiffusers import MixtureOfDiffusers
-from methods.utils import Method, BlendMode, splitable
-from methods.typing import *
+from methods import MultiDiffusion, MixtureOfDiffusers
+from utils import *
 
 
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
