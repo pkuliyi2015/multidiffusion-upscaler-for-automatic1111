@@ -6,7 +6,8 @@ from modules import devices, shared, prompt_parser
 from modules.shared import state
 from modules.processing import opt_f, StableDiffusionProcessing
 
-from utils import *
+from tile_utils.typing import *
+from tile_utils.utils import *
 
 
 

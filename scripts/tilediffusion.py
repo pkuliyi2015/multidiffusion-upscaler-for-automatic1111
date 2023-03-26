@@ -60,8 +60,11 @@ from modules.shared import opts
 from modules.processing import opt_f
 from modules.ui import gr_show
 
-from tile_methods import MultiDiffusion, MixtureOfDiffusers
-from tile_utils import *
+from tile_utils.typing import *
+from tile_utils.utils import *
+from tile_methods.multidiffusion import MultiDiffusion
+from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
+
 
 
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)

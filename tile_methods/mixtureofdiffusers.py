@@ -3,8 +3,9 @@ import torch
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
-from utils import *
-from .abstractdiffusion import TiledDiffusion
+from tile_utils.typing import *
+from tile_utils.utils import *
+from tile_methods.abstractdiffusion import TiledDiffusion
 
 
 

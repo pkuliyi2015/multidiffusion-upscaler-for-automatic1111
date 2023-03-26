@@ -8,7 +8,7 @@ import numpy as np
 from modules import devices, shared, prompt_parser, extra_networks
 from modules.processing import opt_f
 
-from .typing import *
+from tile_utils.typing import *
 
 
 class Method(Enum):
