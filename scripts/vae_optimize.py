@@ -118,16 +118,6 @@ def get_recommend_decoder_tile_size():
     return DECODER_TILE_SIZE
 
 
-if 'global const':
-    DEFAULT_ENABLED = False
-    DEFAULT_MOVE_TO_GPU = False
-    DEFAULT_FAST_ENCODER = True
-    DEFAULT_FAST_DECODER = True
-    DEFAULT_COLOR_FIX = 0
-    DEFAULT_ENCODER_TILE_SIZE = get_recommend_encoder_tile_size()
-    DEFAULT_DECODER_TILE_SIZE = get_recommend_decoder_tile_size()
-
-
 # inplace version of silu
 def inplace_nonlinearity(x):
     # Test: fix for Nans
@@ -771,33 +761,31 @@ class Script(scripts.Script):
     def ui(self, is_img2img):
         with gr.Accordion('Tiled VAE', open=False):
             with gr.Row():
-                enabled = gr.Checkbox(
-                    label='Enable', value=lambda: DEFAULT_ENABLED)
-                vae_to_gpu = gr.Checkbox(
-                    label='Move VAE to GPU', value=lambda: DEFAULT_MOVE_TO_GPU)
+                enabled = gr.Checkbox(label='Enable', value=False)
+                vae_to_gpu = gr.Checkbox(label='Move VAE to GPU', value=False)
 
             encoder_size_tips = gr.HTML(
                 '<p style="margin-bottom:0.8em">Please use smaller tile size when see CUDA error: out of memory.</p>')
             with gr.Row():
                 encoder_tile_size = gr.Slider(
-                    label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=lambda: DEFAULT_ENCODER_TILE_SIZE)
+                    label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=get_recommend_encoder_tile_size())
                 decoder_tile_size = gr.Slider(
-                    label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=lambda: DEFAULT_DECODER_TILE_SIZE)
+                    label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=get_recommend_decoder_tile_size())
             reset = gr.Button(value="Reset Tile Size")
-            reset.click(fn=lambda: [DEFAULT_ENCODER_TILE_SIZE, DEFAULT_DECODER_TILE_SIZE], outputs=[
+            reset.click(fn=lambda: [get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()], outputs=[
                 encoder_tile_size, decoder_tile_size])
 
             with gr.Row():
                 fast_encoder = gr.Checkbox(
-                    label='Fast Encoder', value=lambda: DEFAULT_FAST_ENCODER)
+                    label='Fast Encoder', value=True)
                 fast_decoder = gr.Checkbox(
-                    label='Fast Decoder', value=lambda: DEFAULT_FAST_DECODER)
+                    label='Fast Decoder', value=True)
 
             with gr.Row():
                 fast_encoder_tips = gr.HTML(
                     '<p style="margin-bottom:0.8em">Fast Encoder may change colors; Can fix it with more RAM and lower speed.</p>')
                 color_fix = gr.Checkbox(
-                    label='Encoder Color Fix', value=lambda: DEFAULT_COLOR_FIX)
+                    label='Encoder Color Fix', value=0)
 
             def on_fast_encoder(value):
                 if value:
