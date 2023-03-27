@@ -165,7 +165,7 @@ class Script(scripts.Script):
                             create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick')
 
                     with gr.Row():
-                        gr.HTML('<p style="color:blue"> &gt;&gt; Region boxes are auto locked when its according setting panel is closed (bug, but also feature 😂 </p>')
+                        gr.HTML('&gt;&gt; Region boxes are auto locked when its according setting panel is closed (bug, but also feature 😂)')
 
                         cfg_dump = gr.Button(value='💾 Save', variant='tool')
                         cfg_load = gr.Button(value='⚙️ Load', variant='tool')

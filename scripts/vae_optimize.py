@@ -771,9 +771,9 @@ class Script(scripts.Script):
                     label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=get_recommend_encoder_tile_size())
                 decoder_tile_size = gr.Slider(
                     label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=get_recommend_decoder_tile_size())
-            reset = gr.Button(value="Reset Tile Size")
-            reset.click(fn=lambda: [get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()], outputs=[
-                encoder_tile_size, decoder_tile_size])
+                reset = gr.Button(value='↻ Reset', variant='tool')
+                reset.click(fn=lambda: [get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()], outputs=[
+                    encoder_tile_size, decoder_tile_size])
 
             with gr.Row():
                 fast_encoder = gr.Checkbox(
