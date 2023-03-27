@@ -3,10 +3,9 @@ import torch
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
-from tile_utils.typing import *
-from tile_utils.utils import *
 from tile_methods.abstractdiffusion import TiledDiffusion
-
+from tile_utils.utils import *
+from tile_utils.typing import *
 
 
 class MixtureOfDiffusers(TiledDiffusion):
@@ -63,11 +62,11 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
 
-    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox):
+    def custom_apply_model(self, x_in, t_in, c_in, bbox_id, bbox) -> Tensor:
         if self.is_kdiff:
             return self.kdiff_custom_forward(x_in, t_in, c_in, bbox_id, bbox, forward_func=shared.sd_model.apply_model_original_md)
         else:
-            def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs):
+            def forward_func(x, c, ts, unconditional_conditioning, *args, **kwargs) -> Tensor:
                 # copy from p_sample_ddim in ddim.py
                 c_in = dict()
                 for k in c:

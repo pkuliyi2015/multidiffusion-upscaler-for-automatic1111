@@ -12,28 +12,25 @@ from tile_utils.typing import *
 
 
 class Method(Enum):
+
     MULTI_DIFF = 'MultiDiffusion'
     MIX_DIFF   = 'Mixture of Diffusers'
 
-    def __eq__(self, __value: object) -> bool:
-        if isinstance(__value, str):
-            return self.value == __value
-        elif isinstance(__value, Method):
-            return self.value == __value.value
-        else:
-            raise TypeError(f'unsupported type: {type(__value)}')    
+    def __eq__(self, other: object) -> bool:
+        if   isinstance(other, str):    return self.value == other
+        elif isinstance(other, Method): return self.value == other.value
+        else: raise TypeError(f'unsupported type: {type(other)}')    
 
 class BlendMode(Enum):  # i.e. LayerType
+
     FOREGROUND = 'Foreground'
     BACKGROUND = 'Background'
     
-    def __eq__(self, __value: object) -> bool:
-        if isinstance(__value, str):
-            return self.value == __value
-        elif isinstance(__value, BlendMode):
-            return self.value == __value.value
-        else:
-            raise TypeError(f'unsupported type: {type(__value)}')
+    def __eq__(self, other: object) -> bool:
+        if   isinstance(other, str):       return self.value == other
+        elif isinstance(other, BlendMode): return self.value == other.value
+        else: raise TypeError(f'unsupported type: {type(other)}')
+
 
 class BBox:
 
@@ -69,7 +66,7 @@ class CustomBBox(BBox):
 
 class Prompt:
 
-    ''' prompts handler '''
+    ''' prompts helper '''
 
     @staticmethod
     def apply_styles(prompts:List[str], styles=None) -> List[str]:
@@ -83,7 +80,7 @@ class Prompt:
 
 class Condition:
 
-    ''' CLIP cond handler '''
+    ''' CLIP cond helper '''
 
     @staticmethod
     def get_cond(prompts:List[str], steps:int, styles=None) -> Tuple[Cond, ExtraNetworkData]:
@@ -99,7 +96,7 @@ class Condition:
         return uncond
 
     @staticmethod
-    def reconstruct_cond(cond:Cond, step:int) -> Tuple[List, Tensor]:
+    def reconstruct_cond(cond:Cond, step:int) -> Tensor:
         list_of_what, tensor = prompt_parser.reconstruct_multicond_batch(cond, step)
         return tensor
 

@@ -3,9 +3,9 @@ import torch
 from modules import devices, extra_networks
 from modules.shared import state
 
-from tile_utils.typing import *
-from tile_utils.utils import *
 from tile_methods.abstractdiffusion import TiledDiffusion
+from tile_utils.utils import *
+from tile_utils.typing import *
 
 
 class MultiDiffusion(TiledDiffusion):
@@ -77,20 +77,18 @@ class MultiDiffusion(TiledDiffusion):
 
     @torch.no_grad()
     @keep_signature
-    def kdiff_forward(self, x_in:Tensor, sigma_in:Tensor, cond:CondDict):
+    def kdiff_forward(self, x_in:Tensor, sigma_in:Tensor, cond:CondDict) -> Tensor:
         '''
         This function hijacks `k_diffusion.external.CompVisDenoiser.forward()`
         So its signature should be the same as the original function, especially the "cond" should be with exactly the same name
         '''
 
         assert CompVisDenoiser.forward
-        # x_in: [B, C=4, H=64, W=64]
-        # sigma_in： [1]
-        # cond['c_crossattn'][0]: [1, 77, 768]
-        def org_func(x):
+
+        def org_func(x:Tensor):
             return self.sampler_forward(x, sigma_in, cond=cond)
 
-        def repeat_func(x_tile, bboxes):
+        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
             # For kdiff sampler, the dim 0 of input x_in is:
             #   = batch_size * (num_AND + 1)   if not an edit model
             #   = batch_size * (num_AND + 2)   otherwise
@@ -99,14 +97,14 @@ class MultiDiffusion(TiledDiffusion):
             x_tile_out = self.sampler_forward(x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
 
-        def custom_func(x, bbox_id, bbox):
+        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             return self.kdiff_custom_forward(x, sigma_in, cond, bbox_id, bbox, self.sampler_forward)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
     @torch.no_grad()
     @keep_signature
-    def ddim_forward(self, x_in:Tensor, cond_in:CondDict, ts:Tensor, unconditional_conditioning:Tensor, *args, **kwargs):
+    def ddim_forward(self, x_in:Tensor, cond_in:Union[CondDict, Tensor], ts:Tensor, unconditional_conditioning:Tensor, *args, **kwargs) -> Tuple[Tensor, Tensor]:
         '''
         This function will replace the original p_sample_ddim function in ldm/diffusionmodels/ddim.py
         So its signature should be the same as the original function,
@@ -115,10 +113,10 @@ class MultiDiffusion(TiledDiffusion):
 
         assert VanillaStableDiffusionSampler.p_sample_ddim_hook
 
-        def org_func(x):
+        def org_func(x:Tensor):
             return self.sampler_forward(x, cond_in, ts, unconditional_conditioning=unconditional_conditioning, *args, **kwargs)
 
-        def repeat_func(x_tile, bboxes):
+        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
             if isinstance(cond_in, dict):
                 ts_tile    = ts.repeat(len(bboxes))
                 cond_tile  = self.repeat_cond_dict(cond_in, bboxes)
@@ -135,7 +133,7 @@ class MultiDiffusion(TiledDiffusion):
                 *args, **kwargs)
             return x_tile_out, x_pred
 
-        def custom_func(x, bbox_id:int, bbox:CustomBBox):
+        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             # before the final forward, we can set the control tensor
             def forward_func(x, *args, **kwargs):
                 self.set_controlnet_tensors(bbox_id, 2*x.shape[0])
@@ -144,7 +142,7 @@ class MultiDiffusion(TiledDiffusion):
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
-    def sample_one_step(self, x_in:Tensor, org_func: Callable, repeat_func:Callable, custom_func:Callable):
+    def sample_one_step(self, x_in:Tensor, org_func: Callable, repeat_func:Callable, custom_func:Callable) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         '''
         this method splits the whole latent and process in tiles
             - x_in: current whole U-Net latent
