@@ -51,6 +51,9 @@
 # ------------------------------------------------------------------------
 '''
 
+from pathlib import Path
+import json
+
 import torch
 import numpy as np
 import gradio as gr
@@ -66,6 +69,10 @@ from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
 from tile_utils.utils import *
 from tile_utils.typing import *
 
+
+SD_WEBUI_PATH = Path.cwd()
+ME_PATH = SD_WEBUI_PATH / 'extensions' / 'multidiffusion-upscaler-for-automatic1111'
+CONFIG_FILE = ME_PATH / 'config.json'
 
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
 
@@ -160,6 +167,9 @@ class Script(scripts.Script):
                     with gr.Row():
                         gr.HTML('<p style="color:blue"> &gt;&gt; Region boxes are auto locked when its according setting panel is closed (bug, but also feature 😂 </p>')
 
+                        cfg_dump = gr.Button(value='💾 Save', variant='tool')
+                        cfg_load = gr.Button(value='⚙️ Load', variant='tool')
+
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
@@ -185,18 +195,31 @@ class Script(scripts.Script):
                             prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2)
                             neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1)
 
-                        bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
+                        bbox_controls.extend([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
 
-        controls = [
+                    def dump(*bbox_controls):
+                        data = { 'bbox_controls': bbox_controls }
+                        with open(CONFIG_FILE, 'w', encoding='utf-8') as fh:
+                            json.dump(data, fh, indent=2, ensure_ascii=False)
+
+                    def load(*bbox_controls):
+                        if not CONFIG_FILE.exists(): return [gr_value(v) for v in bbox_controls]
+                        with open(CONFIG_FILE, 'r', encoding='utf-8') as fh:
+                            data = json.load(fh)
+                        return [gr_value(v) for v in data['bbox_controls']]
+
+                    cfg_dump.click(fn=dump, inputs=bbox_controls, show_progress=False)
+                    cfg_load.click(fn=load, inputs=bbox_controls, outputs=bbox_controls, show_progress=False)
+
+        return [
             enabled, method,
             overwrite_image_size, keep_input_size, image_width, image_height,
             tile_width, tile_height, overlap, batch_size,
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control, draw_background, causal_layers,
+            *bbox_controls,
         ]
-        for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
-        return controls
 
     def process(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,

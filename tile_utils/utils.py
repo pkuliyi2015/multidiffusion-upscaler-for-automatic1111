@@ -11,6 +11,10 @@ from modules.processing import opt_f
 from tile_utils.typing import *
 
 
+def gr_value(value=None):
+    return {"value": value, "__type__": "update"}
+
+
 class Method(Enum):
 
     MULTI_DIFF = 'MultiDiffusion'
