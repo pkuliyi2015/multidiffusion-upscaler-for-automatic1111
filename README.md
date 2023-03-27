@@ -1,11 +1,11 @@
 # Large Image Generation via Tiled Diffusion & VAE
 
-English｜[中文](README_CN.md)
+English｜[中文(待更新，欢迎帮助翻译)](README_CN.md)
 
-The extension enables **drawing large images with limited VRAM** with the following techniques:
+The extension enables **large image drawing with limited VRAM** via the following techniques:
 
 1. Two SOTA diffuion tiling algorithms: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
-2. My original Tiled VAE algorithm
+2. My original Tiled VAE algorithm.
 
 ## Features
 
@@ -14,7 +14,8 @@ The extension enables **drawing large images with limited VRAM** with the follow
 ### 🔥 Tiled VAE
 
 - **It saves your VRAM at nearly no cost.**
-- Take highres.fix as an example, if you can only do 1.5x upscale previously, you may do 2.0x upscale with it.
+- You may not need --lowvram or --medvram anymore.
+- Take highres.fix as an example, if you can only do 1.5x upscale previously, you may do 2.0x upscale with it now. 
   - Normally you can use default settings without changing.
   - But if you see CUDA out of memory error, just lower down the two tile sizes.
 - Screenshot：![TiledVAE](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiled_vae.png?raw=true)
@@ -24,9 +25,10 @@ The extension enables **drawing large images with limited VRAM** with the follow
 ### 🆕 Regional Prompt Control
 
 Draw large images by fusing multiple regions together.
+
 NOTE: we recommend you use custom regions to fill the whole canvas.
 
-#### Example 1: draw multiple characters at full resolution
+#### Example 1: draw multiple characters at a high resolution
 
 - Params:
 
@@ -36,7 +38,7 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
   - Negative prompt = ng_deepnegative_v1_75t EasyNegative
 
-  - **The tile size parameters become useless; don't need to deal with them.**
+  - **The tile size parameters become useless; just ignore them.**
 
 - Regions:
   - Region 1: Prompt = sofa, Type = Background
@@ -51,25 +53,24 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
 #### Example 2: draw a full-body character
 
-- Usually it is difficult to draw a full-body character at high resolution (it often concatenates two bodies). 
+- Usually it is difficult to draw a full-body character at a high resolution (e.g., it may concatenates two bodies). 
 - With this extension, **put your character in your background**, it becomes much easier.
-- Params
+- Params:
   - Ckpt: Anything V4.5, width = 1280, height = 1600 (no highres), method=MultiDiffusion
-
   - Main prompt: masterpiece, best quality, highres, extremely clear 8k wallpaper, beach, sea, forest
   - Neg prompt:  ng_deepnegative_v1_75t EasyNegative
 - Regions:
   - Region 1 Prompt = 1girl, black bikini, (white hair), (slim) waist, giant breast, long hair, Type = Foreground, Feather: 0.2
   - Region 2 Prompt = (empty), Type: Background
 - Region Layout: ![FullBodyRegions](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody_regions.png?raw=true)
-- Result: 32s, 4729 MB on NVIDIA V100. I was lucky to get this at once without cherry-picking.![FullBody](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody.jpeg?raw=true)
-- Also works well for 2.5D characters. For exampe, 1024*1620 image generation
-- Great thanks to all settings from @辰熙. click here for more her artworks: https://space.bilibili.com/179819685
+- Result: 32s, 4729 MB on NVIDIA V100. I was lucky to get this at once without cherry picks.![FullBody](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody.jpeg?raw=true)
+- Also works well for 2.5D characters. For exampe, the 1024*1620 image generation
+- Great thanks to all settings from @辰熙. Click here for more her artworks: https://space.bilibili.com/179819685
 - Cherry-picked from 20 generations.![FullBody2](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody2.jpeg?raw=true)
 
 ****
 ### Img2img upscale
-- Leverage Tiled Diffusion to redraw large images
+- Leverage Tiled Diffusion to upscale & redraw large images
 
 #### Example: 1024 * 800 -> 4096 * 3200 image, with default params
 
@@ -86,7 +87,7 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
 ### Ultra-Large image generation
 
-- Please use simple positive prompts at the top of the page, as they will be applied to every tile.
+- Please use simple positive prompts at the top of the page, as they will be applied to each tile.
 - If you want to add objects to a specific position, use **regional prompt control** and enable **draw full canvas background** 
 
 #### Example 1:  masterpiece, best quality, highres, city skyline, night.
@@ -112,7 +113,7 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
 #### Method 1: Official Market
 
-- Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Available" -> Find "[MultiDiffusion with Tiled VAE]" -> "Click Install"
+- Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Available" -> Find "[MultiDiffusion with Tiled VAE]" -> Click "Install"
 
 #### Method 2: URL Install
 
@@ -125,11 +126,11 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
 ### Tiled VAE
 
-- The script will recommend a setting for you when first use, so your params will be different from this picture.
-- Just check the enable option. Normally, you don't need to change the default params.![TiledVAE](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiled_vae.png?raw=true)
-- You only need to change params in the following cases
+- The script will recommend settings for you when first use.
+- So normally, you don't need to change the default params.![TiledVAE](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiled_vae.png?raw=true)
+- You only need to change params in following cases
   1. When you see CUDA out of memory error before generation, or after generation, please low down the tile size.
-  2. If you use too small tile size and the picture is not clear and becomes gray, enable Encoder Color Fix.
+  2. If you use too small tile size and the picture becomes gray and unclear, please enable Encoder Color Fix.
 
 ****
 
@@ -139,58 +140,65 @@ NOTE: we recommend you use custom regions to fill the whole canvas.
 
   The following part controls the tiling of the image: ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Tab.png?raw=true)
 
-  Here is an explanation:
+  Here is an illustration:
 
   ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiles_explain.png?raw=true)
 
-  - Each tile in latent space is send to SD img2img redraw. 
-    - Larger overlap will reduce seams, **but will severely affect the speed as it introduces much more tiles.**
-    - Larger tile size will increase the speed, but SD may not good at drawing tiles larger than 768 * 768
-  - Overall, tile size = 96, overlap = 32 or 48 is ideal choice.
-
-- **Upscaler** will appear in i2i.
+- From the illustration, you can see how is an image splitted into tiles. 
+  - In each step, each tile in the latent space will be send to Stable Diffusion UNet.
+  - The tiles are splited and fused over and over again, util all steps completed.
+- What is a good tile size?
+  - Larger tile size will increase the speed because it produces less tiles.
+  - However, the optimal size depends on your checkpoint. The basic SD1.4 is only good at drawing 512 * 512 images (SD2.1 will be 768 * 768). And most checkpoints cannot generate good pictures larger than 1280 * 1280. So in latent space let's divide this by 8, and you will get 64 - 160.
+  - Hence, you should pick a value between 64 - 160.
+  - **Personally I recommend 96 or 128 for fast speed.**
+- What is a good overlap?
+  - The overlap reduces seams in fusion. Obviously, larger overlap means less seams, but will **significantly reduce the speed** as it brings much more tiles to redraw.
+  - Comparing to MultiDiffusion, Mixture of Diffusers requires less overlap because it use Gaussian smoothing (and therefore can be faster).
+  - **Personally I recommend 32 or 48 for MultiDiffusion, 16 or 32 for Mixture of Diffusers**
+- **Upscaler** will appear in i2i. You can select one to upscale your image in advance.
 
 ****
 
 ### Region Prompt Control
 
-- In tiled diffusion all tiles share the same main prompt
-  - So you can't draw meaningful objects with main prompt, it will draw many objects everywhere.
-  - Sometimes i2i result will be affected too.
-- To handle this, we provide region prompt control tool.
+- Normally, all tiles share the same main prompt.
+  - So you can't draw meaningful objects with main prompt, it will draw your object everywhere and ruin your image.
+- To handle this, we provide the powerful region prompt control tool.
 - ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/region_prompt_control.png?raw=true)
-  1. First, check the enable.
-     - **NOTE: When you enable the control, the default tiling behavior will be disabled.**
-     - If your regions can't fill the whole canvas, it will produce you brown empty spaces.
-     - We recommend you use your regions to fill the canvas.
-     - If you are lazy, you can enable the **Draw full canvas background.** However, this is slow.
-  2. Upload an image, or click the button create an empty image as a reference.
-  3. Click Region 1, you will see a region appears in the image.
-     - **Click and drag** the region with your mouse to move and resize them.
-  4. Selecte region type. If you want to draw object, select Foreground. Otherwise select Background.
-     - **Feather** will appear if you select foreground.
-     - The larger value will gives you more smooth edges.
-  5. Type in positive prompt and negative prompt
-     -  **Note: your prompt will be appended to the prompt at the top of the page.** You can leverage this to save your words, write common things like "masterpiece, bestquality..." at the top of the page
-     - **You can use Textual Inversion and LoRA in the prompt**
+1. First, enable the region prompt control.
+    - **NOTE: When you enable the control, the default tiling behavior will be disabled.**
+    - If your custom regions can't fill the whole canvas, it will produce brown color (MultiDiffusion) or noises (Mixture of Diffusers) in those uncovered areas.
+    - We recommend you use your own regions to fill the canvas, as it can be much faster when generation.
+    - If you are lazy to draw, you can also enable the **Draw full canvas background.** However, this will be much slower in generation.
+2. Upload an image or click the button to create an empty image as a reference.
+3. Click the enable in Region 1, you will see a red rectangle appears in the image.
+    - **Click and drag** the region with your mouse to move and resize them.
+4. Selecte region type. If you want to draw object, select Foreground. Otherwise select Background.
+    - **Feather** will appear if you select foreground.
+    - The larger value will give you more smooth edges.
+5. Type in positive prompt and negative prompt.
+    -  **Note: your prompt will be appended to the prompt at the top of the page.**
+    - You can leverage this to save your words, write common things like "masterpiece, best quality, highres..." at the top of the page
+    - **You can also use Textual Inversion and LoRA in the prompt**
 
 ****
 
-### Special tips on Upscaling
-
-- **We are compatible with masked inpainting**
-  - If you want to keep a part, just mask it.
-- **The checkpoint is crucial**. 
+### Special tips for Upscaling
+- **Recommend Parameters for Efficient Upscaling.**
+  - Sampler = Euler a, steps = 20, denoise = 0.35, method = Mixture of Diffusers, Latent tile height & width = 128, overlap = 16, tile batch size = 8 (reduce tile batch size if see CUDA out of memory).
+- We are compatible with masked inpainting
+  - If you want to keep some parts, or the upscaler gives you weird results, just mask these areas.
+- **The checkpoint is crucial.**. 
   - MultiDiffusion works very similar to highres.fix, so it highly relies on your checkpoint.
   - A checkpoint that good at drawing details (e.g., trained on high resolution images) can add amazing details to your image.
   - A **full checkpoint** instead of a pruned one yields much finer results.
 - **Don't include any concrete objects in your main prompts.**  Otherwise the results get ruined.
   - Just use something like "highres, masterpiece, best quality, ultra-detailed 8k wallpaper, extremely clear".
-  - And use regional prompt control for concrete objects.
-- You don't need too large tile size, large overlap and many denoising steps, **or it can be slow**.
-  - Latent tile size=64 - 96, Overlap=32 - 48, and steps=20 - 25 are recommended. If you find seams, please increase overlap.
-- **CFG scale can significantly affect the details**, together with a proper sampler.
-  - A large CFG scale (e.g., 14) gives you much more details. For samplers,I personally prefer Euler a and DPM++ SDE Karras.
+  - And use regional prompt control for concrete objects if you like.
+- You don't need too large tile size, large overlap and many denoising steps, **or it can be very slow**.
+- **CFG scale can significantly affect the details.**
+  - A large CFG scale (e.g., 14) gives you much more details.
 - You can control how much you want to change the original image with **denoising strength from 0.1 - 0.6**.
 - If your results are still not as satisfying as mine, [see our discussions here.](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/issues/3)
 
@@ -202,9 +210,9 @@ For those who want to know how this works.
 
 ### Tiled VAE
 
-The core technique is to estimate GroupNorm params.
+The core technique is to estimate GroupNorm params for seamless generation.
 
-1. The image is split into tiles and padded with 11/32 pixels' in decoder/encoder.
+1. The image is split into tiles, which are then padded with 11/32 pixels' in decoder/encoder.
 2. When Fast Mode is disabled:
    1. The original VAE forward is decomposed into a task queue and a task worker, which start to process each tile.
    2. When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to RAM, and turns to the next tile.
@@ -223,20 +231,14 @@ Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a 
 ### Tiled Diffusion
 
 1. The latent image is split into tiles.
-
 2. In MultiDiffusion:
-
-   - The UNet predict the noise of each tile.
-   - The tiles are denoised by the original sampler for one time step.
-
-   - The tiles are added together but divided by how many times each pixel is added.
-
+   1. The UNet predict the noise of each tile.
+   2. The tiles are denoised by the original sampler for one time step.
+   3. The tiles are added together but divided by how many times each pixel is added.
 3. In Mixture of Diffusers:
-
    1. The UNet predict the noise of each tile
    2. All noise are fused together with a gaussian weight mask.
    3. The denoiser denoise the whole image by one step using fused noises.
-
 4. Repeat 2-3 until all timesteps are completed.
 
 ### Advantages
@@ -253,7 +255,9 @@ Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a 
 
 ## Current Progress
 
+- Chinese README
 - Saving region info into image & read back is in progress.
+- Tiled noise inverse for better upscaling
 
 ****
 
