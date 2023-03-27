@@ -51,6 +51,9 @@
 # ------------------------------------------------------------------------
 '''
 
+from pathlib import Path
+import json
+
 import torch
 import numpy as np
 import gradio as gr
@@ -60,12 +63,16 @@ from modules.shared import opts
 from modules.processing import opt_f
 from modules.ui import gr_show
 
-from tile_utils.typing import *
-from tile_utils.utils import *
+from tile_methods.abstractdiffusion import TiledDiffusion
 from tile_methods.multidiffusion import MultiDiffusion
 from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
+from tile_utils.utils import *
+from tile_utils.typing import *
 
 
+SD_WEBUI_PATH = Path.cwd()
+ME_PATH = SD_WEBUI_PATH / 'extensions' / 'multidiffusion-upscaler-for-automatic1111'
+CONFIG_FILE = ME_PATH / 'config.json'
 
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
 
@@ -73,9 +80,9 @@ BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
 class Script(scripts.Script):
 
     def __init__(self):
-        self.controlnet_script = None
-        self.delegate = None
-        self.torch_obj = {}
+        self.controlnet_script: ModuleType = None
+        self.delegate: TiledDiffusion = None
+        self.torch_obj = {}     # FIXME: what is this for?
 
     def title(self):
         return "Tiled Diffusion"
@@ -118,12 +125,12 @@ class Script(scripts.Script):
 
             with gr.Row(variant='compact'):
                 overwrite_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img)
-                overwrite_image_size.change(fn=lambda x: gr_show(x), inputs=overwrite_image_size, outputs=tab_size)
+                overwrite_image_size.change(fn=gr_show, inputs=overwrite_image_size, outputs=tab_size)
 
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img)
                 control_tensor_cpu = gr.Checkbox(label='Move ControlNet images to CPU (if applicable)', value=False)
 
-                reset_status = gr.Button(value='↻', variant='tool')
+                reset_status = gr.Button(value='↻ Reset', variant='tool')
                 reset_status.click(fn=self.reset_and_gc, show_progress=False)
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
@@ -137,7 +144,7 @@ class Script(scripts.Script):
                     with gr.Row(variant='compact'):
                         create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img")
 
-                    bbox_controls: List[Tuple[gr.components.Component]] = []  # control set for each bbox
+                    bbox_controls: BBoxControls = []  # control set for each bbox
                     with gr.Row(variant='compact'):
                         ref_image = gr.Image(label='Ref image (for conviently locate regions)', image_mode=None, 
                                              elem_id=f'MD-bbox-ref-{tab}', interactive=True)
@@ -157,13 +164,19 @@ class Script(scripts.Script):
                         else:
                             create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick')
 
+                    with gr.Row():
+                        gr.HTML('<p style="color:blue"> &gt;&gt; Region boxes are auto locked when its according setting panel is closed (bug, but also feature 😂 </p>')
+
+                        cfg_dump = gr.Button(value='💾 Save', variant='tool')
+                        cfg_load = gr.Button(value='⚙️ Load', variant='tool')
+
                     for i in range(BBOX_MAX_NUM):
                         with gr.Accordion(f'Region {i+1}', open=False):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label='Enable', value=False)
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
 
-                                blend_mode = gr.Radio(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value)
+                                blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value)
                                 feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False)
 
                                 blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio)
@@ -182,18 +195,31 @@ class Script(scripts.Script):
                             prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2)
                             neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1)
 
-                        bbox_controls.append([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
+                        bbox_controls.extend([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
 
-        controls = [
+                    def dump(*bbox_controls):
+                        data = { 'bbox_controls': bbox_controls }
+                        with open(CONFIG_FILE, 'w', encoding='utf-8') as fh:
+                            json.dump(data, fh, indent=2, ensure_ascii=False)
+
+                    def load(*bbox_controls):
+                        if not CONFIG_FILE.exists(): return [gr_value(v) for v in bbox_controls]
+                        with open(CONFIG_FILE, 'r', encoding='utf-8') as fh:
+                            data = json.load(fh)
+                        return [gr_value(v) for v in data['bbox_controls']]
+
+                    cfg_dump.click(fn=dump, inputs=bbox_controls, show_progress=False)
+                    cfg_load.click(fn=load, inputs=bbox_controls, outputs=bbox_controls, show_progress=False)
+
+        return [
             enabled, method,
             overwrite_image_size, keep_input_size, image_width, image_height,
             tile_width, tile_height, overlap, batch_size,
             upscaler_index, scale_factor,
             control_tensor_cpu,
             enable_bbox_control, draw_background, causal_layers,
+            *bbox_controls,
         ]
-        for i in range(BBOX_MAX_NUM): controls.extend(bbox_controls[i])
-        return controls
 
     def process(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
@@ -263,7 +289,7 @@ class Script(scripts.Script):
                 if len(hint.shape) == 3:
                     hint = hint.unsqueeze(0)
                 _, _, h1, w1 = hint.shape
-                if h != h1 or w != w1:
+                if (h, w) != (h1, w1):
                     hint = torch.nn.functional.interpolate(hint, size=(h, w), mode="nearest")
                 return hint
             
@@ -339,7 +365,7 @@ class Script(scripts.Script):
         if hasattr(sd_samplers, "create_sampler_original_md"):
             sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
             #del sd_samplers.create_sampler_original_md
-        MultiDiffusion.unhook()
+        MultiDiffusion    .unhook()
         MixtureOfDiffusers.unhook()
         self.delegate = None
 
