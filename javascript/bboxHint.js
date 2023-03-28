@@ -114,20 +114,6 @@ function displayBox(canvas, is_t2i, bbox_info) {
     shower();
 }
 
-function onLoadConfig(is_t2i, idx_list) {
-    // idx_list is a string of comma separated integers
-    if (!idx_list) { return; }
-    const idxs = idx_list.split(',').map(x => parseInt(x));
-    for (let i = 0; i < BBOX_MAX_NUM; i++) {
-        if (idxs.includes(i)) {
-            onBoxEnableClick(is_t2i, i, true);
-        } else {
-            onBoxEnableClick(is_t2i, i, false);
-        }
-    }
-    return idx_list;
-}
-
 function onBoxEnableClick(is_t2i, idx, enable) {
     let canvas = null;
     let bboxes = null;
