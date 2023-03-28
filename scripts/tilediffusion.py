@@ -71,10 +71,9 @@ from tile_utils.typing import *
 
 
 SD_WEBUI_PATH = Path.cwd()
-ME_PATH = SD_WEBUI_PATH / 'extensions' / 'multidiffusion-upscaler-for-automatic1111'
-CONFIG_FILE = ME_PATH / 'config.json'
-
+ME_PATH = SD_WEBUI_PATH / 'extensions' / 'multidiffusion-upscaler-for-automatic1111' / 'region_configs'
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
+BBOX_CONTROL_KEYS = ['enable', 'x', 'y', 'w', 'h', 'prompt', 'neg_prompt', 'blend_mode', 'feather_ratio']
 
 
 class Script(scripts.Script):
@@ -89,6 +88,40 @@ class Script(scripts.Script):
 
     def show(self, is_img2img):
         return scripts.AlwaysVisible
+    
+    def dump_regions(self, cfg_name, *bbox_controls):
+        if cfg_name is None or cfg_name == '':
+            return gr.HTML.update(value= f'<span style="color:red">Config file name cannot be empty.</span>',visible=True)
+        bbox = []
+        # serialize bbox controls
+        for i in range(BBOX_MAX_NUM):
+            bbox.append({k: v for k, v in zip(BBOX_CONTROL_KEYS, bbox_controls[i*9:(i+1)*9])})
+        data = { 'bbox_controls': bbox}
+        if not ME_PATH.exists():
+            ME_PATH.mkdir(parents=True)
+        with open(ME_PATH / cfg_name, 'w', encoding='utf-8') as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        return gr.HTML.update(value= f'Config saved to {ME_PATH/ cfg_name}.',visible=True)
+
+    def load_regions(self, ref_image, cfg_name, *bbox_controls):
+        file_path = ME_PATH / cfg_name
+        if ref_image is None:
+            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Please create or upload a ref image first.</span>', visible=True)]
+        if not file_path.exists(): 
+            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Config {file_path} not found.</span>', visible=True)]
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+        except Exception as e:
+            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Failed to load config {file_path}: {e}</span>', visible=True)]
+        data_list = []
+        for i in range(BBOX_MAX_NUM):
+            for k in BBOX_CONTROL_KEYS:
+                if k in data['bbox_controls'][i]:
+                    data_list.append(data['bbox_controls'][i][k])
+                else:
+                    data_list.append(0)
+        return [gr_value(v) for v in data_list] + [gr.HTML.update(value= f'Config loaded.', visible=True)]
 
     def ui(self, is_img2img):
         tab    = 't2i'  if not is_img2img else 'i2i'
@@ -164,14 +197,17 @@ class Script(scripts.Script):
                         else:
                             create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick')
 
-                    with gr.Row():
-                        gr.HTML('&gt;&gt; Region boxes are auto locked when its according setting panel is closed (bug, but also feature 😂)')
-
+                    with gr.Row(variant='compact'):
+                        cfg_name = gr.Textbox(label='Custom Config File', value='config.json')
                         cfg_dump = gr.Button(value='💾 Save', variant='tool')
                         cfg_load = gr.Button(value='⚙️ Load', variant='tool')
+                    
+                    with gr.Row(variant='compact'):
+                        cfg_tip = gr.HTML(value='', visible=False)
+                    
 
                     for i in range(BBOX_MAX_NUM):
-                        with gr.Accordion(f'Region {i+1}', open=False):
+                        with gr.Accordion(f'Region {i+1}', open=False, elem_id=f'MD-accordion-{tab}-{i}'):
                             with gr.Row(variant='compact'):
                                 e = gr.Checkbox(label='Enable', value=False)
                                 e.change(fn=None, inputs=e, outputs=e, _js=f'e => onBoxEnableClick({is_t2i}, {i}, e)')
@@ -184,6 +220,8 @@ class Script(scripts.Script):
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-x')
                                 y = gr.Slider(label='y', value=0.4, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-y')
+
+                            with gr.Row(variant='compact'):
                                 w = gr.Slider(label='w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-w')
                                 h = gr.Slider(label='h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-h')
 
@@ -195,21 +233,12 @@ class Script(scripts.Script):
                             prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2)
                             neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1)
 
-                        bbox_controls.extend([e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio])
-
-                    def dump(*bbox_controls):
-                        data = { 'bbox_controls': bbox_controls }
-                        with open(CONFIG_FILE, 'w', encoding='utf-8') as fh:
-                            json.dump(data, fh, indent=2, ensure_ascii=False)
-
-                    def load(*bbox_controls):
-                        if not CONFIG_FILE.exists(): return [gr_value(v) for v in bbox_controls]
-                        with open(CONFIG_FILE, 'r', encoding='utf-8') as fh:
-                            data = json.load(fh)
-                        return [gr_value(v) for v in data['bbox_controls']]
-
-                    cfg_dump.click(fn=dump, inputs=bbox_controls, show_progress=False)
-                    cfg_load.click(fn=load, inputs=bbox_controls, outputs=bbox_controls, show_progress=False)
+                        control = [e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio]
+                        assert len(control) == len(BBOX_CONTROL_KEYS)
+                        bbox_controls.extend(control)
+                    
+                    cfg_dump.click(fn=self.dump_regions, inputs=[cfg_name, *bbox_controls], outputs=cfg_tip, show_progress=False)
+                    cfg_load.click(fn=self.load_regions, inputs=[ref_image, cfg_name, *bbox_controls], outputs=[*bbox_controls, cfg_tip], show_progress=False)
 
         return [
             enabled, method,

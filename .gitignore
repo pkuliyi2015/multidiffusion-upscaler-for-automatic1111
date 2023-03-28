@@ -4,4 +4,4 @@ __pycache__/
 .DS_Store
 
 # settings
-config.json
+region_configs/

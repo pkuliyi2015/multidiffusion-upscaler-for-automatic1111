@@ -37,11 +37,6 @@ function getUpscalerFactor() {
     if (!isNaN(upscalerInput)) { return upscalerInput; }
 }
 
-function updateInput(target) {  // FIXME: not used
-	const e = new Event("input", { bubbles: true })
-	Object.defineProperty(e, "target", {value: target})
-	target.dispatchEvent(e);
-}
 
 function updateCursorStyle(e, is_t2i, idx) {
     // This function changes the cursor style when hovering over the bounding box
@@ -117,6 +112,20 @@ function displayBox(canvas, is_t2i, bbox_info) {
 
     // insert it to DOM if not appear
     shower();
+}
+
+function onLoadConfig(is_t2i, idx_list) {
+    // idx_list is a string of comma separated integers
+    if (!idx_list) { return; }
+    const idxs = idx_list.split(',').map(x => parseInt(x));
+    for (let i = 0; i < BBOX_MAX_NUM; i++) {
+        if (idxs.includes(i)) {
+            onBoxEnableClick(is_t2i, i, true);
+        } else {
+            onBoxEnableClick(is_t2i, i, false);
+        }
+    }
+    return idx_list;
 }
 
 function onBoxEnableClick(is_t2i, idx, enable) {
@@ -281,6 +290,8 @@ function onBoxMouseDown(e, is_t2i, idx) {
     mouseX = Math.min(Math.max(mouseX, viewRectLeft), viewRectRight);
     mouseY = Math.min(Math.max(mouseY, viewRectTop),  viewRectDown);
 
+    const accordion = gradioApp().querySelector(`#MD-accordion-${is_t2i ? 't2i' : 'i2i'}-${idx}`);
+
     // Move or resize the bounding box on mousemove
     function onMouseMove(e) {
         // Prevent selecting anything irrelevant
@@ -381,9 +392,17 @@ function onBoxMouseDown(e, is_t2i, idx) {
         // <del>The querySelector is not very efficient, so we query it once and reuse it</del>
         // caching will result gradio bugs that stucks bbox and cannot move & drag
         const sliderIds = ['x', 'y', 'w', 'h'];
-        const sliderSelectors = sliderIds.map(id => `#MD-${is_t2i ? 't2i' : 'i2i'}-${idx}-${id} input`);
-        const sliderInputs = gradioApp().querySelectorAll(sliderSelectors.join(', '));
-        if (sliderInputs.length == 0) { return; }
+        // We try to select the input sliders
+        const sliderSelectors = sliderIds.map(id => `#MD-${is_t2i ? 't2i' : 'i2i'}-${idx}-${id} input`).join(', ');
+        let sliderInputs = accordion.querySelectorAll(sliderSelectors);
+        if (sliderInputs.length == 0) { 
+            // If we failed, the accordion is probably closed and sliders are removed in the dom, so we open it
+            accordion.querySelector('.label-wrap').click();
+            // and try again
+            sliderInputs = accordion.querySelectorAll(sliderSelectors);
+            // If we still failed, we just return
+            if (sliderInputs.length == 0) { return; }
+        }
         for (let i = 0; i < 4; i++) {
             if (old_bbox[i] !== coords[i]) {
                 sliderInputs[2*i].value = coords[i];
@@ -471,7 +490,6 @@ window.addEventListener('DOMNodeInserted', e => {
         const div = gradioApp().querySelector('#MD-bbox-control-' + tab +' div.label-wrap');
         if (!div) { continue; }
     
-        updateBoxes(true);
-        updateBoxes(false);
+        updateBoxes(tab === 't2i');
     }
 });
