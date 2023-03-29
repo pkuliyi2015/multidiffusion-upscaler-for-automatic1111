@@ -1,8 +1,10 @@
 import math
 import torch
+import types
+import inspect
 from tqdm import tqdm
 
-from modules import devices, shared
+from modules import devices, shared, processing
 from modules.shared import state
 from modules.processing import opt_f
 
@@ -64,6 +66,73 @@ class TiledDiffusion:
         self.control_params: Dict[str, Tensor] = {}
         self.control_tensor_cpu: bool = None
         self.control_tensor_custom: List[List[Tensor]] = []
+
+    def enable_noise_inverse(self, steps: int, randomness: float):
+        self.noise_inverse_enabled = True
+        self.noise_inverse_steps = steps
+        self.noise_inverse_randomness = randomness
+        if self.noise_inverse_enabled:
+            self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
+
+
+    def sample_img2img(self, sampler: KDiffusionSampler, p: StableDiffusionProcessing, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
+        # noise inverse sampling
+        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
+
+        sigmas = sampler.get_sigmas(p, steps)
+
+        sigma_sched = sigmas[steps - t_enc - 1:]
+        prompts = p.all_prompts[:p.batch_size]
+        neg_prompts = p.all_negative_prompts[:p.batch_size]
+        cond_basis, _ = Condition.get_cond(prompts, p.steps)
+        uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
+        shared.state.job_count += 1
+
+        latent = self.find_noise_for_image_sigma_adjustment(cond_basis, uncond_basis, p.cfg_scale, self.noise_inverse_steps)
+        sigmas2 = sampler.model_wrap.get_sigmas(p.steps)
+        noise = latent - (p.init_latent / sigmas2[0])
+        randomness = self.noise_inverse_randomness
+        if randomness > 0:
+            rand_noise = processing.create_random_tensors(p.init_latent.shape[1:], seeds=p.all_seeds, subseeds=p.all_subseeds, subseed_strength=p.subseed_strength, seed_resize_from_h=p.seed_resize_from_h, seed_resize_from_w=p.seed_resize_from_w, p=p)
+            combined_noise = ((1 - randomness) * noise + randomness * rand_noise) / ((randomness**2 + (1-randomness)**2) ** 0.5)
+        else:
+            combined_noise = noise
+        xi = x + combined_noise * sigma_sched[0]
+        
+        extra_params_kwargs = sampler.initialize(p)
+        parameters = inspect.signature(sampler.func).parameters
+
+        if 'sigma_min' in parameters:
+            ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
+            extra_params_kwargs['sigma_min'] = sigma_sched[-2]
+        if 'sigma_max' in parameters:
+            extra_params_kwargs['sigma_max'] = sigma_sched[0]
+        if 'n' in parameters:
+            extra_params_kwargs['n'] = len(sigma_sched) - 1
+        if 'sigma_sched' in parameters:
+            extra_params_kwargs['sigma_sched'] = sigma_sched
+        if 'sigmas' in parameters:
+            extra_params_kwargs['sigmas'] = sigma_sched
+
+        if sampler.funcname == 'sample_dpmpp_sde':
+            noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
+            extra_params_kwargs['noise_sampler'] = noise_sampler
+
+        sampler.model_wrap_cfg.init_latent = x
+        sampler.last_latent = x
+        extra_args={
+            'cond': conditioning, 
+            'image_cond': image_conditioning, 
+            'uncond': unconditional_conditioning, 
+            'cond_scale': p.cfg_scale,
+        }
+
+        samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
+
+        return samples
+    
+    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale, steps) -> Tensor:
+        pass
 
     @property
     def is_kdiff(self):

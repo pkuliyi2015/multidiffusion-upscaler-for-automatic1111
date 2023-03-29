@@ -27,60 +27,6 @@ class MultiDiffusion(TiledDiffusion):
         # For ddim sampler we need to cache the pred_x0
         self.x_pred_buffer = None
 
-        # Noise inverse state
-        self.noise_inverse_enabled = p.sampler_name == 'Euler'
-        if self.noise_inverse_enabled:
-            self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
-
-    def sample_img2img(self, sampler: KDiffusionSampler, p, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
-        # noise inverse sampling
-        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
-
-        sigmas = sampler.get_sigmas(p, steps)
-
-        sigma_sched = sigmas[steps - t_enc - 1:]
-        prompts = p.all_prompts[:p.batch_size]
-        neg_prompts = p.all_negative_prompts[:p.batch_size]
-        cond_basis, _ = Condition.get_cond(prompts, p.steps)
-        uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
-        shared.state.job_count += 1
-        latent = self.find_noise_for_image_sigma_adjustment(cond_basis, uncond_basis, p.cfg_scale)
-        sigmas2 = sampler.model_wrap.get_sigmas(p.steps)
-        noise = latent - (p.init_latent / sigmas2[0])
-        xi = x + noise * sigma_sched[0]
-        
-        extra_params_kwargs = sampler.initialize(p)
-        parameters = inspect.signature(sampler.func).parameters
-
-        if 'sigma_min' in parameters:
-            ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
-            extra_params_kwargs['sigma_min'] = sigma_sched[-2]
-        if 'sigma_max' in parameters:
-            extra_params_kwargs['sigma_max'] = sigma_sched[0]
-        if 'n' in parameters:
-            extra_params_kwargs['n'] = len(sigma_sched) - 1
-        if 'sigma_sched' in parameters:
-            extra_params_kwargs['sigma_sched'] = sigma_sched
-        if 'sigmas' in parameters:
-            extra_params_kwargs['sigmas'] = sigma_sched
-
-        if sampler.funcname == 'sample_dpmpp_sde':
-            noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
-            extra_params_kwargs['noise_sampler'] = noise_sampler
-
-        sampler.model_wrap_cfg.init_latent = x
-        sampler.last_latent = x
-        extra_args={
-            'cond': conditioning, 
-            'image_cond': image_conditioning, 
-            'uncond': unconditional_conditioning, 
-            'cond_scale': p.cfg_scale,
-        }
-
-        samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
-
-        return samples
-
     def hook(self):
         if self.is_kdiff:
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
@@ -319,15 +265,14 @@ class MultiDiffusion(TiledDiffusion):
 
         return x_out if self.is_kdiff else (x_out, x_pred_out)
     
-
-    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale) -> Tensor:
+    @torch.no_grad()
+    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale, steps) -> Tensor:
         '''
         Migrate from the built-in script img2imgalt.py
         Tiled noise inverse for better image upscaling
         '''
         assert self.p.sampler_name == 'Euler'
         x = self.p.init_latent
-        steps = self.p.steps
 
         s_in = x.new_ones([x.shape[0]])
         if shared.sd_model.parameterization == "v":
@@ -337,7 +282,7 @@ class MultiDiffusion(TiledDiffusion):
             dnw = K.external.CompVisDenoiser(shared.sd_model)
             skip = 0
         sigmas = dnw.get_sigmas(steps).flip(0)
-        shared.state.sampling_steps = steps
+        shared.state.sampling_steps = len(sigmas)
         print("Tiled noise inverse...")
         for i in trange(1, len(sigmas)):
             if shared.state.interrupted:
@@ -345,7 +290,6 @@ class MultiDiffusion(TiledDiffusion):
             shared.state.sampling_step += 1
             cond = Condition.reconstruct_cond(cond_basis, i)
             uncond = Condition.reconstruct_uncond(uncond_basis, i)
-            x_in = torch.cat([x] * 2)
             sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
             cond_in = torch.cat([uncond, cond])
             image_conditioning = torch.cat([self.p.image_conditioning] * 2)
@@ -357,12 +301,23 @@ class MultiDiffusion(TiledDiffusion):
                 t = dnw.sigma_to_t(sigma_in)
 
             # NOTE: The only change is to use tiled diffusion to get the noise
-            self.reset_buffer(x)
             def org_func(x:Tensor):
-                return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
+                x_in = torch.cat([x] * 2)
+                c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
+                x_in *= c_in
+                eps = shared.sd_model.apply_model(x_in, sigma_in, cond=cond_in)
+                denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
+                denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
+                if i == 1:
+                    d = (x - denoised_uncond) / c_in
+                else:
+                    d = (x - denoised) / c_in
+                dt = sigmas[i - 1] - sigmas[i]
+                x = x + d * dt
+                return x
 
-            def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
-                x_tile = torch.cat([x_tile] * 2)
+            def repeat_func(x_tile_in:Tensor, bboxes:List[CustomBBox]):
+                x_tile = torch.cat([x_tile_in] * 2)
                 sigma_in_tile = sigma_in.repeat(len(bboxes))
                 c_out, c_in = [K.utils.append_dims(k, x_tile.ndim) for k in dnw.get_scalings(sigma_in_tile)[skip:]]
                 x_tile *= c_in
@@ -370,25 +325,25 @@ class MultiDiffusion(TiledDiffusion):
                 eps_tile = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
                 denoised_uncond, denoised_cond = (x_tile + eps_tile * c_out).chunk(2)
                 denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
-                return denoised
+                if i == 1:
+                    d = (x_tile_in - denoised) / (2 * sigmas[i])
+                else:
+                    d = (x_tile_in - denoised) / sigmas[i - 1]
+                dt = sigmas[i] - sigmas[i - 1]
+                x_tile_in = x_tile_in + d * dt
+                return x_tile_in
 
             def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
-                return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, shared.sd_model.apply_model) 
+                return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, lambda x, sigma, cond_in: org_func(x)) 
 
-            denoised = self.sample_one_step(x, org_func, repeat_func, custom_func)
-            if i == 1:
-                d = (x - denoised) / (2 * sigmas[i])
-            else:
-                d = (x - denoised) / sigmas[i - 1]
-            dt = sigmas[i] - sigmas[i - 1]
-            x = x + d * dt
+            x = self.sample_one_step(x, org_func, repeat_func, custom_func)
+            
 
             sd_samplers_common.store_latent(x)
 
             # Delete unused variables to release memory (otherwise they consume 2x memory)
-            del x_in, sigma_in, cond_in, t,
+            del sigma_in, cond_in, t,
             # del eps, denoised_uncond, denoised_cond, denoised, d, dt
         
-        print(x.shape)
         shared.state.nextjob()
         return x / sigmas[-1]

@@ -155,6 +155,11 @@ class Script(scripts.Script):
                                              elem_id='MD-upscaler-index')
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
                                          elem_id='MD-upscaler-factor')
+                
+            with gr.Row(variant='compact', visible=is_img2img):
+                noise_inverse = gr.Checkbox(label='Euler noise inverse', value=False)
+                noise_inverse_randomness = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label='Randomness', value=0.0)
+                noise_inverse_steps = gr.Slider(minimum=1, maximum=100, step=1, label='Steps', value=10)
 
             with gr.Row(variant='compact'):
                 overwrite_image_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img)
@@ -242,6 +247,7 @@ class Script(scripts.Script):
 
         return [
             enabled, method,
+            noise_inverse, noise_inverse_steps, noise_inverse_randomness,
             overwrite_image_size, keep_input_size, image_width, image_height,
             tile_width, tile_height, overlap, batch_size,
             upscaler_index, scale_factor,
@@ -252,6 +258,7 @@ class Script(scripts.Script):
 
     def process(self, p: StableDiffusionProcessing,
             enabled: bool, method: str,
+            noise_inverse, noise_inverse_steps, noise_inverse_randomness,
             overwrite_image_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
             upscaler_index: str, scale_factor: float,
@@ -335,7 +342,8 @@ class Script(scripts.Script):
         ''' hijack create_sampler() '''
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method(method), 
-            tile_width, tile_height, overlap, tile_batch_size, 
+            tile_width, tile_height, overlap, tile_batch_size,
+            noise_inverse, noise_inverse_steps, noise_inverse_randomness,
             control_tensor_cpu, 
             enable_bbox_control, draw_background, causal_layers,
             bbox_control_states,
@@ -347,8 +355,9 @@ class Script(scripts.Script):
     ''' ↓↓↓ helper methods ↓↓↓ '''
 
     def create_sampler_hijack(
-            self, name: str, model: LatentDiffusion, p: StableDiffusionProcessing, method: Method, 
-            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int, 
+            self, name: str, model: LatentDiffusion, p: StableDiffusionProcessing, method: Method,
+            tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
+            noise_inverse, noise_inverse_steps, noise_inverse_randomness,
             control_tensor_cpu: bool,
             enable_bbox_control: bool, draw_background: bool, causal_layers: bool,
             bbox_control_states: BBoxControls,
@@ -361,6 +370,9 @@ class Script(scripts.Script):
             else:
                 self.reset()
 
+        if hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse:
+            name = 'Euler'
+            p.sampler_name = name
         # create a sampler with the original function
         sampler = sd_samplers.create_sampler_original_md(name, model)
         if method == Method.MULTI_DIFF: delegate_cls = MultiDiffusion
@@ -369,6 +381,10 @@ class Script(scripts.Script):
 
         # delegate hacks into the `sampler` with context of `p`
         delegate = delegate_cls(p, sampler)
+        
+        if hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse:
+            delegate.enable_noise_inverse(noise_inverse_steps, noise_inverse_randomness)
+
         # setup **optional** supports through `init_*`, make everything relatively pluggable!!
         if not enable_bbox_control or draw_background:
             delegate.init_grid_bbox(tile_width, tile_height, overlap, tile_batch_size)
@@ -381,6 +397,7 @@ class Script(scripts.Script):
 
         # hijack the behaviours
         delegate.hook()
+
         self.delegate = delegate
 
         print(f"{method.value} hooked into {name} sampler. " +

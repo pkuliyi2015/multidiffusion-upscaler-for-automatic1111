@@ -1,5 +1,7 @@
 import torch
+import k_diffusion as K
 
+from tqdm import trange
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
@@ -19,6 +21,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
         # weights for custom bboxes
         self.custom_weights: List[Tensor] = []
+        self.get_weight = gaussian_weights
 
     def hook(self):
         if not hasattr(shared.sd_model, 'apply_model_original_md'):
@@ -31,9 +34,12 @@ class MixtureOfDiffusers(TiledDiffusion):
             shared.sd_model.apply_model = shared.sd_model.apply_model_original_md
             del shared.sd_model.apply_model_original_md
 
+    def enable_noise_inverse(self, steps: int, randomness: float):
+        super().enable_noise_inverse(steps, randomness)
+        self.get_weight = lambda w, h: torch.ones((h, w), device=devices.device, dtype=torch.float32)
+
     def init_done(self):
         super().init_done()
-
         # The original gaussian weights can be extremely small, so we rescale them for numerical stability
         self.rescale_factor = 1 / self.weights
         # Meanwhile, we rescale the custom weights in advance to save time of slicing
@@ -45,7 +51,7 @@ class MixtureOfDiffusers(TiledDiffusion):
     def get_tile_weights(self) -> Tensor:
         # weights for grid bboxes
         if not hasattr(self, 'tile_weights'):
-            self.tile_weights = gaussian_weights(self.tile_w, self.tile_h)
+            self.tile_weights = self.get_weight(self.tile_w, self.tile_h)
         return self.tile_weights
 
     @custom_bbox
@@ -54,7 +60,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
         for bbox in self.custom_bboxes:
             if bbox.blend_mode == BlendMode.BACKGROUND:
-                custom_weights = gaussian_weights(bbox.w, bbox.h)
+                custom_weights = self.get_weight(bbox.w, bbox.h)
                 self.weights[bbox.slicer] += custom_weights
                 self.custom_weights.append(custom_weights.unsqueeze(0).unsqueeze(0))
             else:
@@ -173,3 +179,65 @@ class MixtureOfDiffusers(TiledDiffusion):
             x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + x_feather_buffer * x_feather_mask, x_out)
 
         return x_out
+
+    @torch.no_grad()
+    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale, steps) -> Tensor:
+        '''
+        Migrate from the built-in script img2imgalt.py
+        Tiled noise inverse for better image upscaling
+        '''
+        assert self.p.sampler_name == 'Euler'
+        x = self.p.init_latent
+
+        s_in = x.new_ones([x.shape[0]])
+        if shared.sd_model.parameterization == "v":
+            dnw = K.external.CompVisVDenoiser(shared.sd_model)
+            skip = 1
+        else:
+            dnw = K.external.CompVisDenoiser(shared.sd_model)
+            skip = 0
+        sigmas = dnw.get_sigmas(steps).flip(0)
+        shared.state.sampling_steps = len(sigmas)
+        print("Tiled noise inverse...")
+        for i in trange(1, len(sigmas)):
+            if shared.state.interrupted:
+                return x
+            shared.state.sampling_step += 1
+            cond = Condition.reconstruct_cond(cond_basis, i)
+            uncond = Condition.reconstruct_uncond(uncond_basis, i)
+
+            x_in = torch.cat([x] * 2)
+            sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
+            cond_in = torch.cat([uncond, cond])
+
+            image_conditioning = torch.cat([self.p.image_conditioning] * 2)
+            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond_in]}
+
+            c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
+
+            if i == 1:
+                t = dnw.sigma_to_t(torch.cat([sigmas[i] * s_in] * 2))
+            else:
+                t = dnw.sigma_to_t(sigma_in)
+
+            eps = self.apply_model_hijack(x_in * c_in, t, cond=cond_in)
+            denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
+
+            denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
+
+            if i == 1:
+                d = (x - denoised) / (2 * sigmas[i])
+            else:
+                d = (x - denoised) / sigmas[i - 1]
+
+            dt = sigmas[i] - sigmas[i - 1]
+            x = x + d * dt
+
+            sd_samplers_common.store_latent(x)
+
+            # This shouldn't be necessary, but solved some VRAM issues
+            del x_in, sigma_in, cond_in, c_out, c_in, t,
+            del eps, denoised_uncond, denoised_cond, denoised, d, dt
+        
+        shared.state.nextjob()
+        return x / sigmas[-1]
