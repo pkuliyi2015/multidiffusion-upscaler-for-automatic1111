@@ -157,7 +157,9 @@ class TiledDiffusion:
             h = min(self.h - y, h)
             self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, blend_mode, feather_ratio))
 
-        if len(self.custom_bboxes) == 0: return
+        if len(self.custom_bboxes) == 0: 
+            self.enable_custom_bbox = False
+            return
 
         # prepare cond
         p = self.p
