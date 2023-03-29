@@ -86,7 +86,8 @@ class TiledDiffusion:
                 self.inner_loop_count = 0
 
     def reset_buffer(self, x_in:Tensor):
-        if self.x_buffer is None:
+        # Judge if the shape of x_in is the same as the shape of x_buffer
+        if self.x_buffer is None or self.x_buffer.shape != x_in.shape:
             self.x_buffer = torch.zeros_like(x_in, device=x_in.device, dtype=x_in.dtype)
         else:
             self.x_buffer.zero_()

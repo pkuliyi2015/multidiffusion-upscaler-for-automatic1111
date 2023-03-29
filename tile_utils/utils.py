@@ -7,7 +7,6 @@ import numpy as np
 
 from modules import devices, shared, prompt_parser, extra_networks, sd_samplers_common
 from modules.processing import opt_f
-from tqdm import trange
 
 from tile_utils.typing import *
 
