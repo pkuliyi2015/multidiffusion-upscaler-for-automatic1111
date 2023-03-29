@@ -63,7 +63,7 @@ class MultiDiffusion(TiledDiffusion):
             neg_prompts = p.all_negative_prompts[:p.batch_size]
             cond_basis, _ = Condition.get_cond(prompts, p.steps)
             uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
-            self.x_buffer = self.find_noise_for_image_sigma_adjustment(cond_basis, uncond_basis, 2).repeat(x_in.shape[0],1,1,1)
+            self.x_buffer = self.find_noise_for_image_sigma_adjustment(cond_basis, uncond_basis, 7).repeat(x_in.shape[0],1,1,1)
 
     @custom_bbox
     def init_custom_bbox(self, *args):
@@ -297,6 +297,8 @@ class MultiDiffusion(TiledDiffusion):
         shared.state.sampling_steps = steps
         print("Tiled noise inverse...")
         for i in range(1, len(sigmas)):
+            if shared.state.interrupted:
+                return x
             shared.state.sampling_step += 1
             cond = Condition.reconstruct_cond(cond_basis, i)
             uncond = Condition.reconstruct_uncond(uncond_basis, i)
@@ -323,7 +325,7 @@ class MultiDiffusion(TiledDiffusion):
                 #   = batch_size * (num_AND + 2)   otherwise
                 sigma_in_tile = sigma_in.repeat(len(bboxes))
                 new_cond = self.repeat_cond_dict(cond_in, bboxes)
-                x_tile_out = self.sampler_forward(x_tile, sigma_in_tile, cond=new_cond)
+                x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
                 return x_tile_out
 
             def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
