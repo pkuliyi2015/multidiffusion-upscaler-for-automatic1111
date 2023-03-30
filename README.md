@@ -8,22 +8,28 @@ Please be aware that the License of this repo has changed to prevent some web sh
 由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
 **自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业目的。**
 
+Both WebUI and this extension are FREE. Don't be cheated by some webshop owners.
+
 ****
 The extension enables **large image drawing & upscaling with limited VRAM** via the following techniques:
 
 1. Two SOTA diffusion tiling algorithms: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
 2. My original Tiled VAE algorithm.
-3. My original TIled Noise Inversion & Retouch Algorithm.
+3. My original TIled Noise Inversion for better upscaling.
 
 ## Features
 
 ****
 
 ### 🆕 Tiled Noise Inversion
-- Ultra high-quality image upscale up to 8k in 12G memory.
-- Especially good for characters, where upscaling will not wildly change the face.
-- See here for a [comparison](https://imgsli.com/MTY1NzM1)
+- **Ultra high-consistency image upscale**, up to 8k resolution in 12G memory.
+- Especially good when you don't want to wildly change your character's face.
+- See here for a [comparison before & after 4x upscaling](https://imgsli.com/MTY1NzM1) of a 4096 * 6464 image.
+- Compare to Ultimate SD Upscale, the algorithm is **much more faithful to the original image** and produces significantly fewer artifacts. See the [comparison with Ultimate SD Upcaler](https://imgsli.com/MTY1NzUw).
 
+NOTE: Instead of generating an 8k image at once, you should first try the default parameters with a small image and a small upscale factor (i.e., 1.5) to see if it works. If the retouch = 1, then CFG must be <= 2. 
+
+****
 ### 🔥 Tiled VAE
 
 - **It saves your VRAM at nearly no cost.**
