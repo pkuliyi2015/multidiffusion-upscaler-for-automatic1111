@@ -7,7 +7,7 @@ from gradio.components import Component
 from k_diffusion.external import CompVisDenoiser
 from ldm.models.diffusion.ddpm import LatentDiffusion
 
-from modules.processing import StableDiffusionProcessing
+from modules.processing import StableDiffusionProcessing, StableDiffusionProcessingImg2Img
 from modules.prompt_parser import MulticondLearnedConditioning, ScheduledPromptConditioning
 from modules.extra_networks import ExtraNetworkParams
 from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiser

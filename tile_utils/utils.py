@@ -1,7 +1,7 @@
-
 import math
 from enum import Enum
 
+import cv2
 import torch
 import numpy as np
 
@@ -173,6 +173,39 @@ def feather_mask(w:int, h:int, ratio:float) -> Tensor:
             mask[h-i-1, w-j-1] = weight
 
     return torch.from_numpy(mask).to(devices.device, dtype=torch.float32)
+
+
+def get_retouch_mask(img_input: np.ndarray, kernel_size: int) -> np.ndarray:
+    '''
+    Return the area where the image is retouched.
+    Copy from Zhihu.com
+    '''
+    step    = 1
+    kernel  = (kernel_size, kernel_size)
+    img     = img_input.astype(np.float32)/255.0
+    sz      = img.shape[:2]
+    sz1     = (int(round(sz[1] * step)), int(round(sz[0] * step)))
+    sz2     = (int(round(kernel[0] * step)), int(round(kernel[0] * step)))
+    sI      = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
+    sp      = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
+    msI     = cv2.blur(sI, sz2)
+    msp     = cv2.blur(sp, sz2)
+    msII    = cv2.blur(sI*sI, sz2)
+    msIp    = cv2.blur(sI*sp, sz2)
+    vsI     = msII - msI*msI
+    csIp    = msIp - msI*msp
+    recA    = csIp/(vsI+0.01)
+    recB    = msp - recA*msI
+    mA      = cv2.resize(recA, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
+    mB      = cv2.resize(recB, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
+    gf      = mA*img + mB
+    gf      -= img
+    gf     *= 255
+    gf = gf.astype(np.uint8)
+    gf = gf.clip(0, 255)
+    gf = gf.astype(np.float32)/255.0
+    return gf
+
 
 
 def null_decorator(fn):

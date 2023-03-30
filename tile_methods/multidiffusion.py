@@ -1,11 +1,6 @@
 
 import torch
-import types
-import inspect
 
-import k_diffusion as K
-
-from tqdm import trange
 from modules import devices, extra_networks
 from modules.shared import state
 
@@ -265,135 +260,20 @@ class MultiDiffusion(TiledDiffusion):
 
         return x_out if self.is_kdiff else (x_out, x_pred_out)
     
-    @torch.no_grad()
-    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale, steps) -> Tensor:
-        '''
-        Migrate from the built-in script img2imgalt.py
-        Tiled noise inverse for better image upscaling
-        '''
-        assert self.p.sampler_name == 'Euler'
-        x = self.p.init_latent
 
-        s_in = x.new_ones([x.shape[0]])
-        if shared.sd_model.parameterization == "v":
-            dnw = K.external.CompVisVDenoiser(shared.sd_model)
-            skip = 1
-        else:
-            dnw = K.external.CompVisDenoiser(shared.sd_model)
-            skip = 0
-        sigmas = dnw.get_sigmas(steps).flip(0)
-        shared.state.sampling_steps = len(sigmas)
-        print("Tiled noise inverse...")
-        for i in trange(1, len(sigmas)):
-            if shared.state.interrupted:
-                return x
-            shared.state.sampling_step += 1
-            cond = Condition.reconstruct_cond(cond_basis, i)
-            uncond = Condition.reconstruct_uncond(uncond_basis, i)
+    def get_noise(self, x_in: Tensor, sigma_in: Tensor, cond_in: Dict[str, Tensor]):
+        # NOTE: The following code is analytically wrong but aesthetically beautiful
+        def org_func(x:Tensor):
+            return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
 
-            # =============================================================================================================
-            # NOTE: The following code is logically correct but aesthetically ugly
-            # sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
-            # cond_in = torch.cat([uncond, cond])
-            # image_conditioning = torch.cat([self.p.image_conditioning] * 2)
-            # cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond_in]}
+        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
+            sigma_in_tile = sigma_in.repeat(len(bboxes))
+            new_cond = self.repeat_cond_dict(cond_in, bboxes)
+            x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
+            return x_tile_out
 
-            # if i == 1:
-            #     t = dnw.sigma_to_t(torch.cat([sigmas[i] * s_in] * 2))
-            # else:
-            #     t = dnw.sigma_to_t(sigma_in)
+        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
+            return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, shared.sd_model.apply_model) 
 
-            # def org_func(x:Tensor):
-            #     x_in = torch.cat([x] * 2)
-            #     c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
-            #     x_in *= c_in
-            #     eps = shared.sd_model.apply_model(x_in, sigma_in, cond=cond_in)
-            #     denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
-            #     denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
-            #     if i == 1:
-            #         d = (x - denoised_uncond) / c_in
-            #     else:
-            #         d = (x - denoised) / c_in
-            #     dt = sigmas[i - 1] - sigmas[i]
-            #     x = x + d * dt
-            #     return x
-
-            # def repeat_func(x_tile_in:Tensor, bboxes:List[CustomBBox]):
-            #     x_tile = torch.cat([x_tile_in] * 2)
-            #     sigma_in_tile = sigma_in.repeat(len(bboxes))
-            #     c_out, c_in = [K.utils.append_dims(k, x_tile.ndim) for k in dnw.get_scalings(sigma_in_tile)[skip:]]
-            #     x_tile *= c_in
-            #     new_cond = self.repeat_cond_dict(cond_in, bboxes)
-            #     eps_tile = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
-            #     denoised_uncond, denoised_cond = (x_tile + eps_tile * c_out).chunk(2)
-            #     denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
-            #     if i == 1:
-            #         d = (x_tile_in - denoised) / (2 * sigmas[i])
-            #     else:
-            #         d = (x_tile_in - denoised) / sigmas[i - 1]
-            #     dt = sigmas[i] - sigmas[i - 1]
-            #     x_tile_in = x_tile_in + d * dt
-            #     return x_tile_in
-
-            # def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
-            #     return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, lambda x, sigma, cond_in: org_func(x)) 
-
-            # x = self.sample_one_step(x, org_func, repeat_func, custom_func)
-
-            # 
-            # sd_samplers_common.store_latent(x)
-
-            # Delete unused variables to release memory (otherwise they consume 2x memory)
-            # del sigma_in, cond_in, t,
-            # del eps, denoised_uncond, denoised_cond, denoised, d, dt
-            # =============================================================================================================
-
-            x_in = torch.cat([x] * 2)
-            sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
-            cond_in = torch.cat([uncond, cond])
-
-            image_conditioning = torch.cat([self.p.image_conditioning] * 2)
-            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond_in]}
-
-            c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
-
-            if i == 1:
-                t = dnw.sigma_to_t(torch.cat([sigmas[i] * s_in] * 2))
-            else:
-                t = dnw.sigma_to_t(sigma_in)
-
-           # NOTE: The following code is analytically wrong but aesthetically beautiful
-            def org_func(x:Tensor):
-                return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
-
-            def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
-                sigma_in_tile = sigma_in.repeat(len(bboxes))
-                new_cond = self.repeat_cond_dict(cond_in, bboxes)
-                x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
-                return x_tile_out
-
-            def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
-                return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, shared.sd_model.apply_model) 
-
-            eps = self.sample_one_step(x_in * c_in, org_func, repeat_func, custom_func)
-
-            denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
-
-            denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
-
-            if i == 1:
-                d = (x - denoised) / (2 * sigmas[i])
-            else:
-                d = (x - denoised) / sigmas[i - 1]
-
-            dt = sigmas[i] - sigmas[i - 1]
-            x = x + d * dt
-
-            sd_samplers_common.store_latent(x)
-
-            # This shouldn't be necessary, but solved some VRAM issues
-            del x_in, sigma_in, cond_in, c_out, c_in, t,
-            del eps, denoised_uncond, denoised_cond, denoised, d, dt
-
-        shared.state.nextjob()
-        return x / sigmas[-1]
+        return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
+    

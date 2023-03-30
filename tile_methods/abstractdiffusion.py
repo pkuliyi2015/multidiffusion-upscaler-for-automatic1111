@@ -2,7 +2,10 @@ import math
 import torch
 import types
 import inspect
-from tqdm import tqdm
+import k_diffusion as K
+import torch.nn.functional as F
+
+from tqdm import trange, tqdm
 
 from modules import devices, shared, processing
 from modules.shared import state
@@ -66,73 +69,6 @@ class TiledDiffusion:
         self.control_params: Dict[str, Tensor] = {}
         self.control_tensor_cpu: bool = None
         self.control_tensor_custom: List[List[Tensor]] = []
-
-    def enable_noise_inverse(self, steps: int, randomness: float):
-        self.noise_inverse_enabled = True
-        self.noise_inverse_steps = steps
-        self.noise_inverse_randomness = randomness
-        if self.noise_inverse_enabled:
-            self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
-
-
-    def sample_img2img(self, sampler: KDiffusionSampler, p: StableDiffusionProcessing, x, noise, conditioning, unconditional_conditioning, steps=None, image_conditioning=None):
-        # noise inverse sampling
-        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
-
-        sigmas = sampler.get_sigmas(p, steps)
-
-        sigma_sched = sigmas[steps - t_enc - 1:]
-        prompts = p.all_prompts[:p.batch_size]
-        neg_prompts = p.all_negative_prompts[:p.batch_size]
-        cond_basis, _ = Condition.get_cond(prompts, p.steps)
-        uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
-        shared.state.job_count += 1
-
-        latent = self.find_noise_for_image_sigma_adjustment(cond_basis, uncond_basis, p.cfg_scale, self.noise_inverse_steps)
-        sigmas2 = sampler.model_wrap.get_sigmas(p.steps)
-        noise = latent - (p.init_latent / sigmas2[0])
-        randomness = self.noise_inverse_randomness
-        if randomness > 0:
-            rand_noise = processing.create_random_tensors(p.init_latent.shape[1:], seeds=p.all_seeds, subseeds=p.all_subseeds, subseed_strength=p.subseed_strength, seed_resize_from_h=p.seed_resize_from_h, seed_resize_from_w=p.seed_resize_from_w, p=p)
-            combined_noise = ((1 - randomness) * noise + randomness * rand_noise) / ((randomness**2 + (1-randomness)**2) ** 0.5)
-        else:
-            combined_noise = noise
-        xi = x + combined_noise * sigma_sched[0]
-        
-        extra_params_kwargs = sampler.initialize(p)
-        parameters = inspect.signature(sampler.func).parameters
-
-        if 'sigma_min' in parameters:
-            ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
-            extra_params_kwargs['sigma_min'] = sigma_sched[-2]
-        if 'sigma_max' in parameters:
-            extra_params_kwargs['sigma_max'] = sigma_sched[0]
-        if 'n' in parameters:
-            extra_params_kwargs['n'] = len(sigma_sched) - 1
-        if 'sigma_sched' in parameters:
-            extra_params_kwargs['sigma_sched'] = sigma_sched
-        if 'sigmas' in parameters:
-            extra_params_kwargs['sigmas'] = sigma_sched
-
-        if sampler.funcname == 'sample_dpmpp_sde':
-            noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
-            extra_params_kwargs['noise_sampler'] = noise_sampler
-
-        sampler.model_wrap_cfg.init_latent = x
-        sampler.last_latent = x
-        extra_args={
-            'cond': conditioning, 
-            'image_cond': image_conditioning, 
-            'uncond': unconditional_conditioning, 
-            'cond_scale': p.cfg_scale,
-        }
-
-        samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
-
-        return samples
-    
-    def find_noise_for_image_sigma_adjustment(self, cond_basis, uncond_basis, cfg_scale, steps) -> Tensor:
-        pass
 
     @property
     def is_kdiff(self):
@@ -553,3 +489,159 @@ class TiledDiffusion:
         for param_id in range(len(self.control_params)):
             control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
+
+
+    def enable_noise_inverse(self, steps: int, retouch:float,  noise_inverse_renoise_strength: float, renoise_kernel: int):
+        self.noise_inverse_enabled = True
+        self.noise_inverse_steps = steps
+        self.noise_inverse_retouch = retouch
+        self.noise_inverse_renoise_strength = noise_inverse_renoise_strength
+        self.noise_inverse_renoise_kernel = int(renoise_kernel)
+        self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
+
+
+    @keep_signature
+    def sample_img2img(self, sampler: KDiffusionSampler, p:StableDiffusionProcessingImg2Img, 
+                       x:Tensor, noise:Tensor, conditioning, unconditional_conditioning,
+                       steps=None, image_conditioning=None):
+        # noise inverse sampling
+        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
+        sigmas = sampler.get_sigmas(p, steps)
+        
+        prompts = p.all_prompts[:p.batch_size]
+        neg_prompts = p.all_negative_prompts[:p.batch_size]
+        cond_basis, _ = Condition.get_cond(prompts, p.steps)
+        uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
+
+        renoise_mask = None
+        if self.noise_inverse_renoise_strength > 0:
+            image = p.init_images[0]
+            # convert to grayscale with PIL
+            image = image.convert('L')
+            np_mask = get_retouch_mask(np.asarray(image), self.noise_inverse_renoise_kernel)
+            renoise_mask = torch.from_numpy(np_mask).to(noise.device)
+            # resize retouch mask to match noise size
+            renoise_mask = 1 - F.interpolate(renoise_mask.unsqueeze(0).unsqueeze(0), size=noise.shape[-2:], mode='bilinear').squeeze(0).squeeze(0)
+            renoise_mask *= self.noise_inverse_renoise_strength
+            renoise_mask = torch.clamp(renoise_mask, 0, 1)
+            
+        # retouched noise inversion
+        shared.state.job_count += 1
+        latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, p.cfg_scale, self.noise_inverse_steps, cond_basis, uncond_basis, retouch=self.noise_inverse_retouch)
+        shared.state.nextjob()
+        inverse_noise = latent - (p.init_latent / sigmas[0])
+
+        if renoise_mask is not None:
+            combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1-renoise_mask)**2) ** 0.5)
+        else:
+            combined_noise = inverse_noise
+
+        sigma_sched = sigmas[steps - t_enc - 1:]
+
+        xi = x + combined_noise * sigma_sched[0]
+        
+        extra_params_kwargs = sampler.initialize(p)
+        parameters = inspect.signature(sampler.func).parameters
+
+        if 'sigma_min' in parameters:
+            ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
+            extra_params_kwargs['sigma_min'] = sigma_sched[-2]
+        if 'sigma_max' in parameters:
+            extra_params_kwargs['sigma_max'] = sigma_sched[0]
+        if 'n' in parameters:
+            extra_params_kwargs['n'] = len(sigma_sched) - 1
+        if 'sigma_sched' in parameters:
+            extra_params_kwargs['sigma_sched'] = sigma_sched
+        if 'sigmas' in parameters:
+            extra_params_kwargs['sigmas'] = sigma_sched
+
+        if sampler.funcname == 'sample_dpmpp_sde':
+            noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
+            extra_params_kwargs['noise_sampler'] = noise_sampler
+
+        sampler.model_wrap_cfg.init_latent = x
+        sampler.last_latent = x
+        extra_args={
+            'cond': conditioning, 
+            'image_cond': image_conditioning, 
+            'uncond': unconditional_conditioning, 
+            'cond_scale': p.cfg_scale,
+        }
+
+        samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
+
+        return samples
+    
+    @torch.no_grad()
+    def find_noise_for_image_sigma_adjustment(self, dnw, cfg_scale:float, steps:int, cond_basis:Cond, uncond_basis:Uncond, retouch: float) -> Tensor:
+        '''
+        Migrate from the built-in script img2imgalt.py
+        Tiled noise inverse for better image upscaling
+        '''
+        assert self.p.sampler_name == 'Euler'
+        x = self.p.init_latent
+
+        s_in = x.new_ones([x.shape[0]])
+        sigmas = dnw.get_sigmas(steps).flip(0)
+        shared.state.sampling_steps = len(sigmas)
+        pbar = tqdm(total=shared.state.sampling_steps, desc='Noise Inversion')
+        for i in range(1, len(sigmas)):
+            if shared.state.interrupted:
+                return x
+            shared.state.sampling_step += 1
+            cond = Condition.reconstruct_cond(cond_basis, i)
+            uncond = Condition.reconstruct_uncond(uncond_basis, i)
+
+            x_in = torch.cat([x] * 2)
+            sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
+
+            # make sure the cond is the same length as uncond
+            if uncond.shape[1] < cond.shape[1]:
+                last_vector = uncond[:, -1:]
+                last_vector_repeated = last_vector.repeat([1, cond.shape[1] - uncond.shape[1], 1])
+                uncond = torch.hstack([uncond, last_vector_repeated])
+            elif uncond.shape[1] > cond.shape[1]:
+                uncond = uncond[:, :cond.shape[1]]
+
+            cond_in = torch.cat([uncond, cond])
+
+            image_conditioning = torch.cat([self.p.image_conditioning] * 2)
+            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond_in]}
+
+            c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)]
+
+            if i == 1:
+                t = dnw.sigma_to_t(torch.cat([sigmas[i] * s_in] * 2))
+            else:
+                t = dnw.sigma_to_t(sigma_in)
+
+            # We can manually reduce the timestep to get a aesthetically pleasing result
+
+            eps = self.get_noise(x_in * c_in, t / retouch, cond_in)
+
+            denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
+
+            denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
+
+            if i == 1:
+                d = (x - denoised) / (2 * sigmas[i])
+            else:
+                d = (x - denoised) / sigmas[i - 1]
+
+            dt = sigmas[i] - sigmas[i - 1]
+            x = x + d * dt
+
+            sd_samplers_common.store_latent(x)
+
+            # This shouldn't be necessary, but solved some VRAM issues
+            del x_in, sigma_in, cond_in, c_out, c_in, t,
+            del eps, denoised_uncond, denoised_cond, denoised, d, dt
+
+            pbar.update(1)
+        
+        pbar.close()
+        return x / sigmas[-1]
+    
+    @torch.no_grad()
+    def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor]):
+        pass
