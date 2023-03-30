@@ -156,7 +156,7 @@ class Script(scripts.Script):
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
                                          elem_id='MD-upscaler-factor')
                 
-            with gr.Accordion('Noise Inversion', open=True):
+            with gr.Accordion('Noise Inversion', open=True, visible=is_img2img):
                 with gr.Row(variant='compact'):
                     noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False)
                     noise_inverse_steps = gr.Slider(minimum=1, maximum=100, step=1, label='Inversion steps', value=10)
