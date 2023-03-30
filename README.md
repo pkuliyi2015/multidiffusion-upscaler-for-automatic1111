@@ -274,9 +274,7 @@ Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a 
 
 ## Current Progress
 
-- Chinese README
-- Saving region info into image & read back is in progress.
-- Tiled noise inverse for better upscaling
+- Regional noise seed control
 
 ****
 
