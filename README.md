@@ -280,8 +280,6 @@ Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a 
 
 ****
 
-## License
-
-These scripts are licensed under the MIT License. If you like the project, please give me a star!
+If you like the project, please give me a star!
 
 Thank you!
