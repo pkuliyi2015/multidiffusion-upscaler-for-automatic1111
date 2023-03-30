@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from tqdm import trange, tqdm
 
 from modules import devices, shared, processing
-from modules.shared import state
+from modules.shared import state, cmd_opts
 from modules.processing import opt_f
 
 from tile_utils.utils import *
@@ -525,10 +525,16 @@ class TiledDiffusion:
             renoise_mask *= self.noise_inverse_renoise_strength
             renoise_mask = torch.clamp(renoise_mask, 0, 1)
             
-        # retouched noise inversion
-        shared.state.job_count += 1
-        latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, p.cfg_scale, self.noise_inverse_steps, cond_basis, uncond_basis, retouch=self.noise_inverse_retouch)
-        shared.state.nextjob()
+        if hasattr(p, 'noise_inverse_latent'):
+            # In batch mode, use the same noise latent for all images
+            latent = p.noise_inverse_latent.to(noise.device)
+        else:
+            # get retouched noise inversion
+            shared.state.job_count += 1
+            latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, p.cfg_scale, self.noise_inverse_steps, cond_basis, uncond_basis, retouch=self.noise_inverse_retouch)
+            shared.state.nextjob()
+            p.noise_inverse_latent = latent.to(device=devices.cpu) if cmd_opts.lowvram else latent
+        
         inverse_noise = latent - (p.init_latent / sigmas[0])
 
         if renoise_mask is not None:
