@@ -372,9 +372,13 @@ class Script(scripts.Script):
             bbox_control_states: BBoxControls,
         ):
 
-        # samplers are stateless, we reuse it if possible
         if self.delegate is not None:
+            # samplers are stateless, we reuse it if possible
             if self.delegate.sampler_name == name:
+                # before we reuse the sampler, we refresh the control tensor
+                # so that we are compatible with ControlNet batch processing
+                if self.controlnet_script:
+                    self.delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
                 return self.delegate.sampler_raw
             else:
                 self.reset()
@@ -399,8 +403,6 @@ class Script(scripts.Script):
             delegate.init_grid_bbox(tile_width, tile_height, overlap, tile_batch_size)
         if enable_bbox_control:
             delegate.init_custom_bbox(bbox_control_states, draw_background, causal_layers)
-        if self.controlnet_script:
-            delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
         # init everything done, perform sanity check & pre-computations
         delegate.init_done()
 
