@@ -1,15 +1,28 @@
-# Large Image Generation via Tiled Diffusion & VAE
+# Tiled Diffusion
 
-English｜[中文(待更新，欢迎帮助翻译)](README_CN.md)
+English｜[中文](README_CN.md)
 
-The extension enables **large image drawing with limited VRAM** via the following techniques:
+Please be aware that the License of this repo has changed to prevent some web shops from deceiving the customers.
+**You cannot use versions after AOE 2023.3.28 for commercial activity.**
+
+由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业目的。**
+
+****
+The extension enables **large image drawing & upscaling with limited VRAM** via the following techniques:
 
 1. Two SOTA diffusion tiling algorithms: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io)
 2. My original Tiled VAE algorithm.
+3. My original TIled Noise Inversion & Retouch Algorithm.
 
 ## Features
 
 ****
+
+### 🆕 Tiled Noise Inversion
+- Ultra high-quality image upscale up to 8k in 12G memory.
+- Especially good for characters, where upscaling will not wildly change the face.
+- See here for a [comparison](https://imgsli.com/MTY1NzM1)
 
 ### 🔥 Tiled VAE
 
@@ -22,7 +35,7 @@ The extension enables **large image drawing with limited VRAM** via the followin
 
 ****
 
-### 🆕 Regional Prompt Control
+### Regional Prompt Control
 
 Draw large images by fusing multiple regions together.
 

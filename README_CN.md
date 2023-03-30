@@ -1,199 +1,282 @@
-# MultiDiffusion + Tiled VAE
+# 用 Tiled Diffusion & VAE 生成大型图像
 
 [English](README.md) | 中文
 
-本存储库包含两个脚本，使用 [MultiDiffusion](https://multidiffusion.github.io) 和Tiled VAE（**原创方法**）处理**超大图片**。
+由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
 
-- 第一个是前人已有的优秀工作。请参考他们的论文和网页。
-- 第二个是我的原创算法。尽管原理上很简单，但非常强力，**让6G显存跑高清大图成为可能**
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业目的。**
 
-## 2023年3月25日更新
-- 新增前景和背景模式，允许您在 txt2img 中将任何对象/角色融合到任何背景中；在 Img2img 升级中，您还可以使用此功能重点处理您想要重画的区域。
-- Img2Img增加对mask inpaint的兼容性，这样在放大之前，您可以通过mask保留任何想要的区域
-- 大量的BUG修复，包括：
-  - 修复了与采样器的大部分不兼容问题，除了 MultiDiffusion + UniPC
-  - 修复了在批次数目或每批张数大于1时的错误
-  - 修复了在 --lowvram 或 --medvram 下使用自定义区域时的异常
-  - 修复了 GPU 泄漏和 AMD GPU 内存不足的错误
-  - 修复了批数大于1时 ControlNet 拉伸问题
-  - 修复了正负提示的超长报错（现在没有长度限制了）
-  - 修复了最后一个区域没有作用的问题
-- 新的README正在加工中。
+WebUI和本插件都是完全免费的，请勿上当受骗。
+****
 
-##  2023.3.7 更新
+本插件通过以下三种技术实现了**在有限的显存中进行大型图像绘制**：
 
-- Tiled VAE 添加了快速模式，**提升了五倍以上的速度并不再有额外的内存负担**
-- 现在在12GB设备上只需要25秒左右就能编码+解码8K大图。4K图片时间几乎是立即完成。
-- **如果您遇到VAE NaN 或者输出图像纯黑色：**
-  - 使用官方提供的840000 VAE权重常常可以解决问题
-  - 并且可以使用 --no-half-vae 禁用半精度 VAE
+1. 两种 SOTA diffusion tiling 算法：[Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) 和 [MultiDiffusion](https://multidiffusion.github.io)
+2. 原创的 Tiled VAE 算法。
+3. 原创混合放大算法生成超高清图像
 
-## MultiDiffusion
+## 功能
 
 ****
 
-**快速超大图像细化（img2img）**
+### 🆕 Tiled Noise Inversion
+- 超高分辨率高质量图像放大，8k图仅需12G显存
+- 尤其适用于人像放大，在提高像素同时减少脸部改变
+- 效果请看 [对比图](https://imgsli.com/MTY1NzM1)
 
-- **MultiDiffusion 特别擅长于大图像添加细节。**
-  - **速度比Highres快一倍**，只要参数调整合适
-  - 参数合适时，比SD Upscaler和Ultimate Upscaler产生更多的细节
-- 食用提示：
-  - **Checkpoint非常关键**
-    - MultiDiffusion工作原理和普通highres.fix很相似，不过它是一块一块地重绘。因此checkpoint很重要
-    - 一个好的checkpoint（例如在大图上训练的）可以为你的图像增加精致的细节
-    - 一些朋友发现使用完整的checkpoint而不是pruned（修剪版）会产生更好的结果。推荐尝试。
-  - **请不要使用含有具体物体的正面prompt**, 否则结果会被毁坏
-    - 可以用类似这样的：masterpiece, best quality, highres, extremely clear, ultra-detailed unity 8k wallpaper
-  - 你不需要太大的Tile尺寸否则结果会不精细，也不需要大量的步数，overlap也不宜过大，否则速度将会很慢。
-    - Tile size=64 - 96, overlap=32 - 48，20 - 25步通常足够. 如果结果中出现缝隙再调大overlap。
-  - **更高的CFG Scale（提示强度）可以显著地使图像更尖锐并添加更多细节**。需要配合合适的采样器。
-    - 比如CFG=14，sampler=DPM++ SDE Karras或者Eular a
-  - 你可以通过去噪强度0.1-0.6控制修改的幅度。越低越接近原图，越高差异越大。
-  - 如果您的结果仍然不如我的那样细致，可以[参考我们的一些讨论](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/issues/3)
-- 示例：
-  - 参数：masterpiece, best quality, highres, extremely detailed, clear background, 去噪=0.4，步数=20，采样器=DPM++ SDE Karras，放大器=RealESRGAN, Tile size=96, Overlap=48, Tile batch size=8.
-  - 处理前
-  - ![lowres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/lowres.jpg?raw=true)
-  - 处理后：4x放大，NVIDIA Tesla V100,
-    - 总耗时 1分55秒，其中30秒用于VAE编解码。
-    - 如果是2x放大仅需20秒
-  - ![highres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/highres.jpeg?raw=true)
+
+
+### 🔥 Tiled VAE
+
+- **几乎无成本的降低显存使用。**
+- 您可能不再需要 --lowvram 或 --medvram。
+- 以 highres.fix 为例，如果您之前只能进行 1.5 倍的放大，则现在可以使用 2.0 倍的放大。
+  - 通常您可以使用默认设置而无需更改它们。
+  - 但是如果您看到 CUDA 内存不足错误，请相对降低两项 tile 大小。
+- 截图：![TiledVAE](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiled_vae.png?raw=true)
 
 ****
 
-**宽图像生成（txt2img）**
+### 区域提示控制
 
-- **MultiDiffusion适合生成宽图像**，例如韩国偶像团体大合照（雾）
-- txt2img 全景生成，与 MultiDiffusion 中提到的相同。
-  - 目前所有局部区域共享相同的prompt。
-  - **因此，请使用简单的正prompt以获得良好的结果**，否则结果将很差。
-  - 我们正在加急处理矩形和细粒度prompt控制。
-- 示例 - mastepiece, best quality, highres, city skyline, night
+通过融合多个区域进行大型图像绘制。
+
+注意：我们建议您使用自定义区域来填充整个画布。
+
+#### 示例 1：以高分辨率绘制多个角色
+
+- 参数：
+
+  - 模型：Anything V4.5,  高度 = 1920, 宽度 = 1280 （未使用highres.fix）, 方法(Method) = Mixture of Diffusers
+
+  - 全局提示语：masterpiece, best quality, highres, extremely clear 8k wallpaper, white room, sunlight
+
+  - 全局负面提示语：ng_deepnegative_v1_75t EasyNegative
+
+  - ** 块大小(tile size)参数将不起效，可以忽略它们。**
+
+- 区域:
+  - 区域 1：提示语 = sofa，类型 = Background
+  - 区域 2：提示语 = 1girl, gray skirt, (white sweater), (slim) waist, medium breast, long hair, black hair, looking at viewer, sitting on sofa，类型 = Foreground，羽化 = 0.2
+  - 区域 3：提示语 = 1girl, red silky dress, (black hair), (slim) waist, large breast, short hair, laughing, looking at viewer, sitting on sofa，类型 = Foreground，羽化 = 0.2
+
+- 区域布局：![MultiCharacterRegions](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/multicharacter.png?raw=true)
+
+- 结果 （4张中的2张）![MultiCharacter](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/multicharacter.jpeg?raw=true)
+
+  ![MultiCharacter](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/multicharacter2.jpeg?raw=true)
+
+#### 示例2：绘制全身人物
+
+- 通常情况下，以高分辨率绘制全身人物会比较困难（例如可能会将两个身体连接在一起）。
+- 通过将你的角色置入背景中，可以轻松的做到这一点。
+- 参数：
+  - 模型：Anything V4.5，宽度 = 1280，高度 = 1600 （未使用highres.fix），方法(Method) = MultiDiffusion
+  - 全局提示语：masterpiece, best quality, highres, extremely clear 8k wallpaper, beach, sea, forest
+  - 全局负面提示语：ng_deepnegative_v1_75t EasyNegative
+- 区域:
+  - 区域 1：提示语 = 1girl, black bikini, (white hair), (slim) waist, giant breast, long hair，类型(Type) = Foreground，羽化(Feather) = 0.2
+  - 区域 2：提示语 = (空)，类型(Type) = Background
+- 区域布局： ![FullBodyRegions](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody_regions.png?raw=true)
+- 结果:  NVIDIA V100 使用 4729 MB 显存用了 32 秒生成完毕。我很幸运的一次就得到了这个结果，没有进行任何挑选。![FullBody](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody.jpeg?raw=true)
+- 也适用于 2.5D 人物。例如，1024 * 1620像素的图像生成
+- 特别感谢 @辰熙 的所有设置。点击此处查看更多她的作品：https://space.bilibili.com/179819685
+- 从20次生成结果中精选而出。![FullBody2](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/fullbody2.jpeg?raw=true)
+
+****
+### Img2img 放大
+- 利用 Tiled Diffusion 来放大或重绘图像
+
+#### 示例：从1024 * 800 放大到 4096 * 3200 ，使用默认参数
+
+- 参数:
+  - 降噪 = 0.4，步数 = 20，采样器 = Euler a，放大器 = RealESRGAN++，负面提示语=EasyNegative,
+  - 模型：Gf-style2 (4GB 版本), 提示词相关性(CFG Scale) = 14, Clip 跳过层(Clip Skip) = 2
+  - 方法(Method) = MultiDiffusion, 分块批处理规模(tile batch size) = 8, 分块高度(tile size height) = 96, 分块宽度(tile size width) = 96, 分块重叠(overlap) = 32
+  - 全局提示语 = masterpiece, best quality, highres, extremely detailed 8k wallpaper, very clear, 全局负面提示语 = EasyNegative.
+
+- 放大前：![lowres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/lowres.jpg?raw=true)
+- 4倍放大后： 无精选，在 NVIDIA Tesla V100 上使用1分12秒生成完毕（如果只放大2倍，10秒即可生成完毕）![highres](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/highres.jpeg?raw=true)
+
+****
+
+### 生成超大图像
+
+- 请在页面顶部使用简单的正面提示语，因为它们将应用于每个区域。
+- 如果要将对象添加到特定位置，请使用**区域提示控制**并启用**绘制完整的画布背景**
+
+#### 示例 1：masterpiece, best quality, highres, city skyline, night.
 
 - ![panorama](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/city_panorama.jpeg?raw=true)
 
-****
+#### 示例 2：与 ControlNet 配合转绘清明上河图
 
-**与 ControlNet 配合**，产生具有受控内容的宽图像。
+- 22020 x 1080 超宽图像转绘 
+  - Masterpiece, best quality, highres, ultra-detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
+  - 原图：[单击查看原图](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg)
+  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin_compressed.jpeg?raw=true)
+  - 转绘：[单击查看原图](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg)
+  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_compressed.jpeg?raw=true)
 
-- 目前，虽然您不能使用复杂的prompt，但可以使用 ControlNet 完全控制内容。
-- Canny edge似乎是最好用的，因为它提供足够的局部控制。
-- 示例：22020 x 1080 超宽图像转换 - 清明上河图
-  - Masterpiece, best quality, highres, ultra detailed 8k unity wallpaper, bird's-eye view, trees, ancient architectures, stones, farms, crowd, pedestrians
-  - 转换前：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg)
-  - ![ancient city origin](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city_origin.jpeg?raw=true)
-  - 转换后：[单击下载原始图像](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg)
-  - ![ancient city](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/ancient_city.jpeg?raw=true)
-- 示例：2560 * 1280 大型图像绘制
-  - ControlNet Canny 边缘
-  - ![Your Name](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname_canny.jpeg?raw=true)
-  - ![yourname](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
+#### 示例 3: 2560 * 1280 大型图像绘制
 
-****
-
-  ### 优点
-
-  - 可以绘制超大分辨率（2k~8k）图，包括 txt2img 和 img2img
-  - 无需进行任何后处理的无缝输出
-
-  ### 缺点
-
-  - **提示控制较弱。**你不能使用非常强烈的正面prompt，否则它将产生重复模式，结果可能无法使用。
-  - 我们还没有进行过太多优化，因此对于非常大的图像（8k）和具有控制网络的图像，速度可能会比较慢。
-  - 梯度计算不兼容。它将打破任何通过 UNet 的反向传播或自动梯度计算。
-
-  ### 工作原理（非常简单！）
-
-    1. 隐藏层图像被裁剪成小块
-    2. 小块通过UNet并由原始采样器去噪一个时间步
-    3. 小块被加在一起，但除以每个像素的累加次数（即加权平均）
-    4. 重复2-3步直到走完所有时间步数
-
-****
-
-## Tiled VAE
-
-**原创脚本**。**此算法目前已经可以投入生产**
-
-`vae_optimize.py` 脚本是一个粗暴却精巧的 hack，将图像裁切成小块，单独对每个瓷砖进行编码，并将结果合并在一起，从而允许 VAE 在有限的显存上处理巨大的图像（~10 GB 用于 8K 图像！）。
-
-### 优点
-
-- 在有限的显存上处理巨大的图像（6GB画2k，12GB画4k，16 GB 画8K），消除您对 --lowvram 和 --medvram 的需求。
-- 与[我朋友的实现](https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer) 以及Huggingface实现不同，它不会平均化裁切的小图边界，而是删除了attention并使用边缘扩张技巧。产生的解码结果在数学上与不平铺的结果完全相同，即它从根源上不会产生任何接缝。
-- 脚本经过了极致的优化。不能更快了！
-
-### 缺点
-
-- NaN 偶尔会出现。**我们正在找出根本原因并努力解决问题**
-- 和MultiDiffusion一样，不兼容梯度传输。
-
-### 工作原理
-
-1. 图像被精巧地分成小块，并对于解码器 / 编码器各自进行了 11/32 像素的扩张。
-2. 关闭快速模式时：
-   1. 原始 VAE 前向传播被分解为任务队列。
-   2. 任务队列在一个小块上开始执行。attention块被忽略
-   3. 当需要做GroupNorm时，它会暂停，将GroupNorm所需参数和中间结果存储到 CPU内存，并切换到另一个小块。
-   4. 汇总 GroupNorm 参数后，它执行GroupNorm并继续。
-   5. 执行采用锯齿顺序以减少不必要的数据传输。
-
-3. **快速模式**：
-   1. 原图像被下采样后通过一个单独的任务队列，估算出GroupNorm参数
-   2. 其他小块全都用这个参数进行编解码，不进行任何显存-内存数据传输
-
-4. 处理完所有小块后，瓷砖被合并并返回。
+- ControlNet canny edge![你的名字](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname_canny.jpeg?raw=true)![你的名字](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
 
 ****
 
 ## 安装
 
-- 打开 Automatic1111 WebUI->单击选项卡“扩展”->单击选项卡“从 URL 安装”->输入此存储库的链接->单击“安装”
+#### 方法 1: 官方市场
+
+- 打开Automatic1111 WebUI -> 点击“扩展”选项卡 -> 点击“可用”选项卡 -> 找到“[MultiDiffusion 放大器(MultiDiffusion with Tiled VAE)]” -> 点击“安装”
+
+#### 方法 2: URL 安装
+
+- 打开Automatic1111 WebUI -> 点击“扩展”选项卡 -> 点击“从网址安装”选项卡 -> 输入 https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111.git -> 点击“安装”
 - ![installation](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/installation.png?raw=true)
-- 重启您的 WebUI 后，您应该会看到以下两个选项卡：
-- ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Tab.png?raw=true)
-
-### MultiDiffusion 参数
-
-- 覆盖原本尺寸（文生图）：
-  - WebUI默认尺寸上限只有2048，对MultiDiffusion来说太小了
-  - 开启这个选项可以把原本对尺寸覆盖掉
-- 隐空间小图的宽度和高度：
-  - multidiffusion 按小图绘制图像，每个小图都是一个矩形。
-  - 因此，这两个参数控制着隐空间小图有多大，每个矩形的实际图像大小的 1/8。
-  - 不应该太大或太小（通常 64-128 合适。但您可以尝试其他值。）
-- 隐空间小图重叠：
-  - MultiDiffusion使用重叠来消除接缝并融合两个潜在图像。
-  - 此值越大，过程越慢，但结果将包含更少的接缝和更自然的结果。
-- 隐空间图像批处理大小：
-  - 允许 UNet 以批处理方式处理小图。
-  - **能大大加快处理速度**，但会消耗更多的显存。
-
-
-### Tiled VAE 参数
-
-- **Move to GPU** 运到显存：如果你在 --lowvram或者--medvram模式下，用这个选项能将你的VAE搬运到GPU中，用完再搬回去。会消耗额外的几秒时间。
-- **Tile Size** 当输入和输出时，应该将图像裁成多大的小块。大尺寸速度快，但消耗更多显存。
-  - 第一次使用的时候你不需要调整参数，脚本会根据一套简单的手工规则为你推荐参数
-  - 但推荐的参数可能不适合您的显卡。请根据控制台输出中使用的 GPU 使用进行调整。
-  - 如果GPU有很大程度没被利用，请把这个数字调大；反之如果显存爆炸，请把这个数字调小。
-- **Fast Decoder 快速解码器**：默认启用。**不建议关闭**，关闭后虽然计算更精确但是消耗巨量的显存和内存。
-- **Fast Encoder 快速编码器**：这一功能采用小图估计大图参数，如果Tile Size太小有可能影响图像质量（特别是颜色）。如果遇到颜色问题请勾选下面一个选项。
-- **Encoder Color Fix 编码器颜色修复**：勾选后开启半快速模式，只估计前面最慢的几步的参数，从而避免颜色问题。
-
-
-**尽情享受！**
 
 ****
 
-## 当前进展
+## 使用方法
 
-- 本地提示控制正在进行中
-- 自动提示计划
-- 通过 MultiDiffusion 插值进行视频转换正在进行概念验证
+### Tiled VAE
+
+- 在第一次使用时，脚本会为您推荐设置。
+- 因此，通常情况下，您不需要更改默认参数。![TiledVAE](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiled_vae.png?raw=true)
+- 只有在以下情况下才需要更改参数：
+  1. 当生成之前或之后看到CUDA内存不足错误时，请降低 tile 大小
+  2. 当您使用的 tile 太小且图片变得灰暗和不清晰时，请启用编码器颜色修复。
+
+****
+
+### Tiled Diffusion
+
+- 主选项 / 图像分块选项
+
+  下图所示部分控制图像的分块参数：![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/Tab.png?raw=true)
+
+  这里是一个示例图：
+
+  ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/tiles_explain.png?raw=true)
+
+- 从图中可以看到如何将图像分割成块。 
+  - 在每个步骤中，潜在空间中的每个小块都将被发送到 Stable Diffusion UNet。
+  - 小块一遍遍地分割和融合，直到完成所有步骤。
+- 块要多大才合适？
+  - 较大的块大小将提升处理速度，因为小块数量会较少。
+  - 然而，最佳大小取决于您的模型。SD1.4仅适用于绘制512 * 512图像（SD2.1是768 * 768）。由于大多数模型无法生成大于1280 * 1280的好图片。因此，在潜在空间中将其除以8后，你将得到64-160。
+  - 因此，您应该选择64-160之间的值。
+  - **个人建议选择96或128以获得更快的速度。**
+- 重叠要多大才合适？
+  - 重叠减少了融合中的接缝。显然，较大的重叠值意味着更少接缝，但会**显著降低速度**，因为需要重新绘制更多的小块。
+  - 与 MultiDiffusion 相比，Mixture of Diffusers 需要较少的重叠，因为它使用高斯平滑（因此可以更快）。
+  - **个人建议使用 MultiDiffusion 时选择32或48，使用 Mixture of Diffusers 选择16或32**
+- **放大算法(Upscaler)** 选项将在图生图(img2img)模式中可用，你可选用一个合适的前置放大器。
+
+****
+
+### 区域提示语控制
+
+- 通常情况下，所有小块共享相同的主提示语。
+  - 因此，您不能使用主提示语绘制有意义的对象，它会在整个图像上绘制您的对象并破坏您的图像。
+- 为了处理这个问题，我们提供了强大的区域提示语控制工具。
+- ![Tab](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/region_prompt_control.png?raw=true)
+1. 首先，启用区域提示语控制。
+    - **注意：启用区域控制时，默认的小块分割功能将被禁用。**
+    - 如果您的自定义区域不能填满整个画布，它将在这些未覆盖的区域中产生棕色（MultiDiffusion）或噪声（Mixture of Diffusers）。
+    - 我们建议您使用自己的区域来填充整个画布，因为在生成时速度可能会更快。
+    - 如果您懒得绘制，您也可以启用**绘制完整的画布背景**。但是，这将显著降低生成速度。
+2. 上传一张图片，或点击按钮**创建空白图像**作为参考。
+3. 点击区域1的启用，您将在图像中看到一个红色的矩形。
+    - 在区域中**点击并拖动**鼠标以移动和调整区域大小。
+4. 选择区域类型。如果您想绘制对象，请选择前景。否则选择背景。
+    - 如果选择前景，则会出现**羽化**。
+    - 较大的值将为您提供更平滑的边缘。
+5. 输入区域的提示语和负面提示语。
+    -  **注意：您的提示将附加到页面顶部的主提示语中。**
+    - 您可以利用此功能来节省你的词条，例如在页面顶部使用使用常见的提示语（如“masterpiece, best quality, highres...”）并使用“EasyNegative”之类的 embedding 。
+    - **您也可以在提示语中使用 Textual Inversion 和 LoRA**
+
+****
+
+### 提高分辨率的特别提示
+- **提高分辨率的推荐参数**
+  - 采样器(Sampler) = Euler a，步数(steps) = 20，去噪强度(denoise) = 0.35，方法(method) = Mixture of Diffusers，潜变量块高和宽(Latent tile height & width) = 128，重叠(overlap) = 16，分块批处理规模(tile batch size)= 8（如果 CUDA 内存不足，请减小块批量大小）。
+- 支持蒙版局部重绘(mask inpaint)
+  - 如果你想保留某些部分，或者 Tiled Diffusion 给出的结果很奇怪，只需对这些区域进行蒙版。
+- **所用的模型很重要**
+  - MultiDiffusion 与 highres.fix 的工作方式非常相似，因此结果非常取决于你所用的模型。
+  - 一个能够绘制细节的模型可以为你的图像添加惊人的细节。
+  - 使用**完整的模型**而不是剪枝版(pruned)模型可以产生更好的结果。
+- **不要在主提示语中包含任何具体对象**，否则结果会很糟糕。
+  - 只需使用像“highres, masterpiece, best quality, ultra-detailed 8k wallpaper, extremely clear”之类的词语。
+  - 如果你喜欢，可以使用区域提示语控制来控制具体对象。
+- 不需要使用太大的块大小、过多的重叠和过多的降噪步骤，**否则速度会非常慢**。
+- **提示词相关性（CFG scale）可以显著影响细节**
+  - 较大的提示词相关性（例如 14）可以提供更多的细节。
+- 你可以通过**0.1 - 0.6 的降噪强度**来控制你想要多大程度地改变原始图像.
+- 如果你的结果仍然不如我的满意，[可以在这里查看我们的讨论。](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/issues/3)
+
+****
+
+## 技术部分
+
+这部分内容是给想知道工作原理的人看的。
+
+### Tiled VAE
+
+核心技术是估算 GroupNorm 参数以实现无缝生成。
+
+1. 图像被分成小块，然后在编码器 / 解码器中各进行了 11/32 像素的扩张。
+2. 当禁用快速模式时：
+   1. 原始的 VAE 前向传播被分解为任务队列和任务工作器，开始处理每个小块。
+   2. 当需要 GroupNorm 时，它会暂停，存储当前的 GroupNorm 均值和方差，将所有内容发送到内存中，然后转到下一个小块。
+   3. 在汇总所有 GroupNorm 均值和方差之后，将结果应用到小块中并继续。
+   4. 使用锯齿形执行顺序以减少不必要的数据传输。
+3. 当启用快速模式时：
+   1. 原始输入被下采样并传递到单独的任务队列。
+   2. 它的 GroupNorm 参数被记录并由所有小块的任务队列使用。
+   3. 每个小块被单独处理，没有任何 内存 <-> 显存 的数据传输。
+4. 处理完所有小块后，小块被写入结果缓冲区并返回。
+
+编码器颜色修复 = 仅在下采样之前估计 GroupNorm，即以半快速模式运行。
+
+****
+
+### Tiled Diffusion
+
+1. 潜在图像被分成小块。
+2. 在 MultiDiffusion 中：
+   1. UNet 预测每个小块的噪声。
+   2. 小块由原始采样器去噪一个时间步。
+   3. 小块被加在一起，但除以每个像素的累加次数（即加权平均）。
+3. 在 Mixture of Diffusers 中：
+   1. UNet 预测每个小块的噪声。
+   2. 所有噪声与高斯权重蒙版融合。
+   3. 降噪器对整个图像使用融合的噪声去噪一个时间步。
+4. 重复执行步骤 2-3，直到完成所有时间步长。
+
+### 优点
+
+- 在有限的显存中绘制超大分辨率（2k~8k）图像
+- 无需任何后处理即可实现无缝输出
+
+### 缺点
+
+- 它将明显比通常的生成速度慢。
+- 梯度计算与此技巧不兼容。它将破坏任何 backward() 或 torch.autograd.grad()。
+
+****
+
+## 当前工作
+
+- 将区域信息保存到图像中并进行读取。
+- 加入 noise inverse 以更好的放大图像。
 
 ****
 
 ## 许可证
 
-这些脚本是根据 MIT 许可证授权的。如果您觉得它们有用，请给作者一个star。
+这些脚本是根据 MIT 许可证授权的。如果你喜欢这个项目，请给作者一个 star！
+
+谢谢！
