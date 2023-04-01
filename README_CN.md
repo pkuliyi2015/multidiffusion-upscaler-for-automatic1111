@@ -25,7 +25,7 @@ WebUI和本插件都是完全免费的，请勿上当受骗。
 - 效果请看 [放大前后对比](https://imgsli.com/MTY1NzM1)
 - 对比Ultimate SD Upscale, 这一的算法更加忠实于原图，且产生更少的奇怪结果。详见 [与Ultimate SD Upcalse对比](https://imgsli.com/MTY1NzUw)
 
-注：请不要一上来就放的非常大，建议先在小图上用1.5x测试。默认的参数需要denoise小于0.4，磨皮力度比较大。如果你要把磨皮（retouch）减到1，你的CFG必须小于2.
+注：请不要一上来就放的非常大，建议先在小图上用1.5x测试。默认的参数需要denoise小于0.6.
 
 ****
 

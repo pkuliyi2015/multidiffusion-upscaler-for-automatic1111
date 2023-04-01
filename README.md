@@ -27,7 +27,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 - See here for a [comparison before & after 4x upscaling](https://imgsli.com/MTY1NzM1) of a 4096 * 6464 image.
 - Compare to Ultimate SD Upscale, the algorithm is **much more faithful to the original image** and produces significantly fewer artifacts. See the [comparison with Ultimate SD Upcaler](https://imgsli.com/MTY1NzUw).
 
-NOTE: Instead of generating an 8k image at once, you should first try the default parameters with a small image and a small upscale factor (i.e., 1.5) to see if it works. If the retouch = 1, then CFG must be <= 2. 
+NOTE: Instead of generating an 8k image at once, you should first try the default parameters with a small image and a small upscale factor (i.e., 1.5) to see if it works. Generally, the denoising strength needs to be <= 0.6.
 
 ****
 ### 🔥 Tiled VAE
