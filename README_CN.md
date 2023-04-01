@@ -4,7 +4,7 @@
 
 由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
 
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业目的。**
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止闭源再分发。**
 
 WebUI和本插件都是完全免费的，请勿上当受骗。
 ****
@@ -22,10 +22,10 @@ WebUI和本插件都是完全免费的，请勿上当受骗。
 ### 🆕 Tiled Noise Inversion
 - 超高分辨率高质量图像放大，8k图仅需12G显存
 - 尤其适用于人像放大，当你不想大幅改变人脸时
-- 效果请看 [放大前后对比](https://imgsli.com/MTY1NzM1)
-- 对比Ultimate SD Upscale, 这一的算法更加忠实于原图，且产生更少的奇怪结果。详见 [与Ultimate SD Upcalse对比](https://imgsli.com/MTY1NzUw)
+- 4x放大效果，去噪强度0.4：[对比图1](https://imgsli.com/MTY1NzM1)，[对比图2](https://imgsli.com/MTY2MTY5)
+- 对比Ultimate SD Upscale, 这一的算法更加忠实于原图，且产生更少的奇怪结果。与Ultimate SD Upscale(实测最佳去噪强度0.3)，对比如下 [对比图1](https://imgsli.com/MTY1NzUw)，[对比图2](https://imgsli.com/MTY2MTcx)
 
-注：请不要一上来就放的非常大，建议先在小图上用1.5x测试。默认的参数需要denoise小于0.6.
+注：请不要一上来就放的非常大，建议先在小图上用1.5x测试。通常需要denoise小于0.6，CFG敏感度不大，可自行尝试。
 
 ****
 

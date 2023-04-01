@@ -6,7 +6,7 @@ Please be aware that the License of this repo has changed to prevent some web sh
 **You cannot use versions after AOE 2023.3.28 for commercial activity.**
 
 由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业目的。**
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止闭源再分发。**
 
 Both WebUI and this extension are FREE. Don't be cheated by some webshop owners.
 
@@ -24,10 +24,12 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 ### 🆕 Tiled Noise Inversion
 - **Ultra high-consistency image upscale**, up to 8k resolution in 12G memory.
 - Especially good when you don't want to wildly change your character's face.
-- See here for a [comparison before & after 4x upscaling](https://imgsli.com/MTY1NzM1) of a 4096 * 6464 image.
-- Compare to Ultimate SD Upscale, the algorithm is **much more faithful to the original image** and produces significantly fewer artifacts. See the [comparison with Ultimate SD Upcaler](https://imgsli.com/MTY1NzUw).
+- 4x upscaling demo, denoising strength=0.4: [comparison 1](https://imgsli.com/MTY1NzM1), [comparison 2](https://imgsli.com/MTY2MTY5)
+- Compare to Ultimate SD Upscale, the algorithm is **much more faithful to the original image** and produces significantly fewer artifacts. See the Comparison with Ultimate SD Upcaler (at its optimal denoising strength=0.3) [comparison 1](https://imgsli.com/MTY1NzUw), [comparison 2](https://imgsli.com/MTY2MTcx)
 
-NOTE: Instead of generating an 8k image at once, you should first try the default parameters with a small image and a small upscale factor (i.e., 1.5) to see if it works. Generally, the denoising strength needs to be <= 0.6.
+NOTE: 
+- Instead of generating an 8k image at once, you should first try the default parameters with a small image and a small upscale factor (i.e., 1.5) to see if it works.
+- Generally, the denoising strength needs to be <= 0.6. It is not very sensitive to CFG values, so you can try it free.
 
 ****
 ### 🔥 Tiled VAE
