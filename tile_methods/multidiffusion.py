@@ -213,8 +213,8 @@ class MultiDiffusion(TiledDiffusion):
                     elif bbox.blend_mode == BlendMode.FOREGROUND:
                         if x_feather_buffer is None:
                             x_feather_buffer = torch.zeros_like(self.x_buffer)
-                            x_feather_mask   = torch.zeros_like(self.x_buffer)
-                            x_feather_count  = torch.zeros_like(self.x_buffer)
+                            x_feather_mask   = torch.zeros((1, 1, H, W), device=x_in.device)
+                            x_feather_count  = torch.zeros((1, 1, H, W), device=x_in.device)
                         x_feather_buffer[bbox.slicer] += x_tile_out
                         x_feather_mask  [bbox.slicer] += bbox.feather_mask
                         x_feather_count [bbox.slicer] += 1
@@ -227,13 +227,13 @@ class MultiDiffusion(TiledDiffusion):
                     elif bbox.blend_mode == BlendMode.FOREGROUND:
                         if x_feather_buffer is None:
                             x_feather_buffer      = torch.zeros_like(self.x_buffer)
-                            x_feather_mask        = torch.zeros_like(self.x_buffer)
-                            x_feather_count       = torch.zeros_like(self.x_buffer)
                             x_feather_pred_buffer = torch.zeros_like(self.x_pred_buffer)
+                            x_feather_mask        = torch.zeros((1, 1, H, W), device=x_in.device)
+                            x_feather_count       = torch.zeros((1, 1, H, W), device=x_in.device)
                         x_feather_buffer     [bbox.slicer] += x_tile_out
+                        x_feather_pred_buffer[bbox.slicer] += x_tile_pred
                         x_feather_mask       [bbox.slicer] += bbox.feather_mask
                         x_feather_count      [bbox.slicer] += 1
-                        x_feather_pred_buffer[bbox.slicer] += x_tile_pred
 
                 if not self.p.disable_extra_networks:
                     with devices.autocast():
@@ -261,19 +261,28 @@ class MultiDiffusion(TiledDiffusion):
         return x_out if self.is_kdiff else (x_out, x_pred_out)
     
 
-    def get_noise(self, x_in: Tensor, sigma_in: Tensor, cond_in: Dict[str, Tensor]):
+    def get_noise(self, x_in:Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
         # NOTE: The following code is analytically wrong but aesthetically beautiful
+        local_cond_in = cond_in.copy()
         def org_func(x:Tensor):
-            return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
+            return shared.sd_model.apply_model(x, sigma_in, cond=local_cond_in)
 
         def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
             sigma_in_tile = sigma_in.repeat(len(bboxes))
-            new_cond = self.repeat_cond_dict(cond_in, bboxes)
+            new_cond = self.repeat_cond_dict(local_cond_in, bboxes)
             x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
             return x_tile_out
-
+        
         def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
-            return self.kdiff_custom_forward(x, sigma_in, cond_in, bbox_id, bbox, shared.sd_model.apply_model) 
+            # The negative prompt in custom bbox should not be used for noise inversion
+            # otherwise the result will be astonishingly bad.
+            cond = Condition.reconstruct_cond(bbox.cond, step)
+            image_cond = local_cond_in['c_concat'][0]
+            if image_cond.shape[2:] == (self.h, self.w):
+                image_cond = image_cond[bbox.slicer]
+            image_conditioning = image_cond
+            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond]}
+            return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
     

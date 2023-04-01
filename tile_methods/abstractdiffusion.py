@@ -600,7 +600,7 @@ class TiledDiffusion:
             c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
             t = dnw.sigma_to_t(sigma_in)
             t = t / self.noise_inverse_retouch
-            eps = self.get_noise(x_in * c_in, t, cond_in)
+            eps = self.get_noise(x_in * c_in, t, cond_in, steps - i)
             denoised = x_in + eps * c_out
 
             # denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
@@ -620,5 +620,5 @@ class TiledDiffusion:
         return result
     
     @torch.no_grad()
-    def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor]):
+    def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
         pass

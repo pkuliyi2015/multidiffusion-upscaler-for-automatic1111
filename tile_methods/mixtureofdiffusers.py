@@ -82,7 +82,7 @@ class MixtureOfDiffusers(TiledDiffusion):
 
     @torch.no_grad()
     @keep_signature
-    def apply_model_hijack(self, x_in:Tensor, t_in:Tensor, cond:CondDict):
+    def apply_model_hijack(self, x_in:Tensor, t_in:Tensor, cond:CondDict, noise_inverse_step=-1):
         assert LatentDiffusion.apply_model
 
         # KDiffusion Compatibility
@@ -147,15 +147,24 @@ class MixtureOfDiffusers(TiledDiffusion):
                         extra_networks.activate(self.p, bbox.extra_network_data)
 
                 x_tile = x_in[bbox.slicer]
-                x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
+                if noise_inverse_step < 0:
+                    x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
+                else:
+                    custom_cond = Condition.reconstruct_cond(bbox.cond, noise_inverse_step)
+                    image_cond = c_in['c_concat'][0]
+                    if image_cond.shape[2:] == (self.h, self.w):
+                        image_cond = image_cond[bbox.slicer]
+                    image_conditioning = image_cond
+                    custom_cond_in = {"c_concat": [image_conditioning], "c_crossattn": [custom_cond]}
+                    x_tile_out = shared.sd_model.apply_model(x_tile, t_in, cond=custom_cond_in)
 
                 if bbox.blend_mode == BlendMode.BACKGROUND:
                     self.x_buffer[bbox.slicer] += x_tile_out * self.custom_weights[bbox_id]
                 elif bbox.blend_mode == BlendMode.FOREGROUND:
                     if x_feather_buffer is None:
                         x_feather_buffer = torch.zeros_like(self.x_buffer)
-                        x_feather_mask   = torch.zeros_like(self.x_buffer)
-                        x_feather_count  = torch.zeros_like(self.x_buffer)
+                        x_feather_mask   = torch.zeros((1, 1, H, W), device=self.x_buffer.device)
+                        x_feather_count  = torch.zeros((1, 1, H, W), device=self.x_buffer.device)
                     x_feather_buffer[bbox.slicer] += x_tile_out
                     x_feather_mask  [bbox.slicer] += bbox.feather_mask
                     x_feather_count [bbox.slicer] += 1
@@ -174,8 +183,11 @@ class MixtureOfDiffusers(TiledDiffusion):
             # Weighted average with original x_buffer
             x_out = torch.where(x_feather_count > 0, x_out * (1 - x_feather_mask) + x_feather_buffer * x_feather_mask, x_out)
 
+        # For mixture of diffusers, we cannot fill the not denoised area.
+        # So we just leave it as it is.
+        
         return x_out
 
     @torch.no_grad()
-    def get_noise(self, x_in: Tensor, sigma_in: Tensor, cond_in: Dict[str, Tensor]):
-        return self.apply_model_hijack(x_in, sigma_in, cond=cond_in)
+    def get_noise(self, x_in:Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
+        return self.apply_model_hijack(x_in, sigma_in, cond=cond_in, noise_inverse_step=step)
