@@ -1,6 +1,8 @@
 import math
+import random
 import torch
 import types
+
 import inspect
 import k_diffusion as K
 import torch.nn.functional as F
@@ -135,7 +137,7 @@ class TiledDiffusion:
 
 
     @custom_bbox
-    def init_custom_bbox(self, bbox_control_states:BBoxControls, draw_background:bool, causal_layers:bool):
+    def init_custom_bbox(self, bbox_settings:Dict[int,BBoxSettings], draw_background:bool, causal_layers:bool):
         self.enable_custom_bbox = True
 
         self.causal_layers = causal_layers
@@ -144,15 +146,10 @@ class TiledDiffusion:
             self.enable_grid_bbox = False
             self.weights.zero_()
 
-        # The number parameters needed to initialize the CustomBBox is 9 currently.
-        # Need to be the same as the number of parameters in the `bbox_control_states` list.
-        n_controls = 9
-        assert len(bbox_control_states) % n_controls == 0, '`control_states` count misalign, please check ui()'
         self.custom_bboxes: List[CustomBBox] = []
-        for i in range(0, len(bbox_control_states), n_controls):
-            e, x, y, w, h, p, n, blend_mode, feather_ratio = bbox_control_states[i:i+n_controls]
+        for bbox_setting in bbox_settings.values():
+            e, x, y, w, h, p, n, blend_mode, feather_ratio, seed = bbox_setting
             if not e or x > 1.0 or y > 1.0 or w <= 0.0 or h <= 0.0: continue
-
             x = int(x * self.w)
             y = int(y * self.h)
             w = math.ceil(w * self.w)
@@ -161,7 +158,7 @@ class TiledDiffusion:
             y = max(0, y)
             w = min(self.w - x, w)
             h = min(self.h - y, h)
-            self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, blend_mode, feather_ratio))
+            self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, blend_mode, feather_ratio, seed))
 
         if len(self.custom_bboxes) == 0: 
             self.enable_custom_bbox = False
@@ -491,11 +488,11 @@ class TiledDiffusion:
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
 
 
-    def enable_noise_inverse(self, steps: int, retouch:float,  noise_inverse_renoise_strength: float, renoise_kernel: int):
+    def enable_noise_inverse(self, steps:int, retouch:float, renoise_strength:float, renoise_kernel:int):
         self.noise_inverse_enabled = True
         self.noise_inverse_steps = steps
-        self.noise_inverse_retouch = retouch
-        self.noise_inverse_renoise_strength = noise_inverse_renoise_strength
+        self.noise_inverse_retouch = float(retouch)
+        self.noise_inverse_renoise_strength = renoise_strength
         self.noise_inverse_renoise_kernel = int(renoise_kernel)
         self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
 
@@ -504,15 +501,7 @@ class TiledDiffusion:
     def sample_img2img(self, sampler: KDiffusionSampler, p:StableDiffusionProcessingImg2Img, 
                        x:Tensor, noise:Tensor, conditioning, unconditional_conditioning,
                        steps=None, image_conditioning=None):
-        # noise inverse sampling
-        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
-        sigmas = sampler.get_sigmas(p, steps)
-        
-        prompts = p.all_prompts[:p.batch_size]
-        neg_prompts = p.all_negative_prompts[:p.batch_size]
-        cond_basis, _ = Condition.get_cond(prompts, p.steps)
-        uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
-
+        # noise inverse sampling - renoise mask
         renoise_mask = None
         if self.noise_inverse_renoise_strength > 0:
             image = p.init_images[0]
@@ -524,6 +513,13 @@ class TiledDiffusion:
             renoise_mask = 1 - F.interpolate(renoise_mask.unsqueeze(0).unsqueeze(0), size=noise.shape[-2:], mode='bilinear').squeeze(0).squeeze(0)
             renoise_mask *= self.noise_inverse_renoise_strength
             renoise_mask = torch.clamp(renoise_mask, 0, 1)
+
+        # calculate sampling steps
+        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
+        sigmas = sampler.get_sigmas(p, steps)
+        sigma_sched = sigmas[steps - t_enc - 1:]
+
+        prompts = p.all_prompts[:p.batch_size]
             
         if hasattr(p, 'noise_inverse_latent'):
             # In batch mode, use the same noise latent for all images
@@ -531,7 +527,7 @@ class TiledDiffusion:
         else:
             # get retouched noise inversion
             shared.state.job_count += 1
-            latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, p.cfg_scale, self.noise_inverse_steps, cond_basis, uncond_basis, retouch=self.noise_inverse_retouch)
+            latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, self.noise_inverse_steps, prompts)
             shared.state.nextjob()
             p.noise_inverse_latent = latent.to(device=devices.cpu) if cmd_opts.lowvram else latent
         
@@ -541,11 +537,9 @@ class TiledDiffusion:
             combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1-renoise_mask)**2) ** 0.5)
         else:
             combined_noise = inverse_noise
-
-        sigma_sched = sigmas[steps - t_enc - 1:]
-
-        xi = x + combined_noise * sigma_sched[0]
         
+        xi = x + combined_noise * sigma_sched[0]
+
         extra_params_kwargs = sampler.initialize(p)
         parameters = inspect.signature(sampler.func).parameters
 
@@ -579,74 +573,51 @@ class TiledDiffusion:
         return samples
     
     @torch.no_grad()
-    def find_noise_for_image_sigma_adjustment(self, dnw, cfg_scale:float, steps:int, cond_basis:Cond, uncond_basis:Uncond, retouch: float) -> Tensor:
+    def find_noise_for_image_sigma_adjustment(self, dnw, steps, prompts:List[str]) -> Tensor:
         '''
         Migrate from the built-in script img2imgalt.py
         Tiled noise inverse for better image upscaling
         '''
         assert self.p.sampler_name == 'Euler'
         x = self.p.init_latent
-
         s_in = x.new_ones([x.shape[0]])
+        if shared.sd_model.parameterization == "v":
+            skip = 1
+        else:
+            skip = 0
+        cond = self.p.sd_model.get_learned_conditioning(prompts)
+        cond_in = {"c_concat": [self.p.image_conditioning], "c_crossattn": [cond]}
         sigmas = dnw.get_sigmas(steps).flip(0)
-        shared.state.sampling_steps = len(sigmas)
-        pbar = tqdm(total=shared.state.sampling_steps, desc='Noise Inversion')
+        shared.state.sampling_steps = steps
+        pbar = tqdm(total=steps, desc='Noise Inversion')
         for i in range(1, len(sigmas)):
             if shared.state.interrupted:
                 return x
             shared.state.sampling_step += 1
-            cond = Condition.reconstruct_cond(cond_basis, i)
-            uncond = Condition.reconstruct_uncond(uncond_basis, i)
 
-            x_in = torch.cat([x] * 2)
-            sigma_in = torch.cat([sigmas[i - 1] * s_in] * 2)
+            x_in = x
+            sigma_in = torch.cat([sigmas[i] * s_in])
+            c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
+            t = dnw.sigma_to_t(sigma_in)
+            t = t / self.noise_inverse_retouch
+            eps = self.get_noise(x_in * c_in, t, cond_in)
+            denoised = x_in + eps * c_out
 
-            # make sure the cond is the same length as uncond
-            if uncond.shape[1] < cond.shape[1]:
-                last_vector = uncond[:, -1:]
-                last_vector_repeated = last_vector.repeat([1, cond.shape[1] - uncond.shape[1], 1])
-                uncond = torch.hstack([uncond, last_vector_repeated])
-            elif uncond.shape[1] > cond.shape[1]:
-                uncond = uncond[:, :cond.shape[1]]
-
-            cond_in = torch.cat([uncond, cond])
-
-            image_conditioning = torch.cat([self.p.image_conditioning] * 2)
-            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond_in]}
-
-            c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)]
-
-            if i == 1:
-                t = dnw.sigma_to_t(torch.cat([sigmas[i] * s_in] * 2))
-            else:
-                t = dnw.sigma_to_t(sigma_in)
-
-            # We can manually reduce the timestep to get a aesthetically pleasing result
-
-            eps = self.get_noise(x_in * c_in, t / retouch, cond_in)
-
-            denoised_uncond, denoised_cond = (x_in + eps * c_out).chunk(2)
-
-            denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
-
-            if i == 1:
-                d = (x - denoised) / (2 * sigmas[i])
-            else:
-                d = (x - denoised) / sigmas[i - 1]
-
+            # denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
+            d = (x - denoised) / sigmas[i]
             dt = sigmas[i] - sigmas[i - 1]
             x = x + d * dt
-
             sd_samplers_common.store_latent(x)
 
-            # This shouldn't be necessary, but solved some VRAM issues
-            del x_in, sigma_in, cond_in, c_out, c_in, t,
-            del eps, denoised_uncond, denoised_cond, denoised, d, dt
+            # This is neccessary to save memory before the next iteration
+            del x_in, sigma_in, c_out, c_in, t,
+            del eps, denoised, d, dt
 
             pbar.update(1)
         
         pbar.close()
-        return x / sigmas[-1]
+        result = x / sigmas[-1]
+        return result
     
     @torch.no_grad()
     def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor]):

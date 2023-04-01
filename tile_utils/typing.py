@@ -15,8 +15,6 @@ from modules.sd_samplers_compvis import VanillaStableDiffusionSampler
 
 ModuleType = type(sys)
 
-BBoxControls = Union[List[Component], List[Any]]    # widgets or values
-
 Sampler = Union[KDiffusionSampler, VanillaStableDiffusionSampler]
 Cond = MulticondLearnedConditioning
 Uncond = List[List[ScheduledPromptConditioning]]

@@ -461,6 +461,49 @@ function updateBoxes(is_t2i) {
     }
 }
 
+function getSeedInfo(is_t2i, id, current_seed){
+    const info_id = is_t2i ? '#html_info_txt2img' : '#html_info_img2img';
+    const info_div = gradioApp().querySelector(info_id);
+    try{
+        current_seed = parseInt(current_seed);
+    }catch(e){
+        current_seed = -1;
+    }
+    if (!info_div) return current_seed;
+    let info = info_div.innerHTML;
+    if (!info) return current_seed;
+    // remove all html tags
+    info = info.replace(/<[^>]*>/g, '');
+    // Find a json string 'region control:' in the info
+    // get its index
+    idx = info.indexOf('region control');
+    if (idx == -1) return current_seed;
+    // get the json string (detect the bracket)
+    // find the first '{'
+    let start_idx = info.indexOf('{', idx);
+    let bracket = 1;
+    let end_idx = start_idx + 1;
+    while (bracket > 0 && end_idx < info.length) {
+        if (info[end_idx] == '{') bracket++;
+        if (info[end_idx] == '}') bracket--;
+        end_idx++;
+    }
+    if (bracket > 0) {
+        return current_seed;
+    }
+    // get the json string
+    let json_str = info.substring(start_idx, end_idx);
+    // replace the single quote to double quote
+    json_str = json_str.replace(/'/g, '"');
+    // replace python True to javascript true, False to false
+    json_str = json_str.replace(/True/g, 'true');
+    // parse the json string
+    let json = JSON.parse(json_str);
+    // get the seed
+    let seed = json['region ' + id.toString()]['seed'];
+    return seed;
+}
+
 window.addEventListener('resize', _ => {
     updateBoxes(true);
     updateBoxes(false);

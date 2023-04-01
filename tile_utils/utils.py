@@ -1,5 +1,6 @@
 import math
 from enum import Enum
+from collections import namedtuple
 
 import cv2
 import torch
@@ -9,6 +10,33 @@ from modules import devices, shared, prompt_parser, extra_networks, sd_samplers_
 from modules.processing import opt_f
 
 from tile_utils.typing import *
+
+
+BBoxSettings = namedtuple('BBoxSettings', ['enable', 'x', 'y', 'w', 'h', 'prompt', 'neg_prompt', 'blend_mode', 'feather_ratio', 'seed'])
+DEFAULT_BBOX_SETTINGS = BBoxSettings(False, 0.4, 0.4, 0.2, 0.2, '', '', 'Background', 0.2, -1)
+NUM_BBOX_PARAMS = len(BBoxSettings._fields)
+
+
+def build_bbox_settings(bbox_control_states) -> Dict[int, BBoxSettings]:
+    '''
+    bbox_control_states: list of bbox control values
+    '''
+    settings = {}
+    for index, i in enumerate(range(0, len(bbox_control_states), NUM_BBOX_PARAMS)):
+        setting = BBoxSettings(*bbox_control_states[i:i+NUM_BBOX_PARAMS])
+        # for float x, y, w, h, feather_ratio, keeps 4 digits
+        setting = setting._replace(
+            x=round(setting.x, 4), 
+            y=round(setting.y, 4), 
+            w=round(setting.w, 4), 
+            h=round(setting.h, 4), 
+            feather_ratio=round(setting.feather_ratio, 4),
+            seed = int(setting.seed)
+        )
+        # sanity check
+        if not setting.enable or setting.x > 1.0 or setting.y > 1.0 or setting.w <= 0.0 or setting.h <= 0.0: continue
+        settings[index] = setting
+    return settings
 
 
 def gr_value(value=None):
@@ -55,13 +83,14 @@ class CustomBBox(BBox):
 
     ''' region control bbox '''
 
-    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:str, feather_radio:float):
+    def __init__(self, x:int, y:int, w:int, h:int, prompt:str, neg_prompt:str, blend_mode:str, feather_radio:float, seed:int):
         super().__init__(x, y, w, h)
-
         self.prompt = prompt
         self.neg_prompt = neg_prompt
         self.blend_mode = BlendMode(blend_mode)
         self.feather_ratio = max(min(feather_radio, 1.0), 0.0)
+        self.seed = seed
+        # initialize necessary fields
         self.feather_mask = feather_mask(self.w, self.h, self.feather_ratio) if self.blend_mode == BlendMode.FOREGROUND else None
         self.cond: MulticondLearnedConditioning = None
         self.extra_network_data: DefaultDict[List[ExtraNetworkParams]] = None
