@@ -476,7 +476,7 @@ function getSeedInfo(is_t2i, id, current_seed){
     info = info.replace(/<[^>]*>/g, '');
     // Find a json string 'region control:' in the info
     // get its index
-    idx = info.indexOf('region control');
+    idx = info.indexOf('Region control');
     if (idx == -1) return current_seed;
     // get the json string (detect the bracket)
     // find the first '{'
@@ -500,7 +500,7 @@ function getSeedInfo(is_t2i, id, current_seed){
     // parse the json string
     let json = JSON.parse(json_str);
     // get the seed if the region id is in the json
-    const region_id = 'region ' + id.toString();
+    const region_id = 'Region ' + id.toString();
     if (!(region_id in json)) return current_seed;
     const region = json[region_id];
     if (!('seed' in region)) return current_seed;

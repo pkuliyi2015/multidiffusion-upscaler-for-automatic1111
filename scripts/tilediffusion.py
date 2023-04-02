@@ -343,9 +343,10 @@ class Script(scripts.Script):
                 info['Keep input size'] = keep_input_size
                 if noise_inverse:
                     info['Noise inverse'] = True
-                    info['steps'] = noise_inverse_steps
-                    info['renoise strength'] = noise_inverse_renoise_strength
-                    info['kernel size'] = noise_inverse_renoise_kernel
+                    info['Steps'] = noise_inverse_steps
+                    info['Retouch'] = noise_inverse_retouch
+                    info['Renoise strength'] = noise_inverse_renoise_strength
+                    info['Kernel size'] = noise_inverse_renoise_kernel
 
             if enable_bbox_control:
 
@@ -354,8 +355,8 @@ class Script(scripts.Script):
 
                 region_settings = {}
                 for i, v in bbox_settings.items():
-                    region_settings['region ' + str(i+1)] = v._asdict()
-                info["region control"] = region_settings
+                    region_settings['Region ' + str(i+1)] = v._asdict()
+                info["Region control"] = region_settings
 
                 def create_bbox_random_tensors(shape, seeds, subseeds=None, subseed_strength=0.0, seed_resize_from_h=0, seed_resize_from_w=0, p=None):
                     org_random_tensors = processing.create_random_tensors_original_md(shape, seeds, subseeds, subseed_strength, seed_resize_from_h, seed_resize_from_w, p)
@@ -365,7 +366,7 @@ class Script(scripts.Script):
                     foreground_noise = torch.zeros_like(org_random_tensors)
                     foreground_noise_count = torch.zeros((1, 1, height, width), device=org_random_tensors.device)
                     for i, v in bbox_settings.items():
-                        seed = region_settings['region ' + str(i+1)]['seed']
+                        seed = v.seed
                         if seed == -1 or seed == '':
                             seed = int(random.randrange(4294967294))
                         x, y, w, h = v.x, v.y, v.w, v.h
@@ -390,10 +391,8 @@ class Script(scripts.Script):
                             foreground_noise_count[:, :, y:y+h, x:x+w] += 1
                         else:
                             raise NotImplementedError
-                        # update seed for the next batch
-                        region_settings['region ' + str(i+1)]['seed'] = seed
-                        seed += 1
-                        bbox_settings[i] = v._replace(seed=seed)
+                        # update seed in the PNG info
+                        region_settings['Region ' + str(i+1)]['seed'] = seed
 
                     # average
                     background_noise = torch.where(background_noise_count > 1, background_noise / background_noise_count, background_noise)
