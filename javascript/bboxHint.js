@@ -499,8 +499,17 @@ function getSeedInfo(is_t2i, id, current_seed){
     json_str = json_str.replace(/True/g, 'true');
     // parse the json string
     let json = JSON.parse(json_str);
-    // get the seed
-    let seed = json['region ' + id.toString()]['seed'];
+    // get the seed if the region id is in the json
+    const region_id = 'region ' + id.toString();
+    if (!(region_id in json)) return current_seed;
+    const region = json[region_id];
+    if (!('seed' in region)) return current_seed;
+    let seed = region['seed'];
+    try{
+        seed = parseInt(seed);
+    }catch(e){
+        return current_seed;
+    }
     return seed;
 }
 

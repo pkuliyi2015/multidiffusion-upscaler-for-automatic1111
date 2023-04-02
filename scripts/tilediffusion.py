@@ -384,10 +384,10 @@ class Script(scripts.Script):
                         rand_tensor = torch.randn((1, org_random_tensors.shape[1], h, w),device=devices.cpu)
                         if v.blend_mode == 'Background':
                             background_noise[:, :, y:y+h, x:x+w] += rand_tensor.to(background_noise.device)
-                            background_noise_count += 1
+                            background_noise_count[:, :, y:y+h, x:x+w] += 1
                         elif v.blend_mode == 'Foreground':
                             foreground_noise[:, :, y:y+h, x:x+w] += rand_tensor.to(foreground_noise.device)
-                            foreground_noise_count += 1
+                            foreground_noise_count[:, :, y:y+h, x:x+w] += 1
                         else:
                             raise NotImplementedError
                         # update seed for the next batch
