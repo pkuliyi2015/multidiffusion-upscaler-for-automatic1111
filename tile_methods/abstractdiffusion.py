@@ -407,8 +407,7 @@ class TiledDiffusion:
         self.control_tensor_batch = None
         self.control_params = None
         self.control_tensor_custom = []
-
-        self.reset_controlnet_tensors()
+        
         self.prepare_controlnet_tensors()
 
     @controlnet
@@ -420,17 +419,21 @@ class TiledDiffusion:
             self.control_params[param_id].hint_cond = self.org_control_tensor_batch[param_id]
 
     @controlnet
-    def prepare_controlnet_tensors(self):
+    def prepare_controlnet_tensors(self, refresh:bool=False):
         ''' Crop the control tensor into tiles and cache them '''
 
-        if not self.enable_controlnet: return
-        if self.control_tensor_batch is not None: return
-        if self.controlnet_script is None or self.control_params is not None: return
+        if not refresh:
+            if self.control_tensor_batch is not None or self.control_params is not None: return
+
+        if not self.enable_controlnet or self.controlnet_script is None: return
+
         latest_network = self.controlnet_script.latest_network
         if latest_network is None or not hasattr(latest_network, 'control_params'): return
+
         self.control_params = latest_network.control_params
         tensors = [param.hint_cond for param in latest_network.control_params]
         self.org_control_tensor_batch = tensors
+
         if len(tensors) == 0: return
 
         self.control_tensor_batch = []

@@ -438,6 +438,12 @@ class Script(scripts.Script):
             bbox_settings,
         )
 
+    def postprocess_batch(self, p, enabled:bool, *args, **kwargs):
+        if not enabled or self.delegate is None:
+            return
+        self.delegate.reset_controlnet_tensors()
+        
+
     def postprocess(self, p, processed, *args):
         self.reset()
 
@@ -459,7 +465,7 @@ class Script(scripts.Script):
                 # before we reuse the sampler, we refresh the control tensor
                 # so that we are compatible with ControlNet batch processing
                 if self.controlnet_script:
-                    self.delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
+                    self.delegate.prepare_controlnet_tensors(refresh=True)
                 return self.delegate.sampler_raw
             else:
                 self.reset()
