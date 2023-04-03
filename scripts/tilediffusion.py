@@ -140,7 +140,7 @@ class Script(scripts.Script):
                     noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=self.elem_id("noise_inverse_renoise_kernel"))
    
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
-            with gr.Group(variant='panel', elem_id=f'MD-bbox-control-{tab}'):
+            with gr.Group(elem_id=f'MD-bbox-control-{tab}'):
                 with gr.Accordion('Region Prompt Control', open=False):
                     with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(label='Enable Control', value=False, elem_id=self.elem_id("enable_bbox_control"))
@@ -207,7 +207,7 @@ class Script(scripts.Script):
                             prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2, elem_id=f'MD-{tab}-{i}-prompt')
                             neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1, elem_id=f'MD-{tab}-{i}-neg-prompt')
                             with gr.Row(variant='compact'):
-                                seed = gr.Number(label='Seed', value=-1, min=-1, max=2**32-1, step=1, visible=True, elem_id=f'MD-{tab}-{i}-seed')
+                                seed = gr.Number(label='Seed', value=-1, visible=True, elem_id=f'MD-{tab}-{i}-seed')
                                 random_seed = gr.Button(value='🎲', variant='tool', elem_id=f'MD-{tab}-{i}-random_seed')
                                 reuse_seed = gr.Button(value='♻️', variant='tool', elem_id=f'MD-{tab}-{i}-reuse_seed')
                                 random_seed.click(fn=lambda: -1, show_progress=False, inputs=[], outputs=[seed])    
