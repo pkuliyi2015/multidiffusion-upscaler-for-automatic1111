@@ -376,8 +376,7 @@ class TiledDiffusion:
     def ddim_custom_forward(self, x:Tensor, cond_in:CondDict, bbox:CustomBBox, ts:Tensor, forward_func:Callable, *args, **kwargs) -> Tensor:
         ''' draw custom bbox '''
 
-        conds_list, tensor, uncond, image_conditioning = self.reconstruct_custom_cond(cond_in, bbox.cond, bbox.uncond, bbox)
-        assert all([len(conds) == 1 for conds in conds_list]), 'composition via AND is not supported for DDIM/PLMS samplers'
+        tensor, uncond, image_conditioning = self.reconstruct_custom_cond(cond_in, bbox.cond, bbox.uncond, bbox)
 
         cond = tensor
         # for DDIM, shapes definitely match. So we dont need to do the same thing as in the KDIFF sampler.
