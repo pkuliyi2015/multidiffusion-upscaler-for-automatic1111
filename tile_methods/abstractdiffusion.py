@@ -536,8 +536,25 @@ class TiledDiffusion:
         inverse_noise = latent - (p.init_latent / sigmas[0])
 
         if renoise_mask is not None:
-            # only renoise the part whare the inverse noise is not zero
-            noise = torch.where(inverse_noise != 0, noise, torch.zeros_like(noise))
+            # If the background is not drawn, we need to filter out the un-drawn pixels and reweight foreground with feather mask
+            # This is to enable the renoise mask in regional inpainting
+            if not self.enable_grid_bbox:
+                background_count = torch.zeros((1, 1,noise.shape[2], noise.shape[3]), device=noise.device)
+                foreground_noise = torch.zeros_like(noise)
+                foreground_weight = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
+                foreground_count = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
+                for bbox in self.custom_bboxes:
+                    if bbox.blend_mode == BlendMode.BACKGROUND:
+                        background_count[bbox.slicer] += 1
+                    elif bbox.blend_mode == BlendMode.FOREGROUND:
+                        foreground_noise[bbox.slicer] += noise[bbox.slicer]
+                        foreground_weight[bbox.slicer] += bbox.feather_mask
+                        foreground_count[bbox.slicer] += 1
+                background_noise = torch.where(background_count > 0, noise, 0)
+                foreground_noise = torch.where(foreground_count > 0, foreground_noise / foreground_count, 0)
+                foreground_weight = torch.where(foreground_count > 0, foreground_weight / foreground_count, 0)
+                noise = background_noise*(1-foreground_weight) + foreground_noise*foreground_weight
+                del background_noise, foreground_noise, foreground_weight, background_count, foreground_count
             combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1-renoise_mask)**2) ** 0.5)
         else:
             combined_noise = inverse_noise
