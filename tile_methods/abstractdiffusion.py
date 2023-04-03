@@ -536,6 +536,8 @@ class TiledDiffusion:
         inverse_noise = latent - (p.init_latent / sigmas[0])
 
         if renoise_mask is not None:
+            # only renoise the part whare the inverse noise is not zero
+            noise = torch.where(inverse_noise != 0, noise, torch.zeros_like(noise))
             combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1-renoise_mask)**2) ** 0.5)
         else:
             combined_noise = inverse_noise
