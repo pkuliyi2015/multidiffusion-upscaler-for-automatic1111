@@ -304,7 +304,11 @@ class Script(scripts.Script):
                 p.extra_generation_params["Tiled Diffusion scale factor"] = scale_factor
             else:
                 image = init_img
-            p.init_images[0] = image
+
+            # For webui folder based batch processing, the length of init_images is not 1
+            # We need to replace all images with the upsampled one
+            for i in range(len(p.init_images)):
+                p.init_images[i] = image
 
             if keep_input_size:
                 p.width  = image.width
@@ -446,6 +450,9 @@ class Script(scripts.Script):
 
     def postprocess(self, p, processed, *args):
         self.reset()
+        # clean up noise inverse latent for folder-based processing
+        if hasattr(p, 'noise_inverse_latent'):
+            del p.noise_inverse_latent
 
     ''' ↓↓↓ helper methods ↓↓↓ '''
 
