@@ -6,9 +6,11 @@ Please be aware that the License of this repo has changed to prevent some web sh
 **You cannot use versions after AOE 2023.3.28 for commercial activity.**
 
 由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止闭源再分发。**
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止商业使用。**
 
 Both WebUI and this extension are FREE. Don't be cheated by some webshop owners.
+
+If you like the project, please give me a star!
 
 ****
 The extension enables **large image drawing & upscaling with limited VRAM** via the following techniques:
@@ -276,10 +278,22 @@ Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a 
 
 ## Current Progress
 
-- Regional noise seed control
+- Frequency Separation & Swap in post-processing
 
 ****
 
-If you like the project, please give me a star!
+## License
+Shield: [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
 
-Thank you!
+This work is licensed under a
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
+
+[![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
+
+[cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
+[cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
+[cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
+
+****
+
+Thanks for reading!

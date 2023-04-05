@@ -4,9 +4,11 @@
 
 由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
 
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止闭源再分发。**
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止商业使用。**
 
 WebUI和本插件都是完全免费的，请勿上当受骗。
+
+如果你喜欢这个项目，请给作者一个 star！
 ****
 
 本插件通过以下三种技术实现了**在有限的显存中进行大型图像绘制**：
@@ -273,10 +275,22 @@ WebUI和本插件都是完全免费的，请勿上当受骗。
 
 ## 当前工作
 
-- 区域噪声种子控制
+- 添加高低频分离及互换的图像后处理
+
+****
+## 许可证
+
+Shield: [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+
+This work is licensed under a
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
+
+[![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
+
+[cc-by-nc-sa]: http://creativecommons.org/licenses/by-nc-sa/4.0/
+[cc-by-nc-sa-image]: https://licensebuttons.net/l/by-nc-sa/4.0/88x31.png
+[cc-by-nc-sa-shield]: https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg
 
 ****
 
-如果你喜欢这个项目，请给作者一个 star！
-
-谢谢！
+感谢阅读！
