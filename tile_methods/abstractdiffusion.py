@@ -169,9 +169,9 @@ class TiledDiffusion:
         prompts = p.all_prompts[:p.batch_size]
         neg_prompts = p.all_negative_prompts[:p.batch_size]
         for bbox in self.custom_bboxes:
-            bbox.cond, bbox.extra_network_data = Condition.get_cond(Prompt.append_prompt(prompts, bbox.prompt), p.steps, p.styles)
+            bbox.cond, bbox.extra_network_data = Condition.get_custom_cond(prompts, bbox.prompt, p.steps, p.styles)
             bbox.uncond = Condition.get_uncond(Prompt.append_prompt(neg_prompts, bbox.neg_prompt), p.steps, p.styles)
-        self.cond_basis, _ = Condition.get_cond(prompts, p.steps)
+        self.cond_basis = Condition.get_cond(prompts, p.steps)
         self.uncond_basis = Condition.get_uncond(neg_prompts, p.steps)
 
     @custom_bbox

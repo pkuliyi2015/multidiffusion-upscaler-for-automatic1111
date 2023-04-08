@@ -116,11 +116,18 @@ class Condition:
     ''' CLIP cond helper '''
 
     @staticmethod
-    def get_cond(prompts:List[str], steps:int, styles=None) -> Tuple[Cond, ExtraNetworkData]:
+    def get_custom_cond(prompts:List[str], prompt, steps:int, styles=None) -> Tuple[Cond, ExtraNetworkData]:
+        prompt = Prompt.apply_styles([prompt], styles)[0]
+        _, extra_network_data = extra_networks.parse_prompts([prompt])
+        prompts = Prompt.append_prompt(prompts, prompt)
         prompts = Prompt.apply_styles(prompts, styles)
-        prompts, extra_network_data = extra_networks.parse_prompts(prompts)
-        cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, steps)
+        cond = Condition.get_cond(prompts, steps)
         return cond, extra_network_data 
+    @staticmethod
+    def get_cond(prompts, steps:int):
+        prompts, _ = extra_networks.parse_prompts(prompts)
+        cond = prompt_parser.get_multicond_learned_conditioning(shared.sd_model, prompts, steps)
+        return cond
 
     @staticmethod
     def get_uncond(neg_prompts:List[str], steps:int, styles=None) -> Uncond:
