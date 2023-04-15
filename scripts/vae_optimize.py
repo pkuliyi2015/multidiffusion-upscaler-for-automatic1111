@@ -1,7 +1,7 @@
 '''
 # ------------------------------------------------------------------------
 #
-#   Ultimate VAE Tile Optimization
+#   Tiled VAE
 #
 #   Introducing a revolutionary new optimization designed to make
 #   the VAE work with giant images on limited VRAM!
@@ -18,41 +18,31 @@
 #   - The merged output is completely seamless without any post-processing.
 #
 #   Drawbacks:
-#   - Giant RAM needed. To store the intermediate results for a 4096x4096
-#       images, you need 32 GB RAM it consumes ~20GB); for 8192x8192
-#       you need 128 GB RAM machine (it consumes ~100 GB)
 #   - NaNs always appear in for 8k images when you use fp16 (half) VAE
 #       You must use --no-half-vae to disable half VAE for that giant image.
-#   - Slow speed. With default tile size, it takes around 50/200 seconds
-#       to encode/decode a 4096x4096 image; and 200/900 seconds to encode/decode
-#       a 8192x8192 image. (The speed is limited by both the GPU and the CPU.)
 #   - The gradient calculation is not compatible with this hack. It
 #       will break any backward() or torch.autograd.grad() that passes VAE.
 #       (But you can still use the VAE to generate training data.)
 #
 #   How it works:
-#   1) The image is split into tiles.
-#       - To ensure perfect results, each tile is padded with 32 pixels
-#           on each side.
-#       - Then the conv2d/silu/upsample/downsample can produce identical
-#           results to the original image without splitting.
-#   2) The original forward is decomposed into a task queue and a task worker.
-#       - The task queue is a list of functions that will be executed in order.
-#       - The task worker is a loop that executes the tasks in the queue.
-#   3) The task queue is executed for each tile.
-#       - Current tile is sent to GPU.
-#       - local operations are directly executed.
-#       - Group norm calculation is temporarily suspended until the mean
-#           and var of all tiles are calculated.
-#       - The residual is pre-calculated and stored and addded back later.
-#       - When need to go to the next tile, the current tile is send to cpu.
-#   4) After all tiles are processed, tiles are merged on cpu and return.
+#   1. The image is split into tiles, which are then padded with 11/32 pixels' in the decoder/encoder.
+#   2. When Fast Mode is disabled:
+#       1. The original VAE forward is decomposed into a task queue and a task worker, which starts to process each tile.
+#       2. When GroupNorm is needed, it suspends, stores current GroupNorm mean and var, send everything to RAM, and turns to the next tile.
+#       3. After all GroupNorm means and vars are summarized, it applies group norm to tiles and continues. 
+#       4. A zigzag execution order is used to reduce unnecessary data transfer.
+#   3. When Fast Mode is enabled:
+#       1. The original input is downsampled and passed to a separate task queue.
+#       2. Its group norm parameters are recorded and used by all tiles' task queues.
+#       3. Each tile is separately processed without any RAM-VRAM data transfer.
+#   4. After all tiles are processed, tiles are written to a result buffer and returned.
+#   Encoder color fix = only estimate GroupNorm before downsampling, i.e., run in a semi-fast mode.
 #
 #   Enjoy!
 #
-#   @author: LI YI @ Nanyang Technological University - Singapore
-#   @date: 2023-03-02
-#   @license: MIT License
+#   @Author: LI YI @ Nanyang Technological University - Singapore
+#   @Date: 2023-03-02
+#   @License: CC BY-NC-SA 4.0
 #
 #   Please give me a star if you like this project!
 #
@@ -67,7 +57,6 @@ from tqdm import tqdm
 import torch
 import torch.version
 import torch.nn.functional as F
-from einops import rearrange
 import gradio as gr
 
 import modules.scripts as scripts
@@ -75,11 +64,7 @@ import modules.devices as devices
 from modules.shared import state
 from ldm.modules.diffusionmodules.model import AttnBlock, MemoryEfficientAttnBlock
 
-try:
-    import xformers
-    import xformers.ops
-except ImportError:
-    pass
+from tile_utils.attn import get_attn_func
 
 
 def get_recommend_encoder_tile_size():
@@ -123,78 +108,13 @@ def inplace_nonlinearity(x):
     # Test: fix for Nans
     return F.silu(x, inplace=True)
 
-# extracted from ldm.modules.diffusionmodules.model
-
-
-def attn_forward(self, h_):
-    q = self.q(h_)
-    k = self.k(h_)
-    v = self.v(h_)
-
-    # compute attention
-    b, c, h, w = q.shape
-    q = q.reshape(b, c, h*w)
-    q = q.permute(0, 2, 1)   # b,hw,c
-    k = k.reshape(b, c, h*w)  # b,c,hw
-    w_ = torch.bmm(q, k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
-    w_ = w_ * (int(c)**(-0.5))
-    w_ = torch.nn.functional.softmax(w_, dim=2)
-
-    # attend to values
-    v = v.reshape(b, c, h*w)
-    w_ = w_.permute(0, 2, 1)   # b,hw,hw (first hw of k, second of q)
-    # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
-    h_ = torch.bmm(v, w_)
-    h_ = h_.reshape(b, c, h, w)
-
-    h_ = self.proj_out(h_)
-
-    return h_
-
-
-def xformer_attn_forward(self, h_):
-    q = self.q(h_)
-    k = self.k(h_)
-    v = self.v(h_)
-
-    # compute attention
-    B, C, H, W = q.shape
-    q, k, v = map(lambda x: rearrange(x, 'b c h w -> b (h w) c'), (q, k, v))
-
-    q, k, v = map(
-        lambda t: t.unsqueeze(3)
-        .reshape(B, t.shape[1], 1, C)
-        .permute(0, 2, 1, 3)
-        .reshape(B * 1, t.shape[1], C)
-        .contiguous(),
-        (q, k, v),
-    )
-    out = xformers.ops.memory_efficient_attention(
-        q, k, v, attn_bias=None, op=self.attention_op)
-
-    out = (
-        out.unsqueeze(0)
-        .reshape(B, 1, out.shape[1], C)
-        .permute(0, 2, 1, 3)
-        .reshape(B, out.shape[1], C)
-    )
-    out = rearrange(out, 'b (h w) c -> b c h w', b=B, h=H, w=W, c=C)
-    out = self.proj_out(out)
-    return out
-
 
 def attn2task(task_queue, net):
-    if isinstance(net, AttnBlock):
-        task_queue.append(('store_res', lambda x: x))
-        task_queue.append(('pre_norm', net.norm))
-        task_queue.append(('attn', lambda x, net=net: attn_forward(net, x)))
-        task_queue.append(['add_res', None])
-    elif isinstance(net, MemoryEfficientAttnBlock):
-        task_queue.append(('store_res', lambda x: x))
-        task_queue.append(('pre_norm', net.norm))
-        task_queue.append(
-            ('attn', lambda x, net=net: xformer_attn_forward(net, x)))
-        task_queue.append(['add_res', None])
+    attn_forward = get_attn_func(isinstance(net, MemoryEfficientAttnBlock))
+    task_queue.append(('store_res', lambda x: x))
+    task_queue.append(('pre_norm', net.norm))
+    task_queue.append(('attn', lambda x, net=net: attn_forward(net, x)))
+    task_queue.append(['add_res', None])
 
 
 def resblock2task(queue, block):

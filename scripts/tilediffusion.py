@@ -26,7 +26,7 @@
 #   - Allows for super large resolutions (2k~8k) for both txt2img and img2img.
 #   - The merged output is completely seamless without any post-processing.
 #   - Training free. No need to train a new model, and you can control the
-#       text prompt for each tile.
+#       text prompt for specific regions.
 #
 #   Drawbacks:
 #   - Depending on your parameter settings, the process can be very slow,
@@ -34,17 +34,23 @@
 #   - The gradient calculation is not compatible with this hack. It
 #       will break any backward() or torch.autograd.grad() that passes UNet.
 #
-#   How it works (insanely simple!)
-#   1) The latent image x_t is split into tiles
-#   2) The tiles are denoised by original sampler to get x_t-1
-#   3) The tiles are added together, but divided by how many times each pixel
-#       is added.
+#   How it works:
+#   1. The latent image is split into tiles.
+#   2. In MultiDiffusion:
+#       1. The UNet predicts the noise of each tile.
+#       2. The tiles are denoised by the original sampler for one time step.
+#       3. The tiles are added together but divided by how many times each pixel is added.
+#   3. In Mixture of Diffusers:
+#       1. The UNet predicts the noise of each tile
+#       2. All noises are fused with a gaussian weight mask.
+#       3. The denoiser denoises the whole image for one time step using fused noises.
+#   4. Repeat 2-3 until all timesteps are completed.
 #
 #   Enjoy!
 #
 #   @author: LI YI @ Nanyang Technological University - Singapore
 #   @date: 2023-03-03
-#   @license: MIT License
+#   @license: CC BY-NC-SA 4.0
 #
 #   Please give me a star if you like this project!
 #
@@ -293,7 +299,6 @@ class Script(scripts.Script):
         ''' upscale '''
         if is_img2img:    # img2img
             upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
-
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
             upscaler = shared.sd_upscalers[upscaler_name]
@@ -302,13 +307,12 @@ class Script(scripts.Script):
                 image = upscaler.scaler.upscale(init_img, scale_factor, upscaler.data_path)
                 p.extra_generation_params["Tiled Diffusion upscaler"] = upscaler.name
                 p.extra_generation_params["Tiled Diffusion scale factor"] = scale_factor
+                # For webui folder based batch processing, the length of init_images is not 1
+                # We need to replace all images with the upsampled one
+                for i in range(len(p.init_images)):
+                    p.init_images[i] = image
             else:
                 image = init_img
-
-            # For webui folder based batch processing, the length of init_images is not 1
-            # We need to replace all images with the upsampled one
-            for i in range(len(p.init_images)):
-                p.init_images[i] = image
 
             if keep_input_size:
                 p.width  = image.width
