@@ -5,7 +5,7 @@
 import math
 import torch
 
-from modules import shared, devices, errors
+from modules import shared, devices, errors, sd_hijack
 from modules.shared import cmd_opts
 from einops import rearrange
 from modules.sub_quadratic_attention import efficient_dot_product_attention
@@ -19,26 +19,31 @@ except ImportError:
     pass
 
 
-def get_attn_func(memory_efficient):
-    attn_forward_method = xformer_attn_forward if memory_efficient else attn_forward
-    can_use_sdp = hasattr(torch.nn.functional, "scaled_dot_product_attention") and callable(getattr(torch.nn.functional, "scaled_dot_product_attention")) # not everyone has torch 2.x to use sdp
-
-    if cmd_opts.force_enable_xformers or (cmd_opts.xformers and shared.xformers_available and torch.version.cuda and (6, 0) <= torch.cuda.get_device_capability(shared.device) <= (9, 0)):
-        attn_forward_method = xformers_attnblock_forward
-    elif cmd_opts.opt_sdp_no_mem_attention and can_use_sdp:
-        attn_forward_method = sdp_no_mem_attnblock_forward
-    elif cmd_opts.opt_sdp_attention and can_use_sdp:
-        attn_forward_method = sdp_attnblock_forward
-    elif cmd_opts.opt_sub_quad_attention:
-        attn_forward_method = sub_quad_attnblock_forward
-    elif cmd_opts.opt_split_attention_v1:
-        pass
-    elif not cmd_opts.disable_opt_split_attention and (cmd_opts.opt_split_attention_invokeai or not cmd_opts.opt_split_attention and not torch.cuda.is_available()):
-        pass
-    elif not cmd_opts.disable_opt_split_attention and (cmd_opts.opt_split_attention or torch.cuda.is_available()):
-        attn_forward_method = cross_attention_attnblock_forward
-
-    return attn_forward_method
+def get_attn_func():
+    method = sd_hijack.model_hijack.optimization_method
+    if method is None:
+        return attn_forward
+    method = method.lower()
+    # The method should be one of the following:
+    # ['none', 'sdp-no-mem', 'sdp', 'xformers', ''sub-quadratic', 'v1', 'invokeai', 'doggettx']
+    if method not in ['none', 'sdp-no-mem', 'sdp', 'xformers', 'sub-quadratic', 'v1', 'invokeai', 'doggettx']:
+        print(f"[Tiled VAE] Warning: Unknown attention optimization method {method}. Please try to update the extension.")
+        return attn_forward
+    
+    if method == 'none':
+        return attn_forward
+    elif method == 'xformers':
+        return xformers_attnblock_forward
+    elif method == 'sdp-no-mem':
+        return sdp_no_mem_attnblock_forward
+    elif method == 'sdp':
+        return sdp_attnblock_forward
+    elif method == 'sub-quadratic':
+        return sub_quad_attnblock_forward
+    elif method == 'doggettx':
+        return cross_attention_attnblock_forward
+    
+    return attn_forward
 
 # The following functions are all copied from modules.sd_hijack_optimizations
 # However, the residual & normalization are removed and computed later.
@@ -234,34 +239,3 @@ def get_xformers_flash_attention_op(q, k, v):
         errors.display_once(e, "enabling flash attention")
 
     return None
-
-
-def xformer_attn_forward(self, h_):
-    q = self.q(h_)
-    k = self.k(h_)
-    v = self.v(h_)
-
-    # compute attention
-    B, C, H, W = q.shape
-    q, k, v = map(lambda x: rearrange(x, 'b c h w -> b (h w) c'), (q, k, v))
-
-    q, k, v = map(
-        lambda t: t.unsqueeze(3)
-        .reshape(B, t.shape[1], 1, C)
-        .permute(0, 2, 1, 3)
-        .reshape(B * 1, t.shape[1], C)
-        .contiguous(),
-        (q, k, v),
-    )
-    out = xformers.ops.memory_efficient_attention(
-        q, k, v, attn_bias=None, op=self.attention_op)
-
-    out = (
-        out.unsqueeze(0)
-        .reshape(B, 1, out.shape[1], C)
-        .permute(0, 2, 1, 3)
-        .reshape(B, out.shape[1], C)
-    )
-    out = rearrange(out, 'b (h w) c -> b c h w', b=B, h=H, w=W, c=C)
-    out = self.proj_out(out)
-    return out

@@ -110,7 +110,7 @@ def inplace_nonlinearity(x):
 
 
 def attn2task(task_queue, net):
-    attn_forward = get_attn_func(isinstance(net, MemoryEfficientAttnBlock))
+    attn_forward = get_attn_func()
     task_queue.append(('store_res', lambda x: x))
     task_queue.append(('pre_norm', net.norm))
     task_queue.append(('attn', lambda x, net=net: attn_forward(net, x)))
