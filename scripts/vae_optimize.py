@@ -571,7 +571,7 @@ class VAEHook:
         task_queues = [clone_task_queue(single_task_queue) for _ in range(num_tiles)]
         # Free memory of input latent tensor
         del z
-        result = None
+        result = torch.zeros((N, 3, height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device)
 
         # Build task queues
 
@@ -582,19 +582,22 @@ class VAEHook:
         # execute the task back and forth when switch tiles so that we always
         # keep one tile on the GPU to reduce unnecessary data transfer
         forward = True
+        interrupted = False
         while True:
+            if state.interrupted: interrupted = True ; break
+
             group_norm_param = GroupNormParam()
             for i in range(num_tiles) if forward else reversed(range(num_tiles)):
-                if state.interrupted:
-                    return
+                if state.interrupted: interrupted = True ; break
 
                 tile = tiles[i].to(device)
                 input_bbox = in_bboxes[i]
                 task_queue = task_queues[i]
 
+                interrupted = False
                 while len(task_queue) > 0:
-                    if state.interrupted:
-                        return
+                    if state.interrupted: interrupted = True ; break
+
                     # DEBUG: current task
                     # print('Running task: ', task_queue[0][0], ' on tile ', i, '/', num_tiles, ' with shape ', tile.shape)
                     task = task_queue.pop(0)
@@ -616,6 +619,8 @@ class VAEHook:
                         tile = task[1](tile)
                     pbar.update(1)
 
+                if interrupted: break
+
                 # check for NaNs in the tile.
                 # If there are NaNs, we abort the process to save user's time
                 devices.test_for_nans(tile, "vae")
@@ -623,8 +628,6 @@ class VAEHook:
                 if len(task_queue) == 0:
                     tiles[i] = None
                     num_completed += 1
-                    if result is None:
-                        result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device, requires_grad=False)
                     result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], is_decoder)
                     del tile
                 elif i == num_tiles - 1 and forward:
@@ -637,8 +640,8 @@ class VAEHook:
                     tiles[i] = tile.cpu()
                     del tile
 
-            if num_completed == num_tiles:
-                break
+            if interrupted: break
+            if num_completed == num_tiles: break
 
             # insert the group norm task to the head of each task queue
             group_norm_func = group_norm_param.summary()
