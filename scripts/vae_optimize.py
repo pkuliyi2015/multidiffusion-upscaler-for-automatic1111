@@ -68,38 +68,25 @@ from tile_utils.attn import get_attn_func
 
 
 def get_rcmd_enc_tsize():
-    if torch.cuda.is_available():
-        total_memory = torch.cuda.get_device_properties(
-            devices.device).total_memory // 2**20
-        if total_memory > 16*1000:
-            ENCODER_TILE_SIZE = 3072
-        elif total_memory > 12*1000:
-            ENCODER_TILE_SIZE = 2048
-        elif total_memory > 8*1000:
-            ENCODER_TILE_SIZE = 1536
-        else:
-            ENCODER_TILE_SIZE = 960
-    else:
-        ENCODER_TILE_SIZE = 512
+    if torch.cuda.is_available() and devices.device not in ['cpu', devices.cpu]:
+        total_memory = torch.cuda.get_device_properties(devices.device).total_memory // 2**20
+        if   total_memory > 16*1000: ENCODER_TILE_SIZE = 3072
+        elif total_memory > 12*1000: ENCODER_TILE_SIZE = 2048
+        elif total_memory >  8*1000: ENCODER_TILE_SIZE = 1536
+        else:                        ENCODER_TILE_SIZE = 960
+    else:                            ENCODER_TILE_SIZE = 512
     return ENCODER_TILE_SIZE
 
 
 def get_rcmd_dec_tsize():
-    if torch.cuda.is_available():
-        total_memory = torch.cuda.get_device_properties(
-            devices.device).total_memory // 2**20
-        if total_memory > 30*1000:
-            DECODER_TILE_SIZE = 256
-        elif total_memory > 16*1000:
-            DECODER_TILE_SIZE = 192
-        elif total_memory > 12*1000:
-            DECODER_TILE_SIZE = 128
-        elif total_memory > 8*1000:
-            DECODER_TILE_SIZE = 96
-        else:
-            DECODER_TILE_SIZE = 64
-    else:
-        DECODER_TILE_SIZE = 64
+    if torch.cuda.is_available() and devices.device not in ['cpu', devices.cpu]:
+        total_memory = torch.cuda.get_device_properties(devices.device).total_memory // 2**20
+        if   total_memory > 30*1000: DECODER_TILE_SIZE = 256
+        elif total_memory > 16*1000: DECODER_TILE_SIZE = 192
+        elif total_memory > 12*1000: DECODER_TILE_SIZE = 128
+        elif total_memory >  8*1000: DECODER_TILE_SIZE = 96
+        else:                        DECODER_TILE_SIZE = 64
+    else:                            DECODER_TILE_SIZE = 64
     return DECODER_TILE_SIZE
 
 
