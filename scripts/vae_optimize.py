@@ -50,8 +50,8 @@
 '''
 
 import gc
-from time import time
 import math
+from time import time
 from tqdm import tqdm
 
 import torch
@@ -67,7 +67,7 @@ from ldm.modules.diffusionmodules.model import AttnBlock, MemoryEfficientAttnBlo
 from tile_utils.attn import get_attn_func
 
 
-def get_recommend_encoder_tile_size():
+def get_rcmd_enc_tsize():
     if torch.cuda.is_available():
         total_memory = torch.cuda.get_device_properties(
             devices.device).total_memory // 2**20
@@ -84,7 +84,7 @@ def get_recommend_encoder_tile_size():
     return ENCODER_TILE_SIZE
 
 
-def get_recommend_decoder_tile_size():
+def get_rcmd_dec_tsize():
     if torch.cuda.is_available():
         total_memory = torch.cuda.get_device_properties(
             devices.device).total_memory // 2**20
@@ -103,7 +103,6 @@ def get_recommend_decoder_tile_size():
     return DECODER_TILE_SIZE
 
 
-# inplace version of silu
 def inplace_nonlinearity(x):
     # Test: fix for Nans
     return F.silu(x, inplace=True)
@@ -215,10 +214,8 @@ def get_var_mean(input, num_groups, eps=1e-6):
     """
     b, c = input.size(0), input.size(1)
     channel_in_group = int(c/num_groups)
-    input_reshaped = input.contiguous().view(
-        1, int(b * num_groups), channel_in_group, *input.size()[2:])
-    var, mean = torch.var_mean(
-        input_reshaped, dim=[0, 2, 3, 4], unbiased=False)
+    input_reshaped = input.contiguous().view(1, int(b * num_groups), channel_in_group, *input.size()[2:])
+    var, mean = torch.var_mean(input_reshaped, dim=[0, 2, 3, 4], unbiased=False)
     return var, mean
 
 
@@ -241,9 +238,7 @@ def custom_group_norm(input, num_groups, mean, var, weight=None, bias=None, eps=
     input_reshaped = input.contiguous().view(
         1, int(b * num_groups), channel_in_group, *input.size()[2:])
 
-    out = F.batch_norm(input_reshaped, mean, var, weight=None, bias=None,
-                       training=False, momentum=0, eps=eps)
-
+    out = F.batch_norm(input_reshaped, mean, var, weight=None, bias=None, training=False, momentum=0, eps=eps)
     out = out.view(b, c, *input.size()[2:])
 
     # post affine transform
@@ -267,8 +262,8 @@ def crop_valid_region(x, input_bbox, target_bbox, is_decoder):
     margin = [target_bbox[i] - padded_bbox[i] for i in range(4)]
     return x[:, :, margin[2]:x.size(2)+margin[3], margin[0]:x.size(3)+margin[1]]
 
-# ↓↓↓ https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer ↓↓↓
 
+# ↓↓↓ https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer ↓↓↓
 
 def perfcount(fn):
     def wrapper(*args, **kwargs):
@@ -276,28 +271,28 @@ def perfcount(fn):
 
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(devices.device)
-        devices.torch_gc()
-        gc.collect()
+        #devices.torch_gc()
+        #gc.collect()
 
         ret = fn(*args, **kwargs)
 
-        devices.torch_gc()
-        gc.collect()
+        #devices.torch_gc()
+        #gc.collect()
         if torch.cuda.is_available():
             vram = torch.cuda.max_memory_allocated(devices.device) / 2**20
             torch.cuda.reset_peak_memory_stats(devices.device)
-            print(
-                f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
+            print(f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
         else:
             print(f'[Tiled VAE]: Done in {time() - ts:.3f}s')
 
         return ret
     return wrapper
 
-# copy end :)
+# ↑↑↑ https://github.com/Kahsolt/stable-diffusion-webui-vae-tile-infer ↑↑↑
 
 
 class GroupNormParam:
+
     def __init__(self):
         self.var_list = []
         self.mean_list = []
@@ -332,20 +327,16 @@ class GroupNormParam:
         summarize the mean and var and return a function
         that apply group norm on each tile
         """
-        if len(self.var_list) == 0:
-            return None
+        if len(self.var_list) == 0: return None
+
         var = torch.vstack(self.var_list)
         mean = torch.vstack(self.mean_list)
         max_value = max(self.pixel_list)
-        pixels = torch.tensor(
-            self.pixel_list, dtype=torch.float32, device=devices.device) / max_value
+        pixels = torch.tensor(self.pixel_list, dtype=torch.float32, device=devices.device) / max_value
         sum_pixels = torch.sum(pixels)
-        pixels = pixels.unsqueeze(
-            1) / sum_pixels
-        var = torch.sum(
-            var * pixels, dim=0)
-        mean = torch.sum(
-            mean * pixels, dim=0)
+        pixels = pixels.unsqueeze(1) / sum_pixels
+        var = torch.sum(var * pixels, dim=0)
+        mean = torch.sum(mean * pixels, dim=0)
         return lambda x:  custom_group_norm(x, 32, mean, var, self.weight, self.bias)
 
     @staticmethod
@@ -377,15 +368,14 @@ class GroupNormParam:
 
 class VAEHook:
 
-    def __init__(self, net, tile_size, is_decoder, fast_decoder, fast_encoder, color_fix, to_gpu=False):
+    def __init__(self, net, tile_size, is_decoder:bool, fast_decoder:bool, fast_encoder:bool, color_fix:bool, to_gpu:bool=False):
         self.net = net                  # encoder | decoder
         self.tile_size = tile_size
         self.is_decoder = is_decoder
-        self.fast_mode = (fast_encoder and not is_decoder) or (
-            fast_decoder and is_decoder)
+        self.fast_mode = (fast_encoder and not is_decoder) or (fast_decoder and is_decoder)
         self.color_fix = color_fix and not is_decoder
         self.to_gpu = to_gpu
-        self.pad = 11 if is_decoder else 32
+        self.pad = 11 if is_decoder else 32         # FIXME: magic number
 
     def __call__(self, x):
         B, C, H, W = x.shape
@@ -537,8 +527,7 @@ class VAEHook:
         net.last_z_shape = z.shape
 
         # Split the input into tiles and build a task queue for each tile
-        print(
-            f'[Tiled VAE]: input_size: {z.shape}, tile_size: {tile_size}, padding: {self.pad}')
+        print(f'[Tiled VAE]: input_size: {z.shape}, tile_size: {tile_size}, padding: {self.pad}')
 
         in_bboxes, out_bboxes = self.split_tiles(height, width)
 
@@ -568,22 +557,18 @@ class VAEHook:
             # ======= Special thanks to @Kahsolt for distribution shift issue ======= #
             # The downsampling will heavily distort its mean and std, so we need to recover it.
             std_old, mean_old = torch.std_mean(z, dim=[0, 2, 3], keepdim=True)
-            std_new, mean_new = torch.std_mean(
-                downsampled_z, dim=[0, 2, 3], keepdim=True)
-            downsampled_z = (downsampled_z - mean_new) / \
-                std_new * std_old + mean_old
+            std_new, mean_new = torch.std_mean(downsampled_z, dim=[0, 2, 3], keepdim=True)
+            downsampled_z = (downsampled_z - mean_new) / std_new * std_old + mean_old
             del std_old, mean_old, std_new, mean_new
             # occasionally the std_new is too small or too large, which exceeds the range of float16
             # so we need to clamp it to max z's range.
-            downsampled_z = torch.clamp_(
-                downsampled_z, min=z.min(), max=z.max())
+            downsampled_z = torch.clamp_(downsampled_z, min=z.min(), max=z.max())
             estimate_task_queue = clone_task_queue(single_task_queue)
             if self.estimate_group_norm(downsampled_z, estimate_task_queue, color_fix=self.color_fix):
                 single_task_queue = estimate_task_queue
             del downsampled_z
 
-        task_queues = [clone_task_queue(single_task_queue)
-                       for _ in range(num_tiles)]
+        task_queues = [clone_task_queue(single_task_queue) for _ in range(num_tiles)]
         # Free memory of input latent tensor
         del z
         result = None
@@ -673,9 +658,6 @@ class Script(scripts.Script):
         return "Tiled VAE"
 
     def show(self, is_img2img):
-        if devices.get_optimal_device_name() == 'mps':
-            print(f'[Tiled VAE]: Tiled VAE is not needed on Mac. Skip loading...')
-            return False
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
@@ -684,52 +666,31 @@ class Script(scripts.Script):
                 enabled = gr.Checkbox(label='Enable', value=False)
                 vae_to_gpu = gr.Checkbox(label='Move VAE to GPU', value=False)
 
-            encoder_size_tips = gr.HTML(
-                '<p style="margin-bottom:0.8em">Please use smaller tile size when see CUDA error: out of memory.</p>')
+            gr.HTML('<p style="margin-bottom:0.8em"> Please use smaller tile size when got CUDA error: out of memory. </p>')
             with gr.Row():
-                encoder_tile_size = gr.Slider(
-                    label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=get_recommend_encoder_tile_size())
-                decoder_tile_size = gr.Slider(
-                    label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=get_recommend_decoder_tile_size())
+                encoder_tile_size = gr.Slider(label='Encoder Tile Size', minimum=256, maximum=4096, step=16, value=get_rcmd_enc_tsize())
+                decoder_tile_size = gr.Slider(label='Decoder Tile Size', minimum=48,  maximum=512,  step=16, value=get_rcmd_dec_tsize())
                 reset = gr.Button(value='↻ Reset', variant='tool')
-                reset.click(fn=lambda: [get_recommend_encoder_tile_size(), get_recommend_decoder_tile_size()], outputs=[
-                    encoder_tile_size, decoder_tile_size])
+                reset.click(fn=lambda: [get_rcmd_enc_tsize(), get_rcmd_dec_tsize()], outputs=[encoder_tile_size, decoder_tile_size], show_progress=False)
 
             with gr.Row():
-                fast_encoder = gr.Checkbox(
-                    label='Fast Encoder', value=True)
-                fast_decoder = gr.Checkbox(
-                    label='Fast Decoder', value=True)
-
-            with gr.Row():
-                fast_encoder_tips = gr.HTML(
-                    '<p style="margin-bottom:0.8em">Fast Encoder may change colors; Can fix it with more RAM and lower speed.</p>')
-                color_fix = gr.Checkbox(
-                    label='Encoder Color Fix', value=False)
-
-            def on_fast_encoder(value):
-                if value:
-                    return gr.update(visible=True, interactive=True), gr.update(visible=True)
-                else:
-                    return gr.update(visible=False, interactive=False), gr.update(visible=False)
-
-            fast_encoder.change(fn=on_fast_encoder, inputs=[fast_encoder], outputs=[
-                                color_fix, fast_encoder_tips])
+                fast_encoder = gr.Checkbox(label='Fast Encoder', value=True)
+                color_fix = gr.Checkbox(label='Fast Encoder Color Fix', value=False, visible=True)
+                fast_encoder.change(fn=lambda x: gr.update(visible=x, interactive=x), inputs=[fast_encoder], outputs=color_fix, show_progress=False)
+                
+                fast_decoder = gr.Checkbox(label='Fast Decoder', value=True)
 
         return [enabled, vae_to_gpu, fast_decoder, fast_encoder, color_fix, encoder_tile_size, decoder_tile_size]
 
     def process(self, p, enabled, vae_to_gpu, fast_decoder, fast_encoder, color_fix, encoder_tile_size, decoder_tile_size):
-
-        vae = p.sd_model.first_stage_model
         # for shorthand
+        vae = p.sd_model.first_stage_model
         encoder = vae.encoder
         decoder = vae.decoder
 
         # save original forward (only once)
-        if not hasattr(encoder, 'original_forward'):
-            setattr(encoder, 'original_forward', encoder.forward)
-        if not hasattr(decoder, 'original_forward'):
-            setattr(decoder, 'original_forward', decoder.forward)
+        if not hasattr(encoder, 'original_forward'): setattr(encoder, 'original_forward', encoder.forward)
+        if not hasattr(decoder, 'original_forward'): setattr(decoder, 'original_forward', decoder.forward)
 
         # undo hijack if disabled
         if not enabled:
@@ -741,18 +702,23 @@ class Script(scripts.Script):
             print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
             return
         if vae.device == torch.device('cpu') and not vae_to_gpu:
-            print(
-                "[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
+            print("[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
             return
 
         # do hijack
-        encoder.forward = VAEHook(
-            encoder, encoder_tile_size, is_decoder=False, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
-        decoder.forward = VAEHook(
-            decoder, decoder_tile_size, is_decoder=True, fast_decoder=fast_decoder, fast_encoder=fast_encoder, color_fix=color_fix, to_gpu=vae_to_gpu)
+        kwargs = {
+            'fast_decoder': fast_decoder, 
+            'fast_encoder': fast_encoder, 
+            'color_fix':    color_fix, 
+            'to_gpu':       vae_to_gpu,
+        }
+        encoder.forward = VAEHook(encoder, encoder_tile_size, is_decoder=False, **kwargs)
+        decoder.forward = VAEHook(decoder, decoder_tile_size, is_decoder=True,  **kwargs)
 
-    def postprocess(self, p, processed, *args):
-        # release vram for the next run
+    def postprocess(self, p, processed, enabled, *args):
+        if not enabled: return
+
+        # release vram for the next batch run
         vae = p.sd_model.first_stage_model
         encoder = vae.encoder
         decoder = vae.decoder
