@@ -86,6 +86,7 @@ class Script(scripts.Script):
     def __init__(self):
         self.controlnet_script: ModuleType = None
         self.delegate: TiledDiffusion = None
+        sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
 
     def title(self):
         return "Tiled Diffusion"
@@ -286,9 +287,7 @@ class Script(scripts.Script):
             *bbox_control_states: List[Any]
         ):
 
-        ''' save original `create_sampler` (only once) '''
-        if not hasattr(sd_samplers, "create_sampler_original_md"):
-            sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
+        self.current_create_sampler = sd_samplers.create_sampler
 
         self.reset()
 
@@ -457,6 +456,7 @@ class Script(scripts.Script):
         # clean up noise inverse latent for folder-based processing
         if hasattr(p, 'noise_inverse_latent'):
             del p.noise_inverse_latent
+        sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
 
     ''' ↓↓↓ helper methods ↓↓↓ '''
 
@@ -485,7 +485,7 @@ class Script(scripts.Script):
             name = 'Euler'
             p.sampler_name = name
         # create a sampler with the original function
-        sampler = sd_samplers.create_sampler_original_md(name, model)
+        sampler = self.current_create_sampler(name, model)
         if method == Method.MULTI_DIFF: delegate_cls = MultiDiffusion
         elif method == Method.MIX_DIFF: delegate_cls = MixtureOfDiffusers
         else: raise NotImplementedError(f"Method {method} not implemented.")
@@ -519,11 +519,9 @@ class Script(scripts.Script):
         return delegate.sampler_raw
 
     def reset(self):
-        if hasattr(sd_samplers, "create_sampler_original_md"):
-            sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
         if hasattr(processing, "create_random_tensors_original_md"):
             processing.create_random_tensors = processing.create_random_tensors_original_md
-        MultiDiffusion    .unhook()
+        MultiDiffusion.unhook()
         MixtureOfDiffusers.unhook()
         self.delegate = None
 
