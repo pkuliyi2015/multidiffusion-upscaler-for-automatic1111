@@ -62,6 +62,8 @@ import gradio as gr
 import modules.scripts as scripts
 import modules.devices as devices
 from modules.shared import state
+from modules.processing import opt_f
+from modules.sd_vae_approx import cheap_approximation
 from ldm.modules.diffusionmodules.model import AttnBlock, MemoryEfficientAttnBlock
 
 from tile_utils.attn import get_attn_func
@@ -258,16 +260,15 @@ def perfcount(fn):
 
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(devices.device)
-        #devices.torch_gc()
-        #gc.collect()
+        devices.torch_gc()
+        gc.collect()
 
         ret = fn(*args, **kwargs)
 
-        #devices.torch_gc()
-        #gc.collect()
+        devices.torch_gc()
+        gc.collect()
         if torch.cuda.is_available():
             vram = torch.cuda.max_memory_allocated(devices.device) / 2**20
-            torch.cuda.reset_peak_memory_stats(devices.device)
             print(f'[Tiled VAE]: Done in {time() - ts:.3f}s, max VRAM alloc {vram:.3f} MB')
         else:
             print(f'[Tiled VAE]: Done in {time() - ts:.3f}s')
@@ -365,18 +366,19 @@ class VAEHook:
         self.pad = 11 if is_decoder else 32         # FIXME: magic number
 
     def __call__(self, x):
-        B, C, H, W = x.shape
         original_device = next(self.net.parameters()).device
         try:
             if self.to_gpu:
-                self.net.to(devices.get_optimal_device())
+                self.net = self.net.to(devices.get_optimal_device())
+        
+            B, C, H, W = x.shape
             if max(H, W) <= self.pad * 2 + self.tile_size:
                 print("[Tiled VAE]: the input size is tiny and unnecessary to tile.")
                 return self.net.original_forward(x)
             else:
                 return self.vae_tile_forward(x)
         finally:
-            self.net.to(original_device)
+            self.net = self.net.to(original_device)
 
     def get_best_tile_size(self, lowerbound, upperbound):
         """
@@ -521,22 +523,20 @@ class VAEHook:
         # Prepare tiles by split the input latents
         tiles = []
         for input_bbox in in_bboxes:
-            tile = z[:, :, input_bbox[2]:input_bbox[3],
-                     input_bbox[0]:input_bbox[1]].cpu()
+            tile = z[:, :, input_bbox[2]:input_bbox[3], input_bbox[0]:input_bbox[1]].cpu()
             tiles.append(tile)
 
         num_tiles = len(tiles)
         num_completed = 0
 
+        # Build task queues
         single_task_queue = build_task_queue(net, is_decoder)
-
         if self.fast_mode:
             # Fast mode: downsample the input image to the tile size,
             # then estimate the group norm parameters on the downsampled image
             scale_factor = tile_size / max(height, width)
             z = z.to(device)
-            downsampled_z = F.interpolate(
-                z, scale_factor=scale_factor, mode='nearest-exact')
+            downsampled_z = F.interpolate(z, scale_factor=scale_factor, mode='nearest-exact')
             # use nearest-exact to keep statictics as close as possible
             print(
                 f'[Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
@@ -556,20 +556,25 @@ class VAEHook:
             del downsampled_z
 
         task_queues = [clone_task_queue(single_task_queue) for _ in range(num_tiles)]
+
+        # Dummy result
+        result = None
+        result_approx = None
+        try:
+            with devices.autocast():
+                result_approx = torch.cat([F.interpolate(cheap_approximation(x).unsqueeze(0), scale_factor=opt_f, mode='nearest-exact') for x in z], dim=0).cpu()
+        except: pass
         # Free memory of input latent tensor
         del z
-        result = torch.zeros((N, 3, height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device)
-
-        # Build task queues
 
         # Task queue execution
-        desc = f"[Tiled VAE]: Executing {'Decoder' if is_decoder else 'Encoder'} Task Queue: "
-        pbar = tqdm(total=num_tiles * len(task_queues[0]), desc=desc)
+        pbar = tqdm(total=num_tiles * len(task_queues[0]), desc=f"[Tiled VAE]: Executing {'Decoder' if is_decoder else 'Encoder'} Task Queue: ")
 
         # execute the task back and forth when switch tiles so that we always
         # keep one tile on the GPU to reduce unnecessary data transfer
         forward = True
         interrupted = False
+        #state.interrupted = interrupted
         while True:
             if state.interrupted: interrupted = True ; break
 
@@ -615,6 +620,8 @@ class VAEHook:
                 if len(task_queue) == 0:
                     tiles[i] = None
                     num_completed += 1
+                    if result is None:      # NOTE: dim C varies from different cases, can only be inited dynamically
+                        result = torch.zeros((N, tile.shape[1], height * 8 if is_decoder else height // 8, width * 8 if is_decoder else width // 8), device=device, requires_grad=False)
                     result[:, :, out_bboxes[i][2]:out_bboxes[i][3], out_bboxes[i][0]:out_bboxes[i][1]] = crop_valid_region(tile, in_bboxes[i], out_bboxes[i], is_decoder)
                     del tile
                 elif i == num_tiles - 1 and forward:
@@ -639,7 +646,7 @@ class VAEHook:
 
         # Done!
         pbar.close()
-        return result
+        return result if result is not None else result_approx.to(device)
 
 
 class Script(scripts.Script):
@@ -654,7 +661,7 @@ class Script(scripts.Script):
         with gr.Accordion('Tiled VAE', open=False):
             with gr.Row():
                 enabled = gr.Checkbox(label='Enable', value=False)
-                vae_to_gpu = gr.Checkbox(label='Move VAE to GPU', value=False)
+                vae_to_gpu = gr.Checkbox(label='Move VAE to GPU (if possible)', value=True)
 
             gr.HTML('<p style="margin-bottom:0.8em"> Please use smaller tile size when got CUDA error: out of memory. </p>')
             with gr.Row():
@@ -682,18 +689,18 @@ class Script(scripts.Script):
         if not hasattr(encoder, 'original_forward'): setattr(encoder, 'original_forward', encoder.forward)
         if not hasattr(decoder, 'original_forward'): setattr(decoder, 'original_forward', decoder.forward)
 
-        # undo hijack if disabled
+        # undo hijack if disabled (in cases last time crashed)
         if not enabled:
-            if isinstance(encoder.forward, VAEHook): encoder.forward = encoder.original_forward
-            if isinstance(decoder.forward, VAEHook): decoder.forward = decoder.original_forward
+            if isinstance(encoder.forward, VAEHook):
+                encoder.forward.net = None
+                encoder.forward = encoder.original_forward
+            if isinstance(decoder.forward, VAEHook):
+                decoder.forward.net = None
+                decoder.forward = decoder.original_forward
             return
 
-        if devices.get_optimal_device == torch.device('cpu'):
-            print("[Tiled VAE] Tiled VAE is not needed as your device has no GPU VRAM.")
-            return
-        if vae.device == torch.device('cpu') and not vae_to_gpu:
-            print("[Tiled VAE] VAE is on CPU. Please enable 'Move VAE to GPU' to use Tiled VAE.")
-            return
+        if devices.get_optimal_device_name().startswith('cuda') and vae.device == devices.cpu and not vae_to_gpu:
+            print("[Tiled VAE] warn: VAE is not on GPU, check 'Move VAE to GPU' if possible.")
 
         # do hijack
         kwargs = {
@@ -708,15 +715,12 @@ class Script(scripts.Script):
     def postprocess(self, p, processed, enabled, *args):
         if not enabled: return
 
-        # release vram for the next batch run
         vae = p.sd_model.first_stage_model
         encoder = vae.encoder
         decoder = vae.decoder
-        if isinstance(encoder.forward, VAEHook): 
+        if isinstance(encoder.forward, VAEHook):
             encoder.forward.net = None
             encoder.forward = encoder.original_forward
-        if isinstance(decoder.forward, VAEHook): 
+        if isinstance(decoder.forward, VAEHook):
             decoder.forward.net = None
             decoder.forward = decoder.original_forward
-        gc.collect()
-        devices.torch_gc()
