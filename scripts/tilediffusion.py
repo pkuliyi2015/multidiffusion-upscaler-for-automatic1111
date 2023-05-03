@@ -104,10 +104,8 @@ class Script(scripts.Script):
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=self.elem_id("keep_input_size"))
             
             with gr.Row(variant='compact', visible=False) as tab_size:
-                image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024,
-                                        elem_id=f'MD-overwrite-width-{tab}')
-                image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024,
-                                         elem_id=f'MD-overwrite-height-{tab}')
+                image_width = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width', value=1024, elem_id=f'MD-overwrite-width-{tab}')
+                image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, elem_id=f'MD-overwrite-height-{tab}')
                 overwrite_image_size.change(fn=gr_show, inputs=overwrite_image_size, outputs=tab_size)
             
             with gr.Row(variant='compact'):
@@ -118,21 +116,16 @@ class Script(scripts.Script):
                 
             with gr.Group():
                 with gr.Row(variant='compact'):
-                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96,
-                                           elem_id=self.elem_id("latent_tile_width"))
-                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96,
-                                            elem_id=self.elem_id("latent_tile_height"))
+                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96, elem_id=self.elem_id("latent_tile_width"))
+                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96, elem_id=self.elem_id("latent_tile_height"))
 
                 with gr.Row(variant='compact'):
-                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48,
-                                        elem_id=self.elem_id("latent_overlap"))
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48, elem_id=self.elem_id("latent_overlap"))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=1, elem_id=self.elem_id("latent_batch_size"))
 
             with gr.Row(variant='compact', visible=is_img2img):
-                upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None",
-                                             elem_id='MD-upscaler-index')
-                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0,
-                                         elem_id='MD-upscaler-factor')
+                upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None", elem_id='MD-upscaler-index')
+                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0, elem_id='MD-upscaler-factor')
                 
             
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img):
@@ -151,15 +144,14 @@ class Script(scripts.Script):
                     with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(label='Enable Control', value=False, elem_id=self.elem_id("enable_bbox_control"))
                         draw_background = gr.Checkbox(label='Draw full canvas background', value=False, elem_id=self.elem_id("draw_background"))
-                        causal_layers = gr.Checkbox(label='Causalize layers', value=False, visible=False, elem_id=self.elem_id("causal_layers"))
+                        causal_layers = gr.Checkbox(label='Causalize layers', value=False, visible=False, elem_id=self.elem_id("causal_layers"))    # NOTE: currently not used
 
                     with gr.Row(variant='compact'):
                         create_button = gr.Button(value="Create txt2img canvas" if not is_img2img else "From img2img", elem_id=self.elem_id("create_button"))
 
                     bbox_controls: List[Component] = []  # control set for each bbox
                     with gr.Row(variant='compact'):
-                        ref_image = gr.Image(label='Ref image (for conviently locate regions)', image_mode=None, 
-                                             elem_id=f'MD-bbox-ref-{tab}', interactive=True)
+                        ref_image = gr.Image(label='Ref image (for conviently locate regions)', image_mode=None, elem_id=f'MD-bbox-ref-{tab}', interactive=True)
                         if not is_img2img:
                             # gradio has a serious bug: it cannot accept multiple inputs when you use both js and fn.
                             # to workaround this, we concat the inputs into a single string and parse it in js
@@ -184,7 +176,6 @@ class Script(scripts.Script):
                     with gr.Row(variant='compact'):
                         cfg_tip = gr.HTML(value='', visible=False, elem_id=self.elem_id("cfg_tip"))
                     
-
                     for i in range(BBOX_MAX_NUM):
                         # Only when displaying & png generate info we use index i+1, in other cases we use i
                         with gr.Accordion(f'Region {i+1}', open=False, elem_id=f'MD-accordion-{tab}-{i}'):
@@ -195,7 +186,7 @@ class Script(scripts.Script):
                                 blend_mode = gr.Dropdown(label='Type', choices=[e.value for e in BlendMode], value=BlendMode.BACKGROUND.value, elem_id=f'MD-{tab}-{i}-blend-mode')
                                 feather_ratio = gr.Slider(label='Feather', value=0.2, minimum=0, maximum=1, step=0.05, visible=False, elem_id=f'MD-{tab}-{i}-feather')
 
-                                blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio)
+                                blend_mode.change(fn=lambda x: gr_show(x==BlendMode.FOREGROUND.value), inputs=blend_mode, outputs=feather_ratio, show_progress=False)
 
                             with gr.Row(variant='compact'):
                                 x = gr.Slider(label='x', value=0.4, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-x')
@@ -205,10 +196,10 @@ class Script(scripts.Script):
                                 w = gr.Slider(label='w', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-w')
                                 h = gr.Slider(label='h', value=0.2, minimum=0.0, maximum=1.0, step=0.01, elem_id=f'MD-{tab}-{i}-h')
 
-                                x.change(fn=None, inputs=x, outputs=x, _js=f'v => onBoxChange({is_t2i}, {i}, "x", v)')
-                                y.change(fn=None, inputs=y, outputs=y, _js=f'v => onBoxChange({is_t2i}, {i}, "y", v)')
-                                w.change(fn=None, inputs=w, outputs=w, _js=f'v => onBoxChange({is_t2i}, {i}, "w", v)')
-                                h.change(fn=None, inputs=h, outputs=h, _js=f'v => onBoxChange({is_t2i}, {i}, "h", v)')
+                                x.change(fn=None, inputs=x, outputs=x, _js=f'v => onBoxChange({is_t2i}, {i}, "x", v)', show_progress=False)
+                                y.change(fn=None, inputs=y, outputs=y, _js=f'v => onBoxChange({is_t2i}, {i}, "y", v)', show_progress=False)
+                                w.change(fn=None, inputs=w, outputs=w, _js=f'v => onBoxChange({is_t2i}, {i}, "w", v)', show_progress=False)
+                                h.change(fn=None, inputs=h, outputs=h, _js=f'v => onBoxChange({is_t2i}, {i}, "h", v)', show_progress=False)
 
                             prompt = gr.Text(show_label=False, placeholder=f'Prompt, will append to your {tab} prompt', max_lines=2, elem_id=f'MD-{tab}-{i}-prompt')
                             neg_prompt = gr.Text(show_label=False, placeholder='Negative Prompt, will also be appended', max_lines=1, elem_id=f'MD-{tab}-{i}-neg-prompt')
@@ -216,10 +207,9 @@ class Script(scripts.Script):
                                 seed = gr.Number(label='Seed', value=-1, visible=True, elem_id=f'MD-{tab}-{i}-seed')
                                 random_seed = gr.Button(value='🎲', variant='tool', elem_id=f'MD-{tab}-{i}-random_seed')
                                 reuse_seed = gr.Button(value='♻️', variant='tool', elem_id=f'MD-{tab}-{i}-reuse_seed')
-                                random_seed.click(fn=lambda: -1, show_progress=False, inputs=[], outputs=[seed])    
-                                reuse_seed.click(fn=None,show_progress=False, inputs=[seed], outputs=[seed],
-                                                 _js=f'(current_seed)=> getSeedInfo({is_t2i}, {i+1}, current_seed)'
-                                                )
+                                random_seed.click(fn=lambda: -1, outputs=seed, show_progress=False)
+                                reuse_seed.click(fn=None, inputs=seed, outputs=seed, _js=f'e => getSeedInfo({is_t2i}, {i+1}, e)', show_progress=False)
+
                         control = [e, x, y ,w, h, prompt, neg_prompt, blend_mode, feather_ratio, seed]
                         assert len(control) == NUM_BBOX_PARAMS
                         bbox_controls.extend(control)
@@ -240,27 +230,30 @@ class Script(scripts.Script):
         ]
     
     def dump_regions(self, cfg_name, *bbox_controls):
-        if cfg_name is None or cfg_name == '':
-            return gr.HTML.update(value= f'<span style="color:red">Config file name cannot be empty.</span>',visible=True)
+        if not cfg_name: return gr.HTML.update(value= f'<span style="color:red">Config file name cannot be empty.</span>',visible=True)
+        
         bbox_settings = build_bbox_settings(bbox_controls)
-        data = { 'bbox_controls': [v._asdict() for v in bbox_settings.values()]}
-        if not ME_PATH.exists():
-            ME_PATH.mkdir(parents=True)
+        data = {'bbox_controls': [v._asdict() for v in bbox_settings.values()]}
+
+        if not ME_PATH.exists(): ME_PATH.mkdir(parents=True)
         with open(ME_PATH / cfg_name, 'w', encoding='utf-8') as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
+
         return gr.HTML.update(value= f'Config saved to {ME_PATH/ cfg_name}.',visible=True)
 
     def load_regions(self, ref_image, cfg_name, *bbox_controls):
-        file_path = ME_PATH / cfg_name
         if ref_image is None:
-            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Please create or upload a ref image first.</span>', visible=True)]
+            return [gr_value(v) for v in bbox_controls] + [gr.HTML.update(value= f'<span style="color:red">Please create or upload a ref image first.</span>', visible=True)]
+        file_path = ME_PATH / cfg_name
         if not file_path.exists(): 
-            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Config {file_path} not found.</span>', visible=True)]
+            return [gr_value(v) for v in bbox_controls] + [gr.HTML.update(value= f'<span style="color:red">Config {file_path} not found.</span>', visible=True)]
+
         try:
             with open(file_path, 'r', encoding='utf-8') as fh:
                 data = json.load(fh)
         except Exception as e:
-            return [gr_value(v) for v in bbox_controls]+ [gr.HTML.update(value= f'<span style="color:red">Failed to load config {file_path}: {e}</span>', visible=True)]
+            return [gr_value(v) for v in bbox_controls] + [gr.HTML.update(value= f'<span style="color:red">Failed to load config {file_path}: {e}</span>', visible=True)]
+
         num_boxes = len(data['bbox_controls'])
         data_list = []
         for i in range(BBOX_MAX_NUM):
@@ -272,6 +265,7 @@ class Script(scripts.Script):
                         data_list.append(0)
             else:
                 data_list.extend(DEFAULT_BBOX_SETTINGS)
+
         return [gr_value(v) for v in data_list] + [gr.HTML.update(value= f'Config loaded.', visible=True)]
 
     def process(self, p: StableDiffusionProcessing,
@@ -291,7 +285,6 @@ class Script(scripts.Script):
             sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
 
         self.reset()
-
         if not enabled: return
 
         is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
@@ -436,6 +429,7 @@ class Script(scripts.Script):
             pass
 
         ''' hijack create_sampler() '''
+        self.saved_create_sampler = sd_samplers.create_sampler
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method(method), 
             tile_width, tile_height, overlap, tile_batch_size,
@@ -446,14 +440,16 @@ class Script(scripts.Script):
             bbox_settings,
         )
 
-    def postprocess_batch(self, p, enabled:bool, *args, **kwargs):
-        if not enabled or self.delegate is None:
-            return
-        self.delegate.reset_controlnet_tensors()
-        
+    def postprocess_batch(self, p, enabled, *args, **kwargs):
+        if not enabled: return
 
-    def postprocess(self, p, processed, *args):
+        if self.delegate is not None: self.delegate.reset_controlnet_tensors()
+        
+    def postprocess(self, p, processed, enabled, *args):
+        if not enabled: return
+
         self.reset()
+
         # clean up noise inverse latent for folder-based processing
         if hasattr(p, 'noise_inverse_latent'):
             del p.noise_inverse_latent
@@ -482,8 +478,10 @@ class Script(scripts.Script):
                 self.reset()
 
         if hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse:
+            print('warn: noise inversion only supports the Euler sampler, switch to it sliently...')
             name = 'Euler'
             p.sampler_name = name
+        
         # create a sampler with the original function
         sampler = sd_samplers.create_sampler_original_md(name, model)
         if method == Method.MULTI_DIFF: delegate_cls = MultiDiffusion
