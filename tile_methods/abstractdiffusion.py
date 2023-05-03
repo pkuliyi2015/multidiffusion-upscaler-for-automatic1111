@@ -587,6 +587,7 @@ class TiledDiffusion:
             'image_cond': image_conditioning, 
             'uncond': unconditional_conditioning, 
             'cond_scale': p.cfg_scale,
+            's_min_uncond': p.s_min_uncond,
         }
 
         samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
