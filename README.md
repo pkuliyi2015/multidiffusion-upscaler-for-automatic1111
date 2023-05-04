@@ -1,18 +1,16 @@
 # Tiled Diffusion & VAE
 
+[![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+
 English｜[中文](README_CN.md)
 
-Please be aware that the License of this repo has changed to prevent some web shops from deceiving the customers.
+Please be aware that the License of this repo has changed to prevent some web shops from deceiving the customers. This extension is licensed under [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/4.0/), everyone is FREE of charge to access, use, modify and redistribute with the same license.  
+**You cannot use versions after AOE 2023.3.28 for commercial sales (only refers to code of this repo, the derived artworks are NOT restricted).**
 
-**You cannot use versions after AOE 2023.3.28 for commercial activity.**
+由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改为 [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/4.0/)，任何人都可以自由获取、使用、修改、以相同协议重分发本插件。  
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业贩售 (不可贩售本仓库代码，但衍生的艺术创作内容物不受此限制)。**
 
-由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
-
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止商业使用。**
-
-Both WebUI and this extension are FREE. Don't be cheated by some webshop owners.
-
-If you like the project, please give me a star!
+If you like the project, please give me a star! ⭐
 
 ****
 
@@ -22,6 +20,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 2. My original Tiled VAE algorithm.
 3. My original TIled Noise Inversion for better upscaling.
 
+
 ## Features
 
 - [ ] Frequency Separation & Swap in post-processing (working on)
@@ -30,6 +29,8 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 - [x] [Regional Prompt Control](#region-prompt-control)
 - [x] [Img2img upscale](#img2img-upscale)
 - [x] [Ultra-Large image generation](#ultra-large-image-generation)
+
+=> Quickstart Tutorial: [Tutorial for multidiffusion upscaler for automatic1111](https://civitai.com/models/34726), thanks to [@PotatoBananaApple](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/discussions/120) 🎉
 
 ****
 
@@ -255,10 +256,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ## License
 
-Shield: [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
-
-This work is licensed under a
-[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
+This work is licensed under a [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
 
 [![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
 

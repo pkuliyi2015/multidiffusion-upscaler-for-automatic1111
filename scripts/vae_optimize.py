@@ -538,8 +538,7 @@ class VAEHook:
             z = z.to(device)
             downsampled_z = F.interpolate(z, scale_factor=scale_factor, mode='nearest-exact')
             # use nearest-exact to keep statictics as close as possible
-            print(
-                f'[Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
+            print(f'[Tiled VAE]: Fast mode enabled, estimating group norm parameters on {downsampled_z.shape[3]} x {downsampled_z.shape[2]} image')
 
             # ======= Special thanks to @Kahsolt for distribution shift issue ======= #
             # The downsampling will heavily distort its mean and std, so we need to recover it.

@@ -1,14 +1,13 @@
 # 用 Tiled Diffusion & VAE 生成大型图像
 
+[![CC 署名-非商用-相同方式共享 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
+
 [English](README.md) | 中文
 
-由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改。
+由于部分无良商家销售WebUI，捆绑本插件做卖点收取智商税，本仓库的许可证已修改为 [CC BY-NC-SA](https://creativecommons.org/licenses/by-nc-sa/4.0/)，任何人都可以自由获取、使用、修改、以相同协议重分发本插件。  
+**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业贩售 (不可贩售本仓库代码，但衍生的艺术创作内容物不受此限制)。**
 
-**自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止商业使用。**
-
-WebUI和本插件都是完全免费的，请勿上当受骗。
-
-如果你喜欢这个项目，请给作者一个 star！
+如果你喜欢这个项目，请给作者一个 star！⭐
 
 ****
 
@@ -27,6 +26,8 @@ WebUI和本插件都是完全免费的，请勿上当受骗。
 - [x] [区域提示控制](#区域提示控制)
 - [x] [Img2img 放大](#img2img-放大)
 - [x] [生成超大图像](#生成超大图像)
+
+=> 快速入门教程: [Tutorial for multidiffusion upscaler for automatic1111](https://civitai.com/models/34726), 感谢由 [@PotatoBananaApple](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/discussions/120) 提供 🎉
 
 ****
 
@@ -251,10 +252,7 @@ WebUI和本插件都是完全免费的，请勿上当受骗。
 
 ## 许可证
 
-Shield: [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
-
-This work is licensed under a
-[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
+This work is licensed under a [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License][cc-by-nc-sa].
 
 [![CC BY-NC-SA 4.0][cc-by-nc-sa-image]][cc-by-nc-sa]
 
