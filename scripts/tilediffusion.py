@@ -131,7 +131,7 @@ class Script(scripts.Script):
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img):
                 with gr.Row(variant='compact'):
                     noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False, elem_id=self.elem_id("noise_inverse"))
-                    noise_inverse_steps = gr.Slider(minimum=1, maximum=100, step=1, label='Inversion steps', value=10, elem_id=self.elem_id("noise_inverse_steps"))
+                    noise_inverse_steps = gr.Slider(minimum=1, maximum=200, step=1, label='Inversion steps', value=10, elem_id=self.elem_id("noise_inverse_steps"))
                     gr.HTML('<p>Please test on small images before actual upscale. Default params require denoise <= 0.6</p>')
                 with gr.Row(variant='compact'):
                     noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id=self.elem_id("noise_inverse_retouch"))
