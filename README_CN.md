@@ -31,7 +31,32 @@
 
 ****
 
-### 🆕 Tiled Noise Inversion
+### 🆕 结合 ControlNet v1.1 瓦片模型
+
+> 高质量图像放大，产生清晰且整洁的细节。
+
+- 本插件的 Tiled Noise Inversion 功能可以与 ControlNet v1.1 Tile模型 (简称 CN Tile) 协同工作，产出细节合适的高质量大图。[示例](https://imgsli.com/MTc2MDU0)
+  - 高重绘幅度下(>= 0.4)CN Tile 倾向于产生过多的细节，使图像看起来脏乱。
+  - MultiDiffusion Noise Inversion 倾向于产生整洁但过度磨皮的图像，缺乏足够的细节。
+- 然而把这两个功能结合，就能同时消除两者的缺陷
+  - 能产生整洁清晰的线条、边缘和颜色
+  - 能产生适当和合理的细节，不显得怪异或凌乱
+- 推荐的设置:
+  - 重绘幅度 >= 0.75，采样步数25步
+  - Method = Mixture of Diffusers，overlap = 32
+  - Noise Inversion Steps >= 30
+  - **Renoise strength = 0**
+  - CN Tile 预处理器 = tile_resample，下采样率 = 2
+- 如果您的结果模糊:
+  - 尝试增加 Noise Inversion Steps
+  - 尝试降低重绘幅度
+  - 尝试换一个模型
+- 与纯 CN Tile 对比，画面更加整洁：
+  - [比较1](https://imgsli.com/MTc1OTc3)，50 NI 步数，重绘幅度 = 0.75
+  - [比较2](https://imgsli.com/MTc1OTc4)，200 NI 步数，重绘幅度 = 1
+- 高重绘幅度下画面颜色会变，这是CN Tile的已知bug，我们无法修复
+
+### Tiled Noise Inversion
 
 > 适用于不想改变作画结构的 Img2Img
 

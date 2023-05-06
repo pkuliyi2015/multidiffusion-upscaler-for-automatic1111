@@ -34,7 +34,32 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ****
 
-### 🆕 Tiled Noise Inversion
+### 🆕 Combine with ControlNet v1.1 Tile Model
+
+> High quality large images with tidy details.
+
+- Our Tiled Noise Inversion feature can cooperate with ControlNet v1.1 tile model (CN Tile, for short) to produce amazingly clear results with proper details. [Example](https://imgsli.com/MTc2MDU0)
+  - CN Tile with large denoising strengths (i.e. >= 0.4) tends to produce overly sufficient details, making the image look dirty or messy.
+  - MultiDiffusion Noise Inversion tends to produce tidy but overly retouched images without enough details.
+- Combine the two, you get amazingly good results:
+  - Clear lines, edges, and colors
+  - Proper and reasonable details, no weird or dirty pieces.
+- Recommended settings:
+  - Denoising Strength >= 0.75
+  - Method = Mixture of Diffusers, Overlap = 32
+  - Noise Inversion Steps >= 30
+  - **Renoise strength = 0**
+  - CN Tile preprocessor = tile_resample, downsampling rate = 2
+- If your result is blurry:
+  - Try higher Noise Inversion Steps.
+  - Try lower Denoising Strength.
+  - Try another checkpoint.
+- Compare with pure CN Tile.
+  - [Comparison1](https://imgsli.com/MTc1OTc3), 50 NI steps, denoise = 0.75
+  - [Comparison2](https://imgsli.com/MTc1OTc4), 200 NI steps, denoise = 1
+- Note that high denoising strengths will change the image color. This is a known issue of CN Tile that cannot be fixed by us.
+
+### Tiled Noise Inversion
 
 > safe Img2Img without painting structure change
 
