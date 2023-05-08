@@ -290,6 +290,10 @@ class Script(scripts.Script):
         is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
 
         ''' upscale '''
+        if hasattr(p, 'init_images'):
+            setattr(p, 'saved_init_images', p.init_images)
+        self.save_width  = p.width
+        self.save_height = p.height
         if is_img2img:    # img2img
             upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
             init_img = p.init_images[0]
@@ -429,7 +433,6 @@ class Script(scripts.Script):
             pass
 
         ''' hijack create_sampler() '''
-        self.saved_create_sampler = sd_samplers.create_sampler
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method(method), 
             tile_width, tile_height, overlap, tile_batch_size,
@@ -449,6 +452,12 @@ class Script(scripts.Script):
         if not enabled: return
 
         self.reset()
+
+        # restore `init_images` to make it re-entribale for p
+        if hasattr(p, 'saved_init_images'):
+            p.init_images = p.saved_init_images
+        p.width  = self.save_width 
+        p.height = self.save_height
 
         # clean up noise inverse latent for folder-based processing
         if hasattr(p, 'noise_inverse_latent'):
