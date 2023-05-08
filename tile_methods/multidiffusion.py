@@ -1,4 +1,3 @@
-
 import torch
 
 from modules import devices, extra_networks
@@ -15,7 +14,7 @@ class MultiDiffusion(TiledDiffusion):
         https://arxiv.org/abs/2302.08113
     """
 
-    def __init__(self, p:StableDiffusionProcessing, *args, **kwargs):
+    def __init__(self, p:Processing, *args, **kwargs):
         super().__init__(p, *args, **kwargs)
         assert p.sampler_name != 'UniPC', 'MultiDiffusion is not compatible with UniPC!'
 

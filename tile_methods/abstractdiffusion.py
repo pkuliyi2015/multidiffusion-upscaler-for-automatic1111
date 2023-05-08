@@ -1,15 +1,14 @@
 import math
-import random
 import torch
-import types
+from types import MethodType
 
 import inspect
 import k_diffusion as K
 import torch.nn.functional as F
 
-from tqdm import trange, tqdm
+from tqdm import tqdm
 
-from modules import devices, shared, processing
+from modules import devices, shared, sd_samplers_common
 from modules.shared import state, cmd_opts
 from modules.processing import opt_f
 
@@ -19,7 +18,7 @@ from tile_utils.typing import *
 
 class TiledDiffusion:
 
-    def __init__(self, p:StableDiffusionProcessing, sampler:Sampler):
+    def __init__(self, p:Processing, sampler:Sampler):
         self.method = self.__class__.__name__
         self.p = p
         self.pbar = None
@@ -63,6 +62,13 @@ class TiledDiffusion:
         self.uncond_basis: Uncond = None
         self.draw_background: bool = True       # by default we draw major prompts in grid tiles
         self.causal_layers: bool = None
+
+        # ext. Noise Inversion (noise inversion)
+        self.noise_inverse_enabled = None
+        self.noise_inverse_steps = None
+        self.noise_inverse_retouch = None
+        self.noise_inverse_renoise_strength = None
+        self.noise_inverse_renoise_kernel = None
 
         # ext. ControlNet
         self.enable_controlnet: bool = False
@@ -490,17 +496,20 @@ class TiledDiffusion:
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
 
 
-    def enable_noise_inverse(self, steps:int, retouch:float, renoise_strength:float, renoise_kernel:int):
+    @noise_inverse
+    def init_noise_inverse(self, steps:int, retouch:float, renoise_strength:float, renoise_kernel:int):
         self.noise_inverse_enabled = True
+
         self.noise_inverse_steps = steps
         self.noise_inverse_retouch = float(retouch)
-        self.noise_inverse_renoise_strength = renoise_strength
+        self.noise_inverse_renoise_strength = float(renoise_strength)
         self.noise_inverse_renoise_kernel = int(renoise_kernel)
-        self.sampler_raw.sample_img2img = types.MethodType(self.sample_img2img, self.sampler_raw)
 
+        self.sampler_raw.sample_img2img = MethodType(self.sample_img2img, self.sampler_raw)
 
+    @noise_inverse
     @keep_signature
-    def sample_img2img(self, sampler: KDiffusionSampler, p:StableDiffusionProcessingImg2Img, 
+    def sample_img2img(self, sampler: KDiffusionSampler, p:ProcessingImg2Img, 
                        x:Tensor, noise:Tensor, conditioning, unconditional_conditioning,
                        steps=None, image_conditioning=None):
         # noise inverse sampling - renoise mask
@@ -539,23 +548,23 @@ class TiledDiffusion:
             # If the background is not drawn, we need to filter out the un-drawn pixels and reweight foreground with feather mask
             # This is to enable the renoise mask in regional inpainting
             if not self.enable_grid_bbox:
-                background_count = torch.zeros((1, 1,noise.shape[2], noise.shape[3]), device=noise.device)
-                foreground_noise = torch.zeros_like(noise)
+                background_count  = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
+                foreground_noise  = torch.zeros_like(noise)
                 foreground_weight = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
-                foreground_count = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
+                foreground_count  = torch.zeros((1, 1, noise.shape[2], noise.shape[3]), device=noise.device)
                 for bbox in self.custom_bboxes:
                     if bbox.blend_mode == BlendMode.BACKGROUND:
                         background_count[bbox.slicer] += 1
                     elif bbox.blend_mode == BlendMode.FOREGROUND:
-                        foreground_noise[bbox.slicer] += noise[bbox.slicer]
+                        foreground_noise [bbox.slicer] += noise[bbox.slicer]
                         foreground_weight[bbox.slicer] += bbox.feather_mask
-                        foreground_count[bbox.slicer] += 1
-                background_noise = torch.where(background_count > 0, noise, 0)
-                foreground_noise = torch.where(foreground_count > 0, foreground_noise / foreground_count, 0)
+                        foreground_count [bbox.slicer] += 1
+                background_noise  = torch.where(background_count > 0, noise, 0)
+                foreground_noise  = torch.where(foreground_count > 0, foreground_noise  / foreground_count, 0)
                 foreground_weight = torch.where(foreground_count > 0, foreground_weight / foreground_count, 0)
-                noise = background_noise*(1-foreground_weight) + foreground_noise*foreground_weight
+                noise = background_noise * (1 - foreground_weight) + foreground_noise * foreground_weight
                 del background_noise, foreground_noise, foreground_weight, background_count, foreground_count
-            combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1-renoise_mask)**2) ** 0.5)
+            combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1 - renoise_mask)**2) ** 0.5)
         else:
             combined_noise = inverse_noise
         
@@ -582,7 +591,7 @@ class TiledDiffusion:
 
         sampler.model_wrap_cfg.init_latent = x
         sampler.last_latent = x
-        extra_args={
+        extra_args = {
             'cond': conditioning, 
             'image_cond': image_conditioning, 
             'uncond': unconditional_conditioning, 
@@ -590,10 +599,9 @@ class TiledDiffusion:
             's_min_uncond': p.s_min_uncond,
         }
 
-        samples = sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
+        return sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
 
-        return samples
-    
+    @noise_inverse
     @torch.no_grad()
     def find_noise_for_image_sigma_adjustment(self, dnw, steps, prompts:List[str]) -> Tensor:
         '''
@@ -601,6 +609,7 @@ class TiledDiffusion:
         Tiled noise inverse for better image upscaling
         '''
         assert self.p.sampler_name == 'Euler'
+
         x = self.p.init_latent
         s_in = x.new_ones([x.shape[0]])
         if shared.sd_model.parameterization == "v":
@@ -611,6 +620,7 @@ class TiledDiffusion:
         cond_in = {"c_concat": [self.p.image_conditioning], "c_crossattn": [cond]}
         sigmas = dnw.get_sigmas(steps).flip(0)
         shared.state.sampling_steps = steps
+
         pbar = tqdm(total=steps, desc='Noise Inversion')
         for i in range(1, len(sigmas)):
             if shared.state.interrupted:
@@ -619,16 +629,20 @@ class TiledDiffusion:
 
             x_in = x
             sigma_in = torch.cat([sigmas[i] * s_in])
+
             c_out, c_in = [K.utils.append_dims(k, x_in.ndim) for k in dnw.get_scalings(sigma_in)[skip:]]
+
             t = dnw.sigma_to_t(sigma_in)
             t = t / self.noise_inverse_retouch
+
             eps = self.get_noise(x_in * c_in, t, cond_in, steps - i)
             denoised = x_in + eps * c_out
 
-            # denoised = denoised_uncond + (denoised_cond - denoised_uncond) * cfg_scale
+            # Euler method:
             d = (x - denoised) / sigmas[i]
             dt = sigmas[i] - sigmas[i - 1]
             x = x + d * dt
+
             sd_samplers_common.store_latent(x)
 
             # This is neccessary to save memory before the next iteration
@@ -636,11 +650,11 @@ class TiledDiffusion:
             del eps, denoised, d, dt
 
             pbar.update(1)
-        
         pbar.close()
-        result = x / sigmas[-1]
-        return result
+
+        return x / sigmas[-1]
     
+    @noise_inverse
     @torch.no_grad()
     def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
         pass

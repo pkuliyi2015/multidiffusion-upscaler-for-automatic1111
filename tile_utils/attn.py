@@ -9,7 +9,6 @@ from modules import shared, sd_hijack
 from einops import rearrange
 from modules.sd_hijack_optimizations import get_available_vram, get_xformers_flash_attention_op, sub_quad_attention
 
-
 try:
     import xformers
     import xformers.ops
@@ -72,7 +71,6 @@ def attn_forward(self, h_):
 
     return h_
 
-
 def xformers_attnblock_forward(self, h_):
     try:
         q = self.q(h_)
@@ -93,7 +91,6 @@ def xformers_attnblock_forward(self, h_):
         return out
     except NotImplementedError:
         return cross_attention_attnblock_forward(self, h_)
-
 
 def cross_attention_attnblock_forward(self, h_):
     q1 = self.q(h_)
@@ -149,11 +146,9 @@ def cross_attention_attnblock_forward(self, h_):
 
     return h3
 
-
 def sdp_no_mem_attnblock_forward(self, x):
     with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=True, enable_mem_efficient=False):
         return sdp_attnblock_forward(self, x)
-    
 
 def sdp_attnblock_forward(self, h_):
     q = self.q(h_)

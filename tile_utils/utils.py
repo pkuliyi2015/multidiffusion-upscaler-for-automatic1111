@@ -6,21 +6,36 @@ import cv2
 import torch
 import numpy as np
 
-from modules import devices, shared, prompt_parser, extra_networks, sd_samplers_common
+from modules import devices, shared, prompt_parser, extra_networks
 from modules.processing import opt_f
 
 from tile_utils.typing import *
 
 
+class ComparableEnum(Enum):
+
+    def __eq__(self, other: Any) -> bool:
+        if   isinstance(other, str):            return self.value == other
+        elif isinstance(other, ComparableEnum): return self.value == other.value
+        else: raise TypeError(f'unsupported type: {type(other)}')    
+
+class Method(ComparableEnum):
+
+    MULTI_DIFF = 'MultiDiffusion'
+    MIX_DIFF   = 'Mixture of Diffusers'
+
+class BlendMode(Enum):  # i.e. LayerType
+
+    FOREGROUND = 'Foreground'
+    BACKGROUND = 'Background'
+
+
 BBoxSettings = namedtuple('BBoxSettings', ['enable', 'x', 'y', 'w', 'h', 'prompt', 'neg_prompt', 'blend_mode', 'feather_ratio', 'seed'])
-DEFAULT_BBOX_SETTINGS = BBoxSettings(False, 0.4, 0.4, 0.2, 0.2, '', '', 'Background', 0.2, -1)
+DEFAULT_BBOX_SETTINGS = BBoxSettings(False, 0.4, 0.4, 0.2, 0.2, '', '', BlendMode.BACKGROUND.value, 0.2, -1)
 NUM_BBOX_PARAMS = len(BBoxSettings._fields)
 
 
-def build_bbox_settings(bbox_control_states) -> Dict[int, BBoxSettings]:
-    '''
-    bbox_control_states: list of bbox control values
-    '''
+def build_bbox_settings(bbox_control_states:List[Any]) -> Dict[int, BBoxSettings]:
     settings = {}
     for index, i in enumerate(range(0, len(bbox_control_states), NUM_BBOX_PARAMS)):
         setting = BBoxSettings(*bbox_control_states[i:i+NUM_BBOX_PARAMS])
@@ -31,37 +46,15 @@ def build_bbox_settings(bbox_control_states) -> Dict[int, BBoxSettings]:
             w=round(setting.w, 4), 
             h=round(setting.h, 4), 
             feather_ratio=round(setting.feather_ratio, 4),
-            seed = int(setting.seed)
+            seed=int(setting.seed),
         )
         # sanity check
         if not setting.enable or setting.x > 1.0 or setting.y > 1.0 or setting.w <= 0.0 or setting.h <= 0.0: continue
         settings[index] = setting
     return settings
 
-
-def gr_value(value=None):
-    return {"value": value, "__type__": "update"}
-
-
-class Method(Enum):
-
-    MULTI_DIFF = 'MultiDiffusion'
-    MIX_DIFF   = 'Mixture of Diffusers'
-
-    def __eq__(self, other: object) -> bool:
-        if   isinstance(other, str):    return self.value == other
-        elif isinstance(other, Method): return self.value == other.value
-        else: raise TypeError(f'unsupported type: {type(other)}')    
-
-class BlendMode(Enum):  # i.e. LayerType
-
-    FOREGROUND = 'Foreground'
-    BACKGROUND = 'Background'
-    
-    def __eq__(self, other: object) -> bool:
-        if   isinstance(other, str):       return self.value == other
-        elif isinstance(other, BlendMode): return self.value == other.value
-        else: raise TypeError(f'unsupported type: {type(other)}')
+def gr_value(value=None, visible=None):
+    return {"value": value, "visible": visible, "__type__": "update"}
 
 
 class BBox:
@@ -123,6 +116,7 @@ class Condition:
         prompts = Prompt.apply_styles(prompts, styles)
         cond = Condition.get_cond(prompts, steps)
         return cond, extra_network_data 
+    
     @staticmethod
     def get_cond(prompts, steps:int):
         prompts, _ = extra_networks.parse_prompts(prompts)
@@ -140,7 +134,7 @@ class Condition:
         list_of_what, tensor = prompt_parser.reconstruct_multicond_batch(cond, step)
         return tensor
 
-    def reconstruct_uncond(uncond:Uncond, step:int):
+    def reconstruct_uncond(uncond:Uncond, step:int) -> Tensor:
         tensor = prompt_parser.reconstruct_cond_batch(uncond, step)
         return tensor
 
@@ -210,38 +204,38 @@ def feather_mask(w:int, h:int, ratio:float) -> Tensor:
 
     return torch.from_numpy(mask).to(devices.device, dtype=torch.float32)
 
-
 def get_retouch_mask(img_input: np.ndarray, kernel_size: int) -> np.ndarray:
     '''
     Return the area where the image is retouched.
     Copy from Zhihu.com
     '''
-    step    = 1
-    kernel  = (kernel_size, kernel_size)
-    img     = img_input.astype(np.float32)/255.0
-    sz      = img.shape[:2]
-    sz1     = (int(round(sz[1] * step)), int(round(sz[0] * step)))
-    sz2     = (int(round(kernel[0] * step)), int(round(kernel[0] * step)))
-    sI      = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
-    sp      = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
-    msI     = cv2.blur(sI, sz2)
-    msp     = cv2.blur(sp, sz2)
-    msII    = cv2.blur(sI*sI, sz2)
-    msIp    = cv2.blur(sI*sp, sz2)
-    vsI     = msII - msI*msI
-    csIp    = msIp - msI*msp
-    recA    = csIp/(vsI+0.01)
-    recB    = msp - recA*msI
-    mA      = cv2.resize(recA, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
-    mB      = cv2.resize(recB, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
-    gf      = mA*img + mB
-    gf      -= img
-    gf     *= 255
+    step   = 1
+    kernel = (kernel_size, kernel_size)
+    
+    img    = img_input.astype(np.float32)/255.0
+    sz     = img.shape[:2]
+    sz1    = (int(round(sz[1] * step)), int(round(sz[0] * step)))
+    sz2    = (int(round(kernel[0] * step)), int(round(kernel[0] * step)))
+    sI     = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
+    sp     = cv2.resize(img, sz1, interpolation=cv2.INTER_LINEAR)
+    msI    = cv2.blur(sI, sz2)
+    msp    = cv2.blur(sp, sz2)
+    msII   = cv2.blur(sI*sI, sz2)
+    msIp   = cv2.blur(sI*sp, sz2)
+    vsI    = msII - msI*msI
+    csIp   = msIp - msI*msp
+    recA   = csIp/(vsI+0.01)
+    recB   = msp - recA*msI
+    mA     = cv2.resize(recA, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
+    mB     = cv2.resize(recB, (sz[1],sz[0]), interpolation=cv2.INTER_LINEAR)
+    
+    gf = mA * img + mB
+    gf -= img
+    gf *= 255
     gf = gf.astype(np.uint8)
     gf = gf.clip(0, 255)
     gf = gf.astype(np.float32)/255.0
     return gf
-
 
 
 def null_decorator(fn):
@@ -253,3 +247,4 @@ keep_signature = null_decorator
 controlnet     = null_decorator
 grid_bbox      = null_decorator
 custom_bbox    = null_decorator
+noise_inverse  = null_decorator

@@ -31,87 +31,31 @@ const MOVE_BORDER = 5;
 const t2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 const i2i_bboxes = new Array(BBOX_MAX_NUM).fill(null);
 
+// ↓↓↓ called from gradio ↓↓↓
 
-function getUpscalerFactor() {
-    const upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
-    if (!isNaN(upscalerInput)) { return upscalerInput; }
+function onCreateT2IRefClick(overwrite) {
+    let width, height;
+    if (overwrite) {
+        const overwriteInputs = gradioApp().querySelectorAll('#MD-overwrite-width-t2i input, #MD-overwrite-height-t2i input');
+        width  = parseInt(overwriteInputs[0].value);
+        height = parseInt(overwriteInputs[2].value);
+    } else {
+        const sizeInputs = gradioApp().querySelectorAll('#txt2img_width input, #txt2img_height input');
+        width  = parseInt(sizeInputs[0].value);
+        height = parseInt(sizeInputs[2].value);
+    }
+
+    if (isNaN(width))  width  = 512;
+    if (isNaN(height)) height = 512;
+
+    // Concat it to string to bypass the gradio bug
+    // 向黑恶势力低头
+    return width.toString() + 'x' + height.toString();
 }
 
-
-function updateCursorStyle(e, is_t2i, idx) {
-    // This function changes the cursor style when hovering over the bounding box
-    const bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
-    if (!bboxes[idx]) return;
-
-    const div = bboxes[idx][0];
-    const boxRect = div.getBoundingClientRect();
-    const mouseX = e.clientX;
-    const mouseY = e.clientY;
-
-    const resizeLeft   = mouseX >= boxRect.left && mouseX <= boxRect.left + RESIZE_BORDER;
-    const resizeRight  = mouseX >= boxRect.right - RESIZE_BORDER && mouseX <= boxRect.right;
-    const resizeTop    = mouseY >= boxRect.top && mouseY <= boxRect.top + RESIZE_BORDER;
-    const resizeBottom = mouseY >= boxRect.bottom - RESIZE_BORDER && mouseY <= boxRect.bottom;
-
-    if ((resizeLeft && resizeTop) || (resizeRight && resizeBottom)) {
-        div.style.cursor = 'nwse-resize';
-    } else if ((resizeLeft && resizeBottom) || (resizeRight && resizeTop)) {
-        div.style.cursor = 'nesw-resize';
-    } else if (resizeLeft || resizeRight) {
-        div.style.cursor = 'ew-resize';
-    } else if (resizeTop || resizeBottom) {
-        div.style.cursor = 'ns-resize';
-    } else {
-        div.style.cursor = 'move';
-    }
-}
-
-function displayBox(canvas, is_t2i, bbox_info) {
-    // check null input
-    const [div, bbox, shower] = bbox_info;
-    const [x, y, w, h] = bbox;
-    if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
-
-    // client: canvas widget display size
-    // natural: content image real size
-    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
-    let canvasCenterX = canvas.clientWidth  / 2;
-    let canvasCenterY = canvas.clientHeight / 2;
-    let scaledX = canvas.naturalWidth  * vpScale;
-    let scaledY = canvas.naturalHeight * vpScale;
-    let viewRectLeft  = canvasCenterX - scaledX / 2;
-    let viewRectRight = canvasCenterX + scaledX / 2;
-    let viewRectTop   = canvasCenterY - scaledY / 2;
-    let viewRectDown  = canvasCenterY + scaledY / 2;
-
-    let xDiv = viewRectLeft + scaledX * x;
-    let yDiv = viewRectTop  + scaledY * y;
-    let wDiv = Math.min(scaledX * w, viewRectRight - xDiv);
-    let hDiv = Math.min(scaledY * h, viewRectDown - yDiv);
-
-    // Calculate warning bbox size
-    let upscalerFactor = 1.0;
-    if (!is_t2i) {
-        upscalerFactor = getUpscalerFactor();
-    }
-    let maxSize = BBOX_WARNING_SIZE / upscalerFactor * vpScale;
-    let maxW = maxSize / scaledX;
-    let maxH = maxSize / scaledY;
-    if (w > maxW || h > maxH) {
-        div.querySelector('span').style.display = 'block';
-    } else {
-        div.querySelector('span').style.display = 'none';
-    }
-
-    // update <div> when not equal
-    div.style.left    = xDiv + 'px';
-    div.style.top     = yDiv + 'px';
-    div.style.width   = wDiv + 'px';
-    div.style.height  = hDiv + 'px';
-    div.style.display = 'block';
-
-    // insert it to DOM if not appear
-    shower();
+function onCreateI2IRefClick() {
+    const canvas = gradioApp().querySelector('#img2img_image img');
+    return canvas.src;
 }
 
 function onBoxEnableClick(is_t2i, idx, enable) {
@@ -220,6 +164,109 @@ function onBoxChange(is_t2i, idx, what, v) {
     }
     displayBox(canvas, is_t2i, bboxes[idx]);
     return v;
+}
+
+// ↓↓↓ called from js ↓↓↓
+
+function getSeedInfo(is_t2i, id, current_seed) {
+    const info_id = is_t2i ? '#html_info_txt2img' : '#html_info_img2img';
+    const info_div = gradioApp().querySelector(info_id);
+    try{
+        current_seed = parseInt(current_seed);
+    } catch(e) {
+        current_seed = -1;
+    }
+    if (!info_div) return current_seed;
+    let info = info_div.innerHTML;
+    if (!info) return current_seed;
+    // remove all html tags
+    info = info.replace(/<[^>]*>/g, '');
+    // Find a json string 'region control:' in the info
+    // get its index
+    idx = info.indexOf('Region control');
+    if (idx == -1) return current_seed;
+    // get the json string (detect the bracket)
+    // find the first '{'
+    let start_idx = info.indexOf('{', idx);
+    let bracket = 1;
+    let end_idx = start_idx + 1;
+    while (bracket > 0 && end_idx < info.length) {
+        if (info[end_idx] == '{') bracket++;
+        if (info[end_idx] == '}') bracket--;
+        end_idx++;
+    }
+    if (bracket > 0) {
+        return current_seed;
+    }
+    // get the json string
+    let json_str = info.substring(start_idx, end_idx);
+    // replace the single quote to double quote
+    json_str = json_str.replace(/'/g, '"');
+    // replace python True to javascript true, False to false
+    json_str = json_str.replace(/True/g, 'true');
+    // parse the json string
+    let json = JSON.parse(json_str);
+    // get the seed if the region id is in the json
+    const region_id = 'Region ' + id.toString();
+    if (!(region_id in json)) return current_seed;
+    const region = json[region_id];
+    if (!('seed' in region)) return current_seed;
+    let seed = region['seed'];
+    try{
+        seed = parseInt(seed);
+    } catch(e) {
+        return current_seed;
+    }
+    return seed;
+}
+
+function displayBox(canvas, is_t2i, bbox_info) {
+    // check null input
+    const [div, bbox, shower] = bbox_info;
+    const [x, y, w, h] = bbox;
+    if (!canvas || !div || x == null || y == null || w == null || h == null) { return; }
+
+    // client: canvas widget display size
+    // natural: content image real size
+    let vpScale = Math.min(canvas.clientWidth / canvas.naturalWidth, canvas.clientHeight / canvas.naturalHeight);
+    let canvasCenterX = canvas.clientWidth  / 2;
+    let canvasCenterY = canvas.clientHeight / 2;
+    let scaledX = canvas.naturalWidth  * vpScale;
+    let scaledY = canvas.naturalHeight * vpScale;
+    let viewRectLeft  = canvasCenterX - scaledX / 2;
+    let viewRectRight = canvasCenterX + scaledX / 2;
+    let viewRectTop   = canvasCenterY - scaledY / 2;
+    let viewRectDown  = canvasCenterY + scaledY / 2;
+
+    let xDiv = viewRectLeft + scaledX * x;
+    let yDiv = viewRectTop  + scaledY * y;
+    let wDiv = Math.min(scaledX * w, viewRectRight - xDiv);
+    let hDiv = Math.min(scaledY * h, viewRectDown - yDiv);
+
+    // Calculate warning bbox size
+    let upscalerFactor = 1.0;
+    if (!is_t2i) {
+        const upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
+        if (!isNaN(upscalerInput)) upscalerFactor = upscalerInput;
+    }
+    let maxSize = BBOX_WARNING_SIZE / upscalerFactor * vpScale;
+    let maxW = maxSize / scaledX;
+    let maxH = maxSize / scaledY;
+    if (w > maxW || h > maxH) {
+        div.querySelector('span').style.display = 'block';
+    } else {
+        div.querySelector('span').style.display = 'none';
+    }
+
+    // update <div> when not equal
+    div.style.left    = xDiv + 'px';
+    div.style.top     = yDiv + 'px';
+    div.style.width   = wDiv + 'px';
+    div.style.height  = hDiv + 'px';
+    div.style.display = 'block';
+
+    // insert it to DOM if not appear
+    shower();
 }
 
 function onBoxMouseDown(e, is_t2i, idx) {
@@ -408,36 +455,35 @@ function onBoxMouseDown(e, is_t2i, idx) {
     document.addEventListener('mouseup',   onMouseUp);
 }
 
+function updateCursorStyle(e, is_t2i, idx) {
+    // This function changes the cursor style when hovering over the bounding box
+    const bboxes = is_t2i ? t2i_bboxes : i2i_bboxes;
+    if (!bboxes[idx]) return;
 
-function onCreateT2IRefClick(overwrite) {
-    let width, height;
-    if (overwrite) {
-        const overwriteInputs = gradioApp().querySelectorAll('#MD-overwrite-width-t2i input, #MD-overwrite-height-t2i input');
-        width  = parseInt(overwriteInputs[0].value);
-        height = parseInt(overwriteInputs[2].value);
+    const div = bboxes[idx][0];
+    const boxRect = div.getBoundingClientRect();
+    const mouseX = e.clientX;
+    const mouseY = e.clientY;
+
+    const resizeLeft   = mouseX >= boxRect.left && mouseX <= boxRect.left + RESIZE_BORDER;
+    const resizeRight  = mouseX >= boxRect.right - RESIZE_BORDER && mouseX <= boxRect.right;
+    const resizeTop    = mouseY >= boxRect.top && mouseY <= boxRect.top + RESIZE_BORDER;
+    const resizeBottom = mouseY >= boxRect.bottom - RESIZE_BORDER && mouseY <= boxRect.bottom;
+
+    if ((resizeLeft && resizeTop) || (resizeRight && resizeBottom)) {
+        div.style.cursor = 'nwse-resize';
+    } else if ((resizeLeft && resizeBottom) || (resizeRight && resizeTop)) {
+        div.style.cursor = 'nesw-resize';
+    } else if (resizeLeft || resizeRight) {
+        div.style.cursor = 'ew-resize';
+    } else if (resizeTop || resizeBottom) {
+        div.style.cursor = 'ns-resize';
     } else {
-        const sizeInputs = gradioApp().querySelectorAll('#txt2img_width input, #txt2img_height input');
-        width  = parseInt(sizeInputs[0].value);
-        height = parseInt(sizeInputs[2].value);
+        div.style.cursor = 'move';
     }
-
-    if (isNaN(width))  width  = 512;
-    if (isNaN(height)) height = 512;
-
-    // Concat it to string to bypass the gradio bug
-    // 向黑恶势力低头
-    return width.toString() + 'x' + height.toString();
 }
 
-function onCreateI2IRefClick() {
-    const canvas = gradioApp().querySelector('#img2img_image img');
-    return canvas.src;
-}
-
-function onBoxLocked(v) {
-    return v
-}
-
+// ↓↓↓ auto called event listeners ↓↓↓
 
 function updateBoxes(is_t2i) {
     // This function redraw all bounding boxes
@@ -459,58 +505,6 @@ function updateBoxes(is_t2i) {
 
         displayBox(canvas, is_t2i, bboxes[idx]);
     }
-}
-
-function getSeedInfo(is_t2i, id, current_seed){
-    const info_id = is_t2i ? '#html_info_txt2img' : '#html_info_img2img';
-    const info_div = gradioApp().querySelector(info_id);
-    try{
-        current_seed = parseInt(current_seed);
-    }catch(e){
-        current_seed = -1;
-    }
-    if (!info_div) return current_seed;
-    let info = info_div.innerHTML;
-    if (!info) return current_seed;
-    // remove all html tags
-    info = info.replace(/<[^>]*>/g, '');
-    // Find a json string 'region control:' in the info
-    // get its index
-    idx = info.indexOf('Region control');
-    if (idx == -1) return current_seed;
-    // get the json string (detect the bracket)
-    // find the first '{'
-    let start_idx = info.indexOf('{', idx);
-    let bracket = 1;
-    let end_idx = start_idx + 1;
-    while (bracket > 0 && end_idx < info.length) {
-        if (info[end_idx] == '{') bracket++;
-        if (info[end_idx] == '}') bracket--;
-        end_idx++;
-    }
-    if (bracket > 0) {
-        return current_seed;
-    }
-    // get the json string
-    let json_str = info.substring(start_idx, end_idx);
-    // replace the single quote to double quote
-    json_str = json_str.replace(/'/g, '"');
-    // replace python True to javascript true, False to false
-    json_str = json_str.replace(/True/g, 'true');
-    // parse the json string
-    let json = JSON.parse(json_str);
-    // get the seed if the region id is in the json
-    const region_id = 'Region ' + id.toString();
-    if (!(region_id in json)) return current_seed;
-    const region = json[region_id];
-    if (!('seed' in region)) return current_seed;
-    let seed = region['seed'];
-    try{
-        seed = parseInt(seed);
-    }catch(e){
-        return current_seed;
-    }
-    return seed;
 }
 
 window.addEventListener('resize', _ => {

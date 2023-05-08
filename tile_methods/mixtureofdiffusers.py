@@ -1,7 +1,5 @@
 import torch
-import k_diffusion as K
 
-from tqdm import trange
 from modules import devices, shared, extra_networks
 from modules.shared import state
 
