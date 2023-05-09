@@ -29,8 +29,8 @@ class BlendMode(Enum):  # i.e. LayerType
     FOREGROUND = 'Foreground'
     BACKGROUND = 'Background'
 
-
 BBoxSettings = namedtuple('BBoxSettings', ['enable', 'x', 'y', 'w', 'h', 'prompt', 'neg_prompt', 'blend_mode', 'feather_ratio', 'seed'])
+NoiseInverseCache = namedtuple('NoiseInversionCache', ['model_hash', 'x0', 'xt', 'noise_inversion_steps', 'retouch', 'prompts'])
 DEFAULT_BBOX_SETTINGS = BBoxSettings(False, 0.4, 0.4, 0.2, 0.2, '', '', BlendMode.BACKGROUND.value, 0.2, -1)
 NUM_BBOX_PARAMS = len(BBoxSettings._fields)
 

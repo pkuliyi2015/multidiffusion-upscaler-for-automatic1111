@@ -86,6 +86,7 @@ class Script(scripts.Script):
     def __init__(self):
         self.controlnet_script: ModuleType = None
         self.delegate: TiledDiffusion = None
+        self.noise_inverse_cache: NoiseInverseCache = None
 
     def title(self):
         return "Tiled Diffusion"
@@ -440,7 +441,9 @@ class Script(scripts.Script):
 
         # setup **optional** supports through `init_*`, make everything relatively pluggable!!
         if flag_noise_inverse:
-            delegate.init_noise_inverse(noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel)
+            get_cache_callback = self.noise_inverse_get_cache
+            set_cache_callback = lambda x0, xt, prompts: self.noise_inverse_set_cache(p, x0, xt, prompts, noise_inverse_steps, noise_inverse_retouch)
+            delegate.init_noise_inverse(noise_inverse_steps, noise_inverse_retouch, get_cache_callback, set_cache_callback, noise_inverse_renoise_strength, noise_inverse_renoise_kernel)
         if not enable_bbox_control or draw_background:
             delegate.init_grid_bbox(tile_width, tile_height, overlap, tile_batch_size)
         if enable_bbox_control:
@@ -557,6 +560,12 @@ class Script(scripts.Script):
                 data_list.extend(DEFAULT_BBOX_SETTINGS)
 
         return [gr_value(v) for v in data_list] + [gr_value(f'Config loaded from {fp}.', visible=True)]
+    
+    def noise_inverse_set_cache(self, p: ProcessingImg2Img, x0: Tensor, xt: Tensor, prompts: List[str], steps: int, retouch:float):
+        self.noise_inverse_cache = NoiseInverseCache(p.sd_model.sd_model_hash, x0,  xt, steps, retouch, prompts)
+
+    def noise_inverse_get_cache(self):
+        return self.noise_inverse_cache
 
     def reset(self):
         ''' unhijack inner APIs '''
@@ -572,6 +581,7 @@ class Script(scripts.Script):
 
     def reset_and_gc(self):
         self.reset()
+        self.noise_inverse_cache = None
 
         import gc; gc.collect()
         devices.torch_gc()
