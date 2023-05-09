@@ -64,6 +64,7 @@ class TiledDiffusion:
         self.causal_layers: bool = None
 
         # ext. Noise Inversion (noise inversion)
+        self.sample_img2img_original = None
         self.noise_inverse_enabled = None
         self.noise_inverse_steps = None
         self.noise_inverse_retouch = None
@@ -499,12 +500,12 @@ class TiledDiffusion:
     @noise_inverse
     def init_noise_inverse(self, steps:int, retouch:float, renoise_strength:float, renoise_kernel:int):
         self.noise_inverse_enabled = True
-
         self.noise_inverse_steps = steps
         self.noise_inverse_retouch = float(retouch)
         self.noise_inverse_renoise_strength = float(renoise_strength)
         self.noise_inverse_renoise_kernel = int(renoise_kernel)
-
+        if self.sample_img2img_original is None:
+            self.sample_img2img_original = self.sampler_raw.sample_img2img
         self.sampler_raw.sample_img2img = MethodType(self.sample_img2img, self.sampler_raw)
 
     @noise_inverse
@@ -525,25 +526,24 @@ class TiledDiffusion:
             renoise_mask *= self.noise_inverse_renoise_strength
             renoise_mask = torch.clamp(renoise_mask, 0, 1)
 
-        # calculate sampling steps
-        steps, t_enc = sd_samplers_common.setup_img2img_steps(p, steps)
-        sigmas = sampler.get_sigmas(p, steps)
-        sigma_sched = sigmas[steps - t_enc - 1:]
-
         prompts = p.all_prompts[:p.batch_size]
             
         if hasattr(p, 'noise_inverse_latent'):
-            # In batch mode, use the same noise latent for all images
+            # in batch mode, use the same noise latent for all images
             latent = p.noise_inverse_latent.to(noise.device)
         else:
-            # get retouched noise inversion
+            # run noise inversion
             shared.state.job_count += 1
             latent = self.find_noise_for_image_sigma_adjustment(sampler.model_wrap, self.noise_inverse_steps, prompts)
             shared.state.nextjob()
             p.noise_inverse_latent = latent.to(device=devices.cpu) if cmd_opts.lowvram else latent
-        
+
+        # calculate sampling steps
+        adjusted_steps, _ = sd_samplers_common.setup_img2img_steps(p, steps)
+        sigmas = sampler.get_sigmas(p, adjusted_steps)
         inverse_noise = latent - (p.init_latent / sigmas[0])
 
+        # inject noise to high-frequency area so that the details won't lose too much
         if renoise_mask is not None:
             # If the background is not drawn, we need to filter out the un-drawn pixels and reweight foreground with feather mask
             # This is to enable the renoise mask in regional inpainting
@@ -567,39 +567,9 @@ class TiledDiffusion:
             combined_noise = ((1 - renoise_mask) * inverse_noise + renoise_mask * noise) / ((renoise_mask**2 + (1 - renoise_mask)**2) ** 0.5)
         else:
             combined_noise = inverse_noise
-        
-        xi = x + combined_noise * sigma_sched[0]
 
-        extra_params_kwargs = sampler.initialize(p)
-        parameters = inspect.signature(sampler.func).parameters
-
-        if 'sigma_min' in parameters:
-            ## last sigma is zero which isn't allowed by DPM Fast & Adaptive so taking value before last
-            extra_params_kwargs['sigma_min'] = sigma_sched[-2]
-        if 'sigma_max' in parameters:
-            extra_params_kwargs['sigma_max'] = sigma_sched[0]
-        if 'n' in parameters:
-            extra_params_kwargs['n'] = len(sigma_sched) - 1
-        if 'sigma_sched' in parameters:
-            extra_params_kwargs['sigma_sched'] = sigma_sched
-        if 'sigmas' in parameters:
-            extra_params_kwargs['sigmas'] = sigma_sched
-
-        if sampler.funcname == 'sample_dpmpp_sde':
-            noise_sampler = sampler.create_noise_sampler(x, sigmas, p)
-            extra_params_kwargs['noise_sampler'] = noise_sampler
-
-        sampler.model_wrap_cfg.init_latent = x
-        sampler.last_latent = x
-        extra_args = {
-            'cond': conditioning, 
-            'image_cond': image_conditioning, 
-            'uncond': unconditional_conditioning, 
-            'cond_scale': p.cfg_scale,
-            's_min_uncond': p.s_min_uncond,
-        }
-
-        return sampler.launch_sampling(t_enc + 1, lambda: sampler.func(sampler.model_wrap_cfg, xi, extra_args=extra_args, disable=False, callback=sampler.callback_state, **extra_params_kwargs))
+        # use the estimated noise for the original img2img sampling
+        return self.sample_img2img_original(p, x, combined_noise, conditioning, unconditional_conditioning, steps, image_conditioning)
 
     @noise_inverse
     @torch.no_grad()
