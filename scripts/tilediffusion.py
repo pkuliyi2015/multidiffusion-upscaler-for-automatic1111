@@ -124,7 +124,7 @@ class Script(scripts.Script):
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=4, elem_id=self.elem_id("latent_batch_size"))
 
             with gr.Row(variant='compact', visible=is_img2img) as tab_upscale:
-                upscaler_index = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None", elem_id='MD-upscaler-index')
+                upscaler_name = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value="None", elem_id='MD-upscaler-index')
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0, elem_id='MD-upscaler-factor')
 
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img) as tab_noise_inv:
@@ -238,7 +238,7 @@ class Script(scripts.Script):
             enabled, method,
             overwrite_size, keep_input_size, image_width, image_height,
             tile_width, tile_height, overlap, batch_size,
-            upscaler_index, scale_factor,
+            upscaler_name, scale_factor,
             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
             control_tensor_cpu,
             enable_bbox_control, draw_background, causal_layers,
@@ -249,35 +249,31 @@ class Script(scripts.Script):
             enabled: bool, method: str,
             overwrite_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
-            upscaler_index: str, scale_factor: float,
+            upscaler_name: str, scale_factor: float,
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
             control_tensor_cpu: bool, 
             enable_bbox_control: bool, draw_background: bool, causal_layers: bool, 
             *bbox_control_states: List[Any],
         ):
 
-        ''' save original inner APIs '''
-        if not hasattr(sd_samplers, "create_sampler_original_md"):
-            sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
-        if not hasattr(processing, "create_random_tensors_original_md"):
-            processing.create_random_tensors_original_md = processing.create_random_tensors
-
+        # unhijack & unhook, in case it broke at last time
         self.reset()
+
         if not enabled: return
 
-        is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
-
         ''' upscale '''
-        # store `init_images` to make it re-entribale for p
-        if hasattr(p, 'init_images'):
-            setattr(p, 'saved_init_images', p.init_images)
-        self.save_width  = p.width
-        self.save_height = p.height
+        # store canvas size settings
+        if hasattr(p, "init_images"):
+            p.init_images_original_md = [img.copy() for img in p.init_images]
+        p.width_original_md  = p.width
+        p.height_original_md = p.height
+
+        is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
         if is_img2img:        # img2img, TODO: replace with `images.resize_image()`
-            upscaler_name = [x.name for x in shared.sd_upscalers].index(upscaler_index)
+            idx = [x.name for x in shared.sd_upscalers].index(upscaler_name)
+            upscaler = shared.sd_upscalers[idx]
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
-            upscaler = shared.sd_upscalers[upscaler_name]
             if upscaler.name != "None":
                 print(f"[Tiled Diffusion] upscaling image with {upscaler.name}...")
                 image = upscaler.scaler.upscale(init_img, scale_factor, upscaler.data_path)
@@ -290,25 +286,27 @@ class Script(scripts.Script):
             else:
                 image = init_img
 
+            # decide final canvas size
             if keep_input_size:
                 p.width  = image.width
                 p.height = image.height
             elif upscaler.name != "None":
-                if not hasattr(p, "md_original_width"):
-                    p.md_original_width = p.width
-                    p.md_original_height = p.height
-                p.width = scale_factor * p.md_original_width
-                p.height = scale_factor * p.md_original_height
+                p.width  = scale_factor * p.width_original_md
+                p.height = scale_factor * p.height_original_md
         elif overwrite_size:  # txt2img
             p.width  = image_width
             p.height = image_height
 
         ''' sanitiy check '''
-        if not enable_bbox_control and not splitable(p.width, p.height, tile_width, tile_height, overlap):
-            if not (is_img2img and noise_inverse):
-                print("[Tiled Diffusion] ignore tiling when there's only 1 tile :)")
-                return
-        
+        chks = [
+            splitable(p.width, p.height, tile_width, tile_height, overlap),
+            enable_bbox_control,
+            is_img2img and noise_inverse,
+        ]
+        if not any(chks):
+            print("[Tiled Diffusion] ignore tiling when there's only 1 tile or nothing to do :)")
+            return
+
         bbox_settings = build_bbox_settings(bbox_control_states) if enable_bbox_control else []
 
         if 'png info':
@@ -361,6 +359,7 @@ class Script(scripts.Script):
             pass
 
         ''' hijack inner APIs '''
+        sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method(method), 
             tile_width, tile_height, overlap, tile_batch_size,
@@ -370,7 +369,9 @@ class Script(scripts.Script):
             enable_bbox_control, draw_background, causal_layers,
             bbox_settings,
         )
+
         if enable_bbox_control:
+            processing.create_random_tensors_original_md = processing.create_random_tensors
             processing.create_random_tensors = lambda *args, **kwargs: self.create_random_tensors_hijack(
                 bbox_settings, 
                 *args, **kwargs,
@@ -384,14 +385,16 @@ class Script(scripts.Script):
     def postprocess(self, p: Processing, processed, enabled, *args):
         if not enabled: return
 
-        # unhijack & state reset
+        # unhijack & unhook
         self.reset()
 
-        # restore `init_images` to make it re-entribale for p
-        if hasattr(p, 'init_images') and hasattr(p, 'saved_init_images'):
-            p.init_images = p.saved_init_images
-        p.width  = self.save_width 
-        p.height = self.save_height
+        # restore canvas size settings
+        if hasattr(p, 'init_images') and hasattr(p, 'init_images_original_md'):
+            p.init_images.clear()       # NOTE: do NOT change the list object, compatible with shallow copy of XYZ-plot
+            p.init_images.extend(p.init_images_original_md)
+            del p.init_images_original_md
+        p.width  = p.width_original_md  ; del p.width_original_md
+        p.height = p.height_original_md ; del p.height_original_md
 
         # clean up noise inverse latent for folder-based processing
         if hasattr(p, 'noise_inverse_latent'):
@@ -559,8 +562,10 @@ class Script(scripts.Script):
         ''' unhijack inner APIs '''
         if hasattr(sd_samplers, "create_sampler_original_md"):
             sd_samplers.create_sampler = sd_samplers.create_sampler_original_md
+            del sd_samplers.create_sampler_original_md
         if hasattr(processing, "create_random_tensors_original_md"):
             processing.create_random_tensors = processing.create_random_tensors_original_md
+            del processing.create_random_tensors_original_md
         MultiDiffusion    .unhook()
         MixtureOfDiffusers.unhook()
         self.delegate = None
