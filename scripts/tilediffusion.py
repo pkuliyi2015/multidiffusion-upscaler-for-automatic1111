@@ -110,7 +110,7 @@ class Script(scripts.Script):
                 overwrite_size.change(fn=gr_show, inputs=overwrite_size, outputs=tab_size)
 
             with gr.Row(variant='compact') as tab_param:
-                method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value, elem_id=self.elem_id("method"))
+                method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value if is_t2i else Method.MIX_DIFF.value, elem_id=self.elem_id("method"))
                 control_tensor_cpu = gr.Checkbox(label='Move ControlNet tensor to CPU (if applicable)', value=False, elem_id=self.elem_id("control_tensor_cpu"))
                 reset_status = gr.Button(value='Free GPU', variant='tool', elem_id=self.elem_id("reset_status"))
                 reset_status.click(fn=self.reset_and_gc, show_progress=False)  
@@ -121,7 +121,7 @@ class Script(scripts.Script):
                     tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96, elem_id=self.elem_id("latent_tile_height"))
 
                 with gr.Row(variant='compact'):
-                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48, elem_id=self.elem_id("latent_overlap"))
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48 if is_t2i else 8, elem_id=self.elem_id("latent_overlap"))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=4, elem_id=self.elem_id("latent_batch_size"))
 
             with gr.Row(variant='compact', visible=is_img2img) as tab_upscale:
