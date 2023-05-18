@@ -46,7 +46,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
   - Proper and reasonable details, no weird or dirty pieces.
 - Recommended settings:
   - Denoising Strength >= 0.75
-  - Method = Mixture of Diffusers, Overlap = 32
+  - Method = Mixture of Diffusers, Overlap = 8
   - Noise Inversion Steps >= 30
   - **Renoise strength = 0**
   - CN Tile preprocessor = tile_resample, downsampling rate = 2

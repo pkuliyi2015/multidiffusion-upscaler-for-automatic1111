@@ -43,7 +43,7 @@
   - 能产生适当和合理的细节，不显得怪异或凌乱
 - 推荐的设置:
   - 重绘幅度 >= 0.75，采样步数25步
-  - Method = Mixture of Diffusers，overlap = 32
+  - Method = Mixture of Diffusers，overlap = 8
   - Noise Inversion Steps >= 30
   - **Renoise strength = 0**
   - CN Tile 预处理器 = tile_resample，下采样率 = 2
