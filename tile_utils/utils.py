@@ -245,6 +245,7 @@ def null_decorator(fn):
 
 keep_signature = null_decorator
 controlnet     = null_decorator
+stablesr       = null_decorator
 grid_bbox      = null_decorator
 custom_bbox    = null_decorator
 noise_inverse  = null_decorator

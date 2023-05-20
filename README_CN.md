@@ -20,7 +20,7 @@
 
 ## 功能列表
 
-- [ ] 添加高低频分离及互换的图像后处理 (当前工作)
+- [x] [StableSR支持](https://github.com/pkuliyi2015/sd-webui-stablesr)
 - [x] [Tiled Noise Inversion](#🆕-tiled-noise-inversion)
 - [x] [Tiled VAE](#🔥-tiled-vae)
 - [x] [区域提示控制](#区域提示控制)

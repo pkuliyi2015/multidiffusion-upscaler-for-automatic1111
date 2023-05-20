@@ -136,7 +136,8 @@ class MultiDiffusion(TiledDiffusion):
         def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             # before the final forward, we can set the control tensor
             def forward_func(x, *args, **kwargs):
-                self.set_controlnet_tensors(bbox_id, 2*x.shape[0])
+                self.set_custom_controlnet_tensors(bbox_id, 2*x.shape[0])
+                self.set_custom_stablesr_tensors(bbox_id)
                 return self.sampler_forward(x, *args, **kwargs)
             return self.ddim_custom_forward(x, cond_in, bbox, ts, forward_func, *args, **kwargs)
 
@@ -173,6 +174,9 @@ class MultiDiffusion(TiledDiffusion):
                 # controlnet tiling
                 # FIXME: is_denoise is default to False, however it is set to True in case of MixtureOfDiffusers
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes))
+
+                # stablesr tiling
+                self.switch_stablesr_tensors(batch_id)
 
                 # compute tiles
                 if self.is_kdiff:

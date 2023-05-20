@@ -60,10 +60,11 @@
 from pathlib import Path
 import json
 import torch
+import modules
 import numpy as np
 import gradio as gr
 
-from modules import sd_samplers, images, shared, scripts, devices, processing
+from modules import sd_samplers, images, shared, devices, processing
 from modules.shared import opts
 from modules.processing import opt_f, get_fixed_seed
 from modules.ui import gr_show
@@ -81,10 +82,11 @@ CFG_PATH = ME_PATH / 'region_configs'
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, "md_max_regions", 8), 16)
 
 
-class Script(scripts.Script):
+class Script(modules.scripts.Script):
 
     def __init__(self):
         self.controlnet_script: ModuleType = None
+        self.stablesr_script: ModuleType = None
         self.delegate: TiledDiffusion = None
         self.noise_inverse_cache: NoiseInverseCache = None
 
@@ -92,7 +94,7 @@ class Script(scripts.Script):
         return "Tiled Diffusion"
 
     def show(self, is_img2img):
-        return scripts.AlwaysVisible
+        return modules.scripts.AlwaysVisible
 
     def ui(self, is_img2img):
         tab    = 't2i'  if not is_img2img else 'i2i'
@@ -359,6 +361,14 @@ class Script(scripts.Script):
         except ImportError:
             pass
 
+        ''' StableSR hackin '''
+        for script in p.scripts.scripts:
+            if hasattr(script, "stablesr_model") and script.title().lower() == "stablesr":
+                if script.stablesr_model is not None:
+                    self.stablesr_script = script
+                    print("[Tiled Diffusion] StableSR found, support is enabled.")
+                    break
+
         ''' hijack inner APIs '''
         sd_samplers.create_sampler_original_md = sd_samplers.create_sampler
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
@@ -450,6 +460,8 @@ class Script(scripts.Script):
             delegate.init_custom_bbox(bbox_settings, draw_background, causal_layers)
         if self.controlnet_script:
             delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
+        if self.stablesr_script:
+            delegate.init_stablesr(self.stablesr_script)
 
         # init everything done, perform sanity check & pre-computations
         delegate.init_done()

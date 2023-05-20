@@ -74,7 +74,8 @@ class MixtureOfDiffusers(TiledDiffusion):
                         c_in[k] = [torch.cat([unconditional_conditioning[k][i], c[k][i]]) for i in range(len(c[k]))]
                     else:
                         c_in[k] = torch.cat([unconditional_conditioning[k], c[k]])
-                self.set_controlnet_tensors(bbox_id, x.shape[0])
+                self.set_custom_controlnet_tensors(bbox_id, x.shape[0])
+                self.set_custom_stablesr_tensors(bbox_id)
                 return shared.sd_model.apply_model_original_md(x, ts, c_in)
             return self.ddim_custom_forward(x_in, c_in, bbox, ts=t_in, forward_func=forward_func)
 
@@ -122,6 +123,9 @@ class MixtureOfDiffusers(TiledDiffusion):
                 # controlnet
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
                 
+                # stablesr
+                self.switch_stablesr_tensors(batch_id)
+
                 # denoising: here the x is the noise
                 x_tile_out = shared.sd_model.apply_model_original_md(x_tile, t_tile, c_tile)
 

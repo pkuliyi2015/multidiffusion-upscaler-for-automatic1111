@@ -80,6 +80,13 @@ class TiledDiffusion:
         self.control_tensor_cpu: bool = None
         self.control_tensor_custom: List[List[Tensor]] = []
 
+        # ext. StableSR
+        self.enable_stablesr: bool = False
+        self.stablesr_script: ModuleType = None
+        self.stablesr_tensor: Tensor = None
+        self.stablesr_tensor_batch: List[Tensor] = []
+        self.stablesr_tensor_custom: List[Tensor] = []
+
     @property
     def is_kdiff(self):
         return isinstance(self.sampler_raw, KDiffusionSampler)
@@ -231,13 +238,15 @@ class TiledDiffusion:
                             cond = torch.cat([tensor, uncond])
                         else:
                             cond = torch.cat([tensor, uncond, uncond])
-                        self.set_controlnet_tensors(bbox_id, x_tile.shape[0])
+                        self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
+                        self.set_custom_stablesr_tensors(bbox_id)
                         return forward_func(x_tile, sigma_in, cond={"c_crossattn": [cond], "c_concat": [image_cond_in]})
                     else:
                         # When not, we need to pass the tensor to UNet separately.
                         x_out = torch.zeros_like(x_tile)
                         cond_size = tensor.shape[0]
-                        self.set_controlnet_tensors(bbox_id, cond_size)
+                        self.set_custom_controlnet_tensors(bbox_id, cond_size)
+                        self.set_custom_stablesr_tensors(bbox_id)
                         cond_out = forward_func(
                             x_tile  [:cond_size], 
                             sigma_in[:cond_size], 
@@ -246,7 +255,8 @@ class TiledDiffusion:
                                 "c_concat": [image_cond_in[:cond_size]]
                             })
                         uncond_size = uncond.shape[0]
-                        self.set_controlnet_tensors(bbox_id, uncond_size)
+                        self.set_custom_controlnet_tensors(bbox_id, uncond_size)
+                        self.set_custom_stablesr_tensors(bbox_id)
                         uncond_out = forward_func(
                             x_tile  [cond_size:cond_size+uncond_size], 
                             sigma_in[cond_size:cond_size+uncond_size], 
@@ -317,7 +327,8 @@ class TiledDiffusion:
                 # If the tensor can be passed to UNet in one go, do it.
                 if uncond_in is not None:
                     cond_in = torch.cat([cond_in, uncond_in])
-                self.set_controlnet_tensors(bbox_id, x_tile.shape[0])
+                self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
+                self.set_custom_stablesr_tensors(bbox_id)
                 return forward_func(
                     x_tile, 
                     sigma_in, 
@@ -329,7 +340,8 @@ class TiledDiffusion:
                 # If not, we need to pass the tensor to UNet separately.
                 x_out = torch.zeros_like(x_tile)
                 cond_size = cond_in.shape[0]
-                self.set_controlnet_tensors(bbox_id, cond_size)
+                self.set_custom_controlnet_tensors(bbox_id, cond_size)
+                self.set_custom_stablesr_tensors(bbox_id)
                 cond_out = forward_func(
                     x_tile  [:cond_size], 
                     sigma_in[:cond_size], 
@@ -337,7 +349,8 @@ class TiledDiffusion:
                         "c_crossattn": [cond_in], 
                         "c_concat": [self.image_cond_in[bbox_id]],
                     })
-                self.set_controlnet_tensors(bbox_id, uncond_in.shape[0])
+                self.set_custom_controlnet_tensors(bbox_id, uncond_in.shape[0])
+                self.set_custom_stablesr_tensors(bbox_id)
                 uncond_out = forward_func(
                     x_tile  [cond_size:], 
                     sigma_in[cond_size:], 
@@ -360,7 +373,8 @@ class TiledDiffusion:
                 c_crossattn = [tensor[a:b]]
             else:
                 c_crossattn = torch.cat([tensor[a:b]], uncond)
-            self.set_controlnet_tensors(bbox_id, x_tile.shape[0])
+            self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
+            self.set_custom_stablesr_tensors(bbox_id)
             # complete this batch.
             return forward_func(
                 x_tile, 
@@ -371,7 +385,8 @@ class TiledDiffusion:
                 })
         else:
             # if the cond is finished, we need to process the uncond.
-            self.set_controlnet_tensors(bbox_id, uncond.shape[0])
+            self.set_custom_controlnet_tensors(bbox_id, uncond.shape[0])
+            self.set_custom_stablesr_tensors(bbox_id)
             return forward_func(
                 x_tile, 
                 sigma_in, 
@@ -489,13 +504,57 @@ class TiledDiffusion:
             self.control_params[param_id].hint_cond = control_tile.to(devices.device)
 
     @controlnet
-    def set_controlnet_tensors(self, bbox_id:int, repeat_size:int):
+    def set_custom_controlnet_tensors(self, bbox_id:int, repeat_size:int):
         if not self.enable_controlnet: return
         if not len(self.control_tensor_custom): return
         
         for param_id in range(len(self.control_params)):
             control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
+    
+    @stablesr
+    def init_stablesr(self, stablesr_script:ModuleType):
+        if stablesr_script.stablesr_model is None: return
+        self.stablesr_script = stablesr_script
+        def set_image_hook(latent_image):
+            self.enable_stablesr = True
+            self.stablesr_tensor = latent_image
+            self.stablesr_tensor_batch = []
+            for bboxes in self.batched_bboxes:
+                single_batch_tensors = []
+                for bbox in bboxes:
+                    stablesr_tile = self.stablesr_tensor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                    single_batch_tensors.append(stablesr_tile)
+                stablesr_tile = torch.cat(single_batch_tensors, dim=0)
+                self.stablesr_tensor_batch.append(stablesr_tile)
+            if len(self.custom_bboxes) > 0:
+                self.stablesr_tensor_custom = []
+                for bbox in self.custom_bboxes:
+                    stablesr_tile = self.stablesr_tensor[:, :, bbox[1]:bbox[3], bbox[0]:bbox[2]]
+                    self.stablesr_tensor_custom.append(stablesr_tile)
+
+        stablesr_script.stablesr_model.set_image_hooks['TiledDiffusion'] = set_image_hook
+
+    @stablesr
+    def reset_stablesr_tensors(self):
+        if not self.enable_stablesr: return
+        if self.stablesr_script.stablesr_model is None: return
+        self.stablesr_script.stablesr_model.latent_image = self.stablesr_tensor
+
+
+    @stablesr
+    def switch_stablesr_tensors(self, batch_id:int):
+        if not self.enable_stablesr: return
+        if self.stablesr_script.stablesr_model is None: return
+        if self.stablesr_tensor_batch is None: return
+        self.stablesr_script.stablesr_model.latent_image = self.stablesr_tensor_batch[batch_id]
+
+    @stablesr
+    def set_custom_stablesr_tensors(self, bbox_id:int):
+        if not self.enable_stablesr: return
+        if self.stablesr_script.stablesr_model is None: return
+        if not len(self.stablesr_tensor_custom): return
+        self.stablesr_script.stablesr_model.latent_image = self.stablesr_tensor_custom[bbox_id]
 
 
     @noise_inverse
