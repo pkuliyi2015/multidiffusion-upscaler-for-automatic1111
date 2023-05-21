@@ -109,7 +109,7 @@ class Script(modules.scripts.Script):
             with gr.Row(variant='compact', visible=False) as tab_size:
                 image_width  = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width',  value=1024, elem_id=f'MD-overwrite-width-{tab}')
                 image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, elem_id=f'MD-overwrite-height-{tab}')
-                overwrite_size.change(fn=gr_show, inputs=overwrite_size, outputs=tab_size)
+                overwrite_size.change(fn=gr_show, inputs=overwrite_size, outputs=tab_size, show_progress=False)
 
             with gr.Row(variant='compact') as tab_param:
                 method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value if is_t2i else Method.MIX_DIFF.value, elem_id=self.elem_id("method"))
@@ -166,9 +166,10 @@ class Script(modules.scripts.Script):
                                 fn=create_t2i_ref, 
                                 inputs=overwrite_size, 
                                 outputs=ref_image, 
-                                _js='onCreateT2IRefClick')
+                                _js='onCreateT2IRefClick',
+                                show_progress=False)
                         else:
-                            create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick')
+                            create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick', show_progress=False)
 
                     with gr.Row(variant='compact'):
                         cfg_name = gr.Textbox(label='Custom Config File', value='config.json', elem_id=self.elem_id("cfg_name"))
