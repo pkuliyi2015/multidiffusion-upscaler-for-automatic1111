@@ -183,7 +183,7 @@
 
 ⚪ 方法 1: 官方市场
 
-- 打开Automatic1111 WebUI -> 点击“扩展”选项卡 -> 点击“可用”选项卡 -> 找到“[MultiDiffusion 放大器(MultiDiffusion with Tiled VAE)]” -> 点击“安装”
+- 打开Automatic1111 WebUI -> 点击“扩展”选项卡 -> 点击“可用”选项卡 -> 找到“[MultiDiffusion 放大器(TiledDiffusion with Tiled VAE)]” -> 点击“安装”
 
 ⚪ 方法 2: URL 安装
 

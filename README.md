@@ -187,7 +187,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ⚪ Method 1: Official Market
 
-- Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Available" -> Find "[MultiDiffusion with Tiled VAE]" -> Click "Install"
+- Open Automatic1111 WebUI -> Click Tab "Extensions" -> Click Tab "Available" -> Find "[TiledDiffusion with Tiled VAE]" -> Click "Install"
 
 ⚪ Method 2: URL Install
 
