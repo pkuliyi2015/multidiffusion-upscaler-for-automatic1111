@@ -108,7 +108,8 @@ class MixtureOfDiffusers(TiledDiffusion):
                     x_tile_list.append(x_in[bbox.slicer])
                     t_tile_list.append(t_in)
                     if c_in is not None and isinstance(c_in, dict):
-                        image_cond = c_in['c_concat'][0]        # dummy for txt2img, latent mask for img2img
+                        image_cond = self.get_image_cond(c_in)
+                        # dummy for txt2img, latent mask for img2img
                         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
                             image_cond = image_cond[bbox.slicer]
                         image_cond_list.append(image_cond)
@@ -118,7 +119,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                 t_tile          = torch.cat(t_tile_list,     dim=0)     # just repeat
                 attn_tile       = torch.cat(attn_tile_list,  dim=0)     # just repeat
                 image_cond_tile = torch.cat(image_cond_list, dim=0)     # differs each
-                c_tile = {'c_concat': [image_cond_tile], 'c_crossattn': [attn_tile]}
+                c_tile = self.make_condition_dict([attn_tile], image_cond_tile)
 
                 # controlnet
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
@@ -153,11 +154,11 @@ class MixtureOfDiffusers(TiledDiffusion):
                     x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
                 else:
                     custom_cond = Condition.reconstruct_cond(bbox.cond, noise_inverse_step)
-                    image_cond = c_in['c_concat'][0]
+                    image_cond = self.get_image_cond(custom_cond)
                     if image_cond.shape[2:] == (self.h, self.w):
                         image_cond = image_cond[bbox.slicer]
                     image_conditioning = image_cond
-                    custom_cond_in = {"c_concat": [image_conditioning], "c_crossattn": [custom_cond]}
+                    custom_cond_in = self.make_condition_dict([custom_cond], image_conditioning)
                     x_tile_out = shared.sd_model.apply_model(x_tile, t_in, cond=custom_cond_in)
 
                 if bbox.blend_mode == BlendMode.BACKGROUND:

@@ -17,9 +17,9 @@ from tile_utils.typing import *
 
 class TiledDiffusion:
 
-    def __init__(self, p:Processing, sampler:Sampler):
+    def __init__(self, p: Processing, sampler: Sampler):
         self.method = self.__class__.__name__
-        self.p = p
+        self.p: Processing = p
         self.pbar = None
 
         # sampler
@@ -33,6 +33,14 @@ class TiledDiffusion:
             self.is_edit_model = (shared.sd_model.cond_stage_key == "edit"      # "txt"
                 and self.sampler.image_cfg_scale is not None 
                 and self.sampler.image_cfg_scale != 1.0)
+            
+        # img conditioning for different models (inpaint/unclip model)
+        if shared.sd_model.model.conditioning_key == "crossattn-adm":
+            self.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": c_crossattn, "c_adm": c_adm} 
+            self.get_image_cond = lambda c_in: c_in['c_adm']
+        else:
+            self.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": c_crossattn, "c_concat": [c_concat]} 
+            self.get_image_cond = lambda c_in: c_in['c_concat'][0]
 
         # cache. final result of current sampling step, [B, C=4, H//8, W//8]
         # avoiding overhead of creating new tensors and weight summing
@@ -193,7 +201,7 @@ class TiledDiffusion:
     def reconstruct_custom_cond(self, org_cond:CondDict, custom_cond:Cond, custom_uncond:Uncond, bbox:CustomBBox) -> Tuple[List, Tensor, Uncond, Tensor]:
         image_conditioning = None
         if isinstance(org_cond, dict):
-            image_cond = org_cond['c_concat'][0]
+            self.get_image_cond(org_cond)
             if image_cond.shape[2:] == (self.h, self.w):    # img2img
                 image_cond = image_cond[bbox.slicer]
             image_conditioning = image_cond
@@ -240,7 +248,7 @@ class TiledDiffusion:
                             cond = torch.cat([tensor, uncond, uncond])
                         self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
                         self.set_custom_stablesr_tensors(bbox_id)
-                        return forward_func(x_tile, sigma_in, cond={"c_crossattn": [cond], "c_concat": [image_cond_in]})
+                        return forward_func(x_tile, sigma_in, cond=self.make_condition_dict([cond], image_cond_in))
                     else:
                         # When not, we need to pass the tensor to UNet separately.
                         x_out = torch.zeros_like(x_tile)
@@ -250,20 +258,16 @@ class TiledDiffusion:
                         cond_out = forward_func(
                             x_tile  [:cond_size], 
                             sigma_in[:cond_size], 
-                            cond={
-                                "c_crossattn": [tensor], 
-                                "c_concat": [image_cond_in[:cond_size]]
-                            })
+                            cond=self.make_condition_dict([tensor], image_cond_in[:cond_size])
+                        )
                         uncond_size = uncond.shape[0]
                         self.set_custom_controlnet_tensors(bbox_id, uncond_size)
                         self.set_custom_stablesr_tensors(bbox_id)
                         uncond_out = forward_func(
                             x_tile  [cond_size:cond_size+uncond_size], 
                             sigma_in[cond_size:cond_size+uncond_size], 
-                            cond={
-                                "c_crossattn": [uncond], 
-                                "c_concat": [image_cond_in[cond_size:cond_size+uncond_size]]
-                            })
+                            cond=self.make_condition_dict([uncond], image_cond_in[cond_size:cond_size+uncond_size])
+                        )
                         x_out[:cond_size] = cond_out
                         x_out[cond_size:cond_size+uncond_size] = uncond_out
                         if self.is_edit_model:
@@ -332,10 +336,8 @@ class TiledDiffusion:
                 return forward_func(
                     x_tile, 
                     sigma_in, 
-                    cond={
-                    "c_crossattn": [cond_in], 
-                    "c_concat": [self.image_cond_in[bbox_id]],
-                })
+                    cond=self.make_condition_dict([cond_in], self.image_cond_in[bbox_id])
+                )
             else:
                 # If not, we need to pass the tensor to UNet separately.
                 x_out = torch.zeros_like(x_tile)
@@ -345,19 +347,15 @@ class TiledDiffusion:
                 cond_out = forward_func(
                     x_tile  [:cond_size], 
                     sigma_in[:cond_size], 
-                    cond={
-                        "c_crossattn": [cond_in], 
-                        "c_concat": [self.image_cond_in[bbox_id]],
-                    })
+                    cond=self.make_condition_dict([cond_in], self.image_cond_in[bbox_id])
+                )
                 self.set_custom_controlnet_tensors(bbox_id, uncond_in.shape[0])
                 self.set_custom_stablesr_tensors(bbox_id)
                 uncond_out = forward_func(
                     x_tile  [cond_size:], 
                     sigma_in[cond_size:], 
-                    cond={
-                        "c_crossattn": [uncond_in], 
-                        "c_concat": [self.image_cond_in[bbox_id]],
-                    })
+                    cond=self.make_condition_dict([uncond_in], self.image_cond_in[bbox_id])
+                )
                 x_out[:cond_size] = cond_out
                 x_out[cond_size:] = uncond_out
                 return x_out
@@ -379,10 +377,8 @@ class TiledDiffusion:
             return forward_func(
                 x_tile, 
                 sigma_in, 
-                cond={
-                    "c_crossattn": c_crossattn, 
-                    "c_concat": [self.image_cond_in[bbox_id]]
-                })
+                cond=self.make_condition_dict(c_crossattn, self.image_cond_in[bbox_id])
+            )
         else:
             # if the cond is finished, we need to process the uncond.
             self.set_custom_controlnet_tensors(bbox_id, uncond.shape[0])
@@ -390,10 +386,8 @@ class TiledDiffusion:
             return forward_func(
                 x_tile, 
                 sigma_in, 
-                cond={
-                    "c_crossattn": [uncond], 
-                    "c_concat": [self.image_cond_in[bbox_id]]
-                })
+                cond=self.make_condition_dict([uncond], self.image_cond_in[bbox_id])
+            )
 
     @custom_bbox
     def ddim_custom_forward(self, x:Tensor, cond_in:CondDict, bbox:CustomBBox, ts:Tensor, forward_func:Callable, *args, **kwargs) -> Tensor:
@@ -413,8 +407,8 @@ class TiledDiffusion:
         # Wrap the image conditioning back up since the DDIM code can accept the dict directly.
         # Note that they need to be lists because it just concatenates them later.
         if image_conditioning is not None:
-            cond   = {"c_concat": [image_conditioning], "c_crossattn": [cond]}
-            uncond = {"c_concat": [image_conditioning], "c_crossattn": [uncond]}
+            cond   = self.make_condition_dict([cond],  image_conditioning)
+            uncond = self.make_condition_dict([uncond], image_conditioning)
         
         # We cannot determine the batch size here for different methods, so delay it to the forward_func.
         return forward_func(x, cond, ts, unconditional_conditioning=uncond, *args, **kwargs)
@@ -662,7 +656,7 @@ class TiledDiffusion:
         else:
             skip = 0
         cond = self.p.sd_model.get_learned_conditioning(prompts)
-        cond_in = {"c_concat": [self.p.image_conditioning], "c_crossattn": [cond]}
+        cond_in = self.make_condition_dict([cond], self.p.image_conditioning)
         sigmas = dnw.get_sigmas(steps).flip(0)
         shared.state.sampling_steps = steps
 

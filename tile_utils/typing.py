@@ -22,4 +22,5 @@ ExtraNetworkData = DefaultDict[str, List[ExtraNetworkParams]]
 
 # 'c_crossattn': Tensor    # prompt cond
 # 'c_concat':    Tensor    # latent mask
+# 'c_adm':       Tensor    # unclip
 CondDict = Dict[str, Tensor]

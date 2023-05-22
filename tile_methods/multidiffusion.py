@@ -64,7 +64,7 @@ class MultiDiffusion(TiledDiffusion):
         # repeat the condition on its first dim
         cond_shape = cond.shape
         cond = cond.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
-        image_cond = cond_input['c_concat'][0]
+        image_cond = self.get_image_cond(cond_input)
         if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
             image_cond_list = []
             for bbox in bboxes:
@@ -73,7 +73,7 @@ class MultiDiffusion(TiledDiffusion):
         else:
             image_cond_shape = image_cond.shape
             image_cond_tile = image_cond.repeat((len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
-        return {"c_crossattn": [cond], "c_concat": [image_cond_tile]}
+        return self.make_condition_dict([cond], image_cond_tile)
 
     @torch.no_grad()
     @keep_signature
@@ -280,11 +280,11 @@ class MultiDiffusion(TiledDiffusion):
             # The negative prompt in custom bbox should not be used for noise inversion
             # otherwise the result will be astonishingly bad.
             cond = Condition.reconstruct_cond(bbox.cond, step)
-            image_cond = local_cond_in['c_concat'][0]
+            image_cond = self.get_image_cond(local_cond_in)
             if image_cond.shape[2:] == (self.h, self.w):
                 image_cond = image_cond[bbox.slicer]
             image_conditioning = image_cond
-            cond_in = {"c_concat": [image_conditioning], "c_crossattn": [cond]}
+            self.make_condition_dict([cond], image_conditioning)
             return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
