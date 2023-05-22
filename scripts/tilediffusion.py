@@ -311,7 +311,7 @@ class Script(modules.scripts.Script):
             print("[Tiled Diffusion] ignore tiling when there's only 1 tile or nothing to do :)")
             return
 
-        bbox_settings = build_bbox_settings(bbox_control_states) if enable_bbox_control else []
+        bbox_settings = build_bbox_settings(bbox_control_states) if enable_bbox_control else {}
 
         if 'png info':
             info = {}
@@ -335,10 +335,7 @@ class Script(modules.scripts.Script):
                     info['NoiseInv Retouch']          = noise_inverse_retouch
                     info['NoiseInv Renoise strength'] = noise_inverse_renoise_strength
                     info['NoiseInv Kernel size']      = noise_inverse_renoise_kernel
-
-            if enable_bbox_control:
-                info["Region control"] = { f'Region {i+1}': v._asdict() for i, v in bbox_settings.items() }
-
+                
         ''' ControlNet hackin '''
         try:
             from scripts.cldm import ControlNet
@@ -383,9 +380,11 @@ class Script(modules.scripts.Script):
         )
 
         if enable_bbox_control:
+            region_info = { f'Region {i+1}': v._asdict() for i, v in bbox_settings.items() }
+            info["Region control"] = region_info
             processing.create_random_tensors_original_md = processing.create_random_tensors
             processing.create_random_tensors = lambda *args, **kwargs: self.create_random_tensors_hijack(
-                bbox_settings, 
+                bbox_settings, region_info, 
                 *args, **kwargs,
             )
 
@@ -489,7 +488,7 @@ class Script(modules.scripts.Script):
         return delegate.sampler_raw
 
     def create_random_tensors_hijack(
-            self, bbox_settings, 
+            self, bbox_settings: Dict, region_info: Dict,
             shape, seeds, subseeds=None, subseed_strength=0.0, seed_resize_from_h=0, seed_resize_from_w=0, p=None,
         ):
         org_random_tensors = processing.create_random_tensors_original_md(shape, seeds, subseeds, subseed_strength, seed_resize_from_h, seed_resize_from_w, p)
@@ -499,8 +498,8 @@ class Script(modules.scripts.Script):
         foreground_noise = torch.zeros_like(org_random_tensors)
         foreground_noise_count = torch.zeros((1, 1, height, width), device=org_random_tensors.device)
 
-        for _, v in bbox_settings.items():
-            seed = get_fixed_seed(v.seed)       # NOTE: fix seed here, cannot fillback to png info
+        for i, v in bbox_settings.items():
+            seed = get_fixed_seed(v.seed)
             x, y, w, h = v.x, v.y, v.w, v.h
             # convert to pixel
             x = int(x * width)
@@ -523,6 +522,7 @@ class Script(modules.scripts.Script):
                 foreground_noise_count[:, :, y:y+h, x:x+w] += 1
             else:
                 raise NotImplementedError
+            region_info['Region ' + str(i+1)]['seed'] = seed
 
         # average
         background_noise = torch.where(background_noise_count > 1, background_noise / background_noise_count, background_noise)

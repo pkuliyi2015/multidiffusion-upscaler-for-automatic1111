@@ -50,7 +50,7 @@ class TiledDiffusion:
         # weights for background & grid bboxes
         self.weights: Tensor = torch.zeros((1, 1, self.h, self.w), device=devices.device, dtype=torch.float32)
 
-        # FIXME: I'm trying to count the step correctly but it's not working
+        # ME: I'm trying to count the step correctly but it's not working
         self.step_count = 0         
         self.inner_loop_count = 0  
         self.kdiff_step = -1
