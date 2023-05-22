@@ -201,7 +201,7 @@ class TiledDiffusion:
     def reconstruct_custom_cond(self, org_cond:CondDict, custom_cond:Cond, custom_uncond:Uncond, bbox:CustomBBox) -> Tuple[List, Tensor, Uncond, Tensor]:
         image_conditioning = None
         if isinstance(org_cond, dict):
-            self.get_image_cond(org_cond)
+            image_cond = self.get_image_cond(org_cond)
             if image_cond.shape[2:] == (self.h, self.w):    # img2img
                 image_cond = image_cond[bbox.slicer]
             image_conditioning = image_cond
