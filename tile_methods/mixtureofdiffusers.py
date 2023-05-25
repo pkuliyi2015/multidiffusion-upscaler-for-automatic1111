@@ -154,7 +154,7 @@ class MixtureOfDiffusers(TiledDiffusion):
                     x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
                 else:
                     custom_cond = Condition.reconstruct_cond(bbox.cond, noise_inverse_step)
-                    image_cond = self.get_image_cond(custom_cond)
+                    image_cond = self.get_image_cond(c_in)
                     if image_cond.shape[2:] == (self.h, self.w):
                         image_cond = image_cond[bbox.slicer]
                     image_conditioning = image_cond
