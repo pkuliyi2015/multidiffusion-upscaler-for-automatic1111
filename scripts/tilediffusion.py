@@ -107,7 +107,7 @@ class Script(modules.scripts.Script):
             with gr.Row(variant='compact') as tab_enable:
                 enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id=uid('enabled'))
                 overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id=uid('overwrite-image-size'))
-                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('MD-keep-input-size'))
+                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('keep-input-size'))
 
             with gr.Row(variant='compact', visible=False) as tab_size:
                 image_width  = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width',  value=1024, elem_id=f'MD-overwrite-width-{tab}')
@@ -140,8 +140,8 @@ class Script(modules.scripts.Script):
                     gr.HTML('<p>Please test on small images before actual upscale. Default params require denoise <= 0.6</p>')
                 with gr.Row(variant='compact'):
                     noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id=uid('noise-inverse-retouch'))
-                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id=uid('MD-noise-inverse-renoise-strength'))
-                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=uid('MD-noise-inverse-renoise-kernel'))
+                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id=uid('noise-inverse-renoise-strength'))
+                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=uid('noise-inverse-renoise-kernel'))
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
             with gr.Group(elem_id=f'MD-bbox-control-{tab}') as tab_bbox:
