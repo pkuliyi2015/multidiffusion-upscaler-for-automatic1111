@@ -100,11 +100,14 @@ class Script(modules.scripts.Script):
         tab    = 't2i'  if not is_img2img else 'i2i'
         is_t2i = 'true' if not is_img2img else 'false'
 
+        def uid(name):
+            return f'MD-{tab}-{name}'
+
         with gr.Accordion('Tiled Diffusion', open=False):
             with gr.Row(variant='compact') as tab_enable:
-                enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id='MD-enabled')
-                overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id='MD-overwrite-image-size')
-                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id='MD-keep-input-size')
+                enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id=uid('enabled'))
+                overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id=uid('overwrite-image-size'))
+                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('MD-keep-input-size'))
 
             with gr.Row(variant='compact', visible=False) as tab_size:
                 image_width  = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width',  value=1024, elem_id=f'MD-overwrite-width-{tab}')
@@ -112,40 +115,40 @@ class Script(modules.scripts.Script):
                 overwrite_size.change(fn=gr_show, inputs=overwrite_size, outputs=tab_size, show_progress=False)
 
             with gr.Row(variant='compact') as tab_param:
-                method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value if is_t2i else Method.MIX_DIFF.value, elem_id='MD-method')
-                control_tensor_cpu = gr.Checkbox(label='Move ControlNet tensor to CPU (if applicable)', value=False, elem_id='MD-control-tensor-cpu')
-                reset_status = gr.Button(value='Free GPU', variant='tool', elem_id='MD-reset-status')
+                method = gr.Dropdown(label='Method', choices=[e.value for e in Method], value=Method.MULTI_DIFF.value if is_t2i else Method.MIX_DIFF.value, elem_id=uid('method'))
+                control_tensor_cpu = gr.Checkbox(label='Move ControlNet tensor to CPU (if applicable)', value=False, elem_id=uid('control-tensor-cpu'))
+                reset_status = gr.Button(value='Free GPU', variant='tool')
                 reset_status.click(fn=self.reset_and_gc, show_progress=False)  
                 
             with gr.Group() as tab_tile:
                 with gr.Row(variant='compact'):
-                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96, elem_id='MD-latent-tile-width')
-                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96, elem_id='MD-latent-tile-height')
+                    tile_width = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile width', value=96, elem_id=uid('latent-tile-width'))
+                    tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96, elem_id=uid('latent-tile-height'))
 
                 with gr.Row(variant='compact'):
-                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48 if is_t2i else 8, elem_id='MD-latent-tile-overlap')
-                    batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=4, elem_id='MD-latent-tile-batch-size')
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent tile overlap', value=48 if is_t2i else 8, elem_id=uid('latent-tile-overlap'))
+                    batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent tile batch size', value=4, elem_id=uid('latent-tile-batch-size'))
 
             with gr.Row(variant='compact', visible=is_img2img) as tab_upscale:
-                upscaler_name = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value='None', elem_id='MD-upscaler-index')
-                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0, elem_id='MD-upscaler-factor')
+                upscaler_name = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value='None', elem_id=uid('upscaler-index'))
+                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
 
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img) as tab_noise_inv:
                 with gr.Row(variant='compact'):
-                    noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False, elem_id='MD-noise-inverse')
-                    noise_inverse_steps = gr.Slider(minimum=1, maximum=200, step=1, label='Inversion steps', value=10, elem_id='MD-noise-inverse-steps')
+                    noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False, elem_id=uid('noise-inverse'))
+                    noise_inverse_steps = gr.Slider(minimum=1, maximum=200, step=1, label='Inversion steps', value=10, elem_id=uid('noise-inverse-steps'))
                     gr.HTML('<p>Please test on small images before actual upscale. Default params require denoise <= 0.6</p>')
                 with gr.Row(variant='compact'):
-                    noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id='MD-noise-inverse-retouch')
-                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id='MD-noise-inverse-renoise-strength')
-                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id='MD-noise-inverse-renoise-kernel')
+                    noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id=uid('noise-inverse-retouch'))
+                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id=uid('MD-noise-inverse-renoise-strength'))
+                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=uid('MD-noise-inverse-renoise-kernel'))
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
             with gr.Group(elem_id=f'MD-bbox-control-{tab}') as tab_bbox:
                 with gr.Accordion('Region Prompt Control', open=False):
                     with gr.Row(variant='compact'):
-                        enable_bbox_control = gr.Checkbox(label='Enable Control', value=False, elem_id='MD-enable-bbox-control')
-                        draw_background = gr.Checkbox(label='Draw full canvas background', value=False, elem_id='MD-draw-background')
+                        enable_bbox_control = gr.Checkbox(label='Enable Control', value=False, elem_id=uid('enable-bbox-control'))
+                        draw_background = gr.Checkbox(label='Draw full canvas background', value=False, elem_id=uid('raw-background'))
                         causal_layers = gr.Checkbox(label='Causalize layers', value=False, visible=False, elem_id='MD-causal-layers')   # NOTE: currently not used
 
                     with gr.Row(variant='compact'):
@@ -172,12 +175,12 @@ class Script(modules.scripts.Script):
                             create_button.click(fn=None, outputs=ref_image, _js='onCreateI2IRefClick', show_progress=False)
 
                     with gr.Row(variant='compact'):
-                        cfg_name = gr.Textbox(label='Custom Config File', value='config.json', elem_id='MD-cfg-name')
-                        cfg_dump = gr.Button(value='💾 Save', variant='tool', elem_id='MD-cfg-dump')
-                        cfg_load = gr.Button(value='⚙️ Load', variant='tool', elem_id='MD-cfg-load')
+                        cfg_name = gr.Textbox(label='Custom Config File', value='config.json', elem_id=uid('cfg-name'))
+                        cfg_dump = gr.Button(value='💾 Save', variant='tool')
+                        cfg_load = gr.Button(value='⚙️ Load', variant='tool')
                     
                     with gr.Row(variant='compact'):
-                        cfg_tip = gr.HTML(value='', visible=False, elem_id='MD-cfg-tip')
+                        cfg_tip = gr.HTML(value='', visible=False)
                     
                     for i in range(BBOX_MAX_NUM):
                         # Only when displaying & png generate info we use index i+1, in other cases we use i

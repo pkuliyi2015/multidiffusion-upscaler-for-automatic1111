@@ -246,7 +246,7 @@ function displayBox(canvas, is_t2i, bbox_info) {
     // Calculate warning bbox size
     let upscalerFactor = 1.0;
     if (!is_t2i) {
-        const upscalerInput = parseFloat(gradioApp().querySelector('#MD-upscaler-factor input').value);
+        const upscalerInput = parseFloat(gradioApp().querySelector('#MD-i2i-upscaler-factor input').value);
         if (!isNaN(upscalerInput)) upscalerFactor = upscalerInput;
     }
     let maxSize = BBOX_WARNING_SIZE / upscalerFactor * vpScale;
