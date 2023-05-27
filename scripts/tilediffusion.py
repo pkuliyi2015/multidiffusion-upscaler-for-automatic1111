@@ -57,14 +57,14 @@
 # ------------------------------------------------------------------------
 '''
 
-from pathlib import Path
+import os
 import json
 import torch
 import modules
 import numpy as np
 import gradio as gr
 
-from modules import sd_samplers, images, shared, devices, processing
+from modules import sd_samplers, images, shared, devices, processing, scripts
 from modules.shared import opts
 from modules.processing import opt_f, get_fixed_seed
 from modules.ui import gr_show
@@ -76,9 +76,7 @@ from tile_utils.utils import *
 from tile_utils.typing import *
 
 
-SD_WEBUI_PATH = Path.cwd()
-ME_PATH = SD_WEBUI_PATH / 'extensions' / 'multidiffusion-upscaler-for-automatic1111'
-CFG_PATH = ME_PATH / 'region_configs'
+CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, 'md_max_regions', 8), 16)
 
 
