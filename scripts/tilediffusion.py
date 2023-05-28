@@ -146,7 +146,7 @@ class Script(modules.scripts.Script):
                 with gr.Accordion('Region Prompt Control', open=False):
                     with gr.Row(variant='compact'):
                         enable_bbox_control = gr.Checkbox(label='Enable Control', value=False, elem_id=uid('enable-bbox-control'))
-                        draw_background = gr.Checkbox(label='Draw full canvas background', value=False, elem_id=uid('raw-background'))
+                        draw_background = gr.Checkbox(label='Draw full canvas background', value=False, elem_id=uid('draw-background'))
                         causal_layers = gr.Checkbox(label='Causalize layers', value=False, visible=False, elem_id='MD-causal-layers')   # NOTE: currently not used
 
                     with gr.Row(variant='compact'):
@@ -541,8 +541,8 @@ class Script(modules.scripts.Script):
         bbox_settings = build_bbox_settings(bbox_controls)
         data = {'bbox_controls': [v._asdict() for v in bbox_settings.values()]}
 
-        CFG_PATH.mkdir(exist_ok=True, parents=True)
-        fp = CFG_PATH / cfg_name
+        if not os.path.exists(CFG_PATH): os.makedirs(CFG_PATH)
+        fp = os.path.join(CFG_PATH, cfg_name)
         with open(fp, 'w', encoding='utf-8') as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
 
@@ -551,8 +551,8 @@ class Script(modules.scripts.Script):
     def load_regions(self, ref_image, cfg_name, *bbox_controls):
         if ref_image is None:
             return [gr_value(v) for v in bbox_controls] + [gr_value(f'<span style="color:red">Please create or upload a ref image first.</span>', visible=True)]
-        fp = CFG_PATH / cfg_name
-        if not fp.exists(): 
+        fp = os.path.join(CFG_PATH, cfg_name)
+        if not os.path.exists(fp): 
             return [gr_value(v) for v in bbox_controls] + [gr_value(f'<span style="color:red">Config {fp} not found.</span>', visible=True)]
 
         try:
