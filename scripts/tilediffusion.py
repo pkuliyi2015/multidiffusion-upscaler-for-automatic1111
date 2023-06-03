@@ -56,7 +56,7 @@
 #
 # ------------------------------------------------------------------------
 '''
-
+import math
 import os
 import json
 import torch
@@ -129,6 +129,7 @@ class Script(modules.scripts.Script):
 
             with gr.Row(variant='compact', visible=is_img2img) as tab_upscale:
                 upscaler_name = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value='None', elem_id=uid('upscaler-index'))
+                upscaler_name_2 = gr.Dropdown(label='Upscaler 2', choices=[x.name for x in shared.sd_upscalers], value='None', elem_id=uid('upscaler-index-2'))
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=0.05, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
 
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img) as tab_noise_inv:
@@ -243,7 +244,7 @@ class Script(modules.scripts.Script):
             enabled, method,
             overwrite_size, keep_input_size, image_width, image_height,
             tile_width, tile_height, overlap, batch_size,
-            upscaler_name, scale_factor,
+            upscaler_name, upscaler_name_2, scale_factor,
             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
             control_tensor_cpu,
             enable_bbox_control, draw_background, causal_layers,
@@ -254,7 +255,7 @@ class Script(modules.scripts.Script):
             enabled: bool, method: str,
             overwrite_size: bool, keep_input_size: bool, image_width: int, image_height: int,
             tile_width: int, tile_height: int, overlap: int, tile_batch_size: int,
-            upscaler_name: str, scale_factor: float,
+            upscaler_name: str, upscaler_name_2: str, scale_factor: float,
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
             control_tensor_cpu: bool, 
             enable_bbox_control: bool, draw_background: bool, causal_layers: bool, 
@@ -275,21 +276,24 @@ class Script(modules.scripts.Script):
 
         is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
         if is_img2img:        # img2img, TODO: replace with `images.resize_image()`
-            idx = [x.name for x in shared.sd_upscalers].index(upscaler_name)
-            upscaler = shared.sd_upscalers[idx]
             init_img = p.init_images[0]
-            init_img = images.flatten(init_img, opts.img2img_background_color)
-            if upscaler.name != "None":
-                print(f"[Tiled Diffusion] upscaling image with {upscaler.name}...")
-                image = upscaler.scaler.upscale(init_img, scale_factor, upscaler.data_path)
-                p.extra_generation_params["Tiled Diffusion upscaler"] = upscaler.name
-                p.extra_generation_params["Tiled Diffusion scale factor"] = scale_factor
-                # For webui folder based batch processing, the length of init_images is not 1
-                # We need to replace all images with the upsampled one
-                for i in range(len(p.init_images)):
-                    p.init_images[i] = image
-            else:
-                image = init_img
+            image = images.flatten(init_img, opts.img2img_background_color)
+
+            if upscaler_name and upscaler_name_2:
+                scale_factor = math.sqrt(scale_factor)
+
+            for name in (upscaler_name, upscaler_name_2):
+                idx = [x.name for x in shared.sd_upscalers].index(name)
+                upscaler = shared.sd_upscalers[idx]
+                if upscaler.name != "None":
+                    print(f"[Tiled Diffusion] upscaling image with {upscaler.name}...")
+                    image = upscaler.scaler.upscale(image, scale_factor, upscaler.data_path)
+                    p.extra_generation_params["Tiled Diffusion upscaler"] = upscaler.name
+                    p.extra_generation_params["Tiled Diffusion scale factor"] = scale_factor
+                    # For webui folder based batch processing, the length of init_images is not 1
+                    # We need to replace all images with the upsampled one
+            for i in range(len(p.init_images)):
+                p.init_images[i] = image
 
             # decide final canvas size
             if keep_input_size:
