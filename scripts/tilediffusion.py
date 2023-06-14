@@ -296,8 +296,8 @@ class Script(modules.scripts.Script):
                 p.width  = image.width
                 p.height = image.height
             elif upscaler.name != "None":
-                p.width  = scale_factor * p.width_original_md
-                p.height = scale_factor * p.height_original_md
+                p.width  = int(scale_factor * p.width_original_md)
+                p.height = int(scale_factor * p.height_original_md)
         elif overwrite_size:  # txt2img
             p.width  = image_width
             p.height = image_height
