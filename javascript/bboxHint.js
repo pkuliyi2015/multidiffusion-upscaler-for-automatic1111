@@ -512,16 +512,29 @@ window.addEventListener('resize', _ => {
     updateBoxes(false);
 });
 
-window.addEventListener('DOMNodeInserted', e => {
-    if (!e) { return; }
-    if (!e.target) { return; }
-    if (!e.target.classList) { return; }
-    if (!e.target.classList.contains('label-wrap')) { return; }
-
-    for (let tab of ['t2i', 'i2i']) {
-        const div = gradioApp().querySelector('#MD-bbox-control-' + tab +' div.label-wrap');
-        if (!div) { continue; }
-    
-        updateBoxes(tab === 't2i');
+// ======== Gradio Bug Fix ========
+// For Gradio versions > 3.16.0 and < 3.29.0, the accordion DOM will be deleted when it is closed.
+// We need to judge the versions and listen to the accordion open event, rerender the bbox at that time.
+// This silly bug fix is only for compatibility, we recommend to update the gradio version to 3.29.0 or higher.
+try {
+    const GRADIO_VERSIONS = window.gradio_config["version"].split(".");
+    const gradio_major_version = parseInt(GRADIO_VERSIONS[0]);
+    const gradio_minor_version = parseInt(GRADIO_VERSIONS[1]);
+    if (gradio_major_version == 3 && gradio_minor_version > 16 && gradio_minor_version < 29) {
+        let listener = e => {
+            if (!e) { return; }
+            if (!e.target) { return; }
+            if (!e.target.classList) { return; }
+            if (!e.target.classList.contains('label-wrap')) { return; }
+            for (let tab of ['t2i', 'i2i']) {
+                const div = gradioApp().querySelector('#MD-bbox-control-' + tab +' div.label-wrap');
+                if (!div) { continue; }
+                updateBoxes(tab === 't2i');
+            }
+        };
+        window.addEventListener('DOMNodeInserted', listener);
     }
-});
+} catch (ignored) {
+    // If the above code failed, the gradio version shouldn't be in the range of 3.16.0 to 3.29.0, so we just return.
+}
+// ======== Gradio Bug Fix ========
