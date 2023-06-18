@@ -9,6 +9,8 @@
 
 如果你喜欢这个项目，请给作者一个 star！⭐
 
+ [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pkuliyi2015)
+
 ****
 
 本插件通过以下三种技术实现了 **在有限的显存中进行大型图像绘制**：

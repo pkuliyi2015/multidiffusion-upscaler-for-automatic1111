@@ -11,6 +11,8 @@ Please be aware that the License of this repo has changed to prevent some web sh
 **自许可证修改之日(AOE 2023.3.28)起，之后的版本禁止用于商业贩售 (不可贩售本仓库代码，但衍生的艺术创作内容物不受此限制)。**
 
 If you like the project, please give me a star! ⭐
+ 
+ [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/pkuliyi2015)
 
 ****
 
