@@ -11,7 +11,7 @@ from modules.processing import StableDiffusionProcessing as Processing, StableDi
 from modules.prompt_parser import MulticondLearnedConditioning, ScheduledPromptConditioning
 from modules.extra_networks import ExtraNetworkParams
 from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiser
-from modules.sd_samplers_compvis import VanillaStableDiffusionSampler
+from modules.sd_samplers_timesteps import VanillaStableDiffusionSampler
 
 ModuleType = type(sys)
 
@@ -20,7 +20,9 @@ Cond = MulticondLearnedConditioning
 Uncond = List[List[ScheduledPromptConditioning]]
 ExtraNetworkData = DefaultDict[str, List[ExtraNetworkParams]]
 
-# 'c_crossattn': Tensor    # prompt cond
-# 'c_concat':    Tensor    # latent mask
-# 'c_adm':       Tensor    # unclip
+# 'c_crossattn'     List[Tensor[B, L=77, D=768]]    prompt cond (tcond)
+# 'c_concat'        List[Tensor[B, C=5, H, W]]      latent mask (icond)
+# 'c_adm'           Tensor[?]                       unclip (icond)
+# 'crossattn'       Tensor[B, L=77, D=2048]         sdxl (tcond)
+# 'vector'          Tensor[B, D]                    sdxl (tcond)
 CondDict = Dict[str, Tensor]

@@ -2,20 +2,22 @@ import math
 import torch
 from types import MethodType
 
-import inspect
 import k_diffusion as K
 import torch.nn.functional as F
 
 from tqdm import tqdm
 
 from modules import devices, shared, sd_samplers_common
-from modules.shared import state, cmd_opts
+from modules.shared import state
+from modules.shared_state import State
+state: State
 from modules.processing import opt_f
 
 from tile_utils.utils import *
 from tile_utils.typing import *
 
-class TiledDiffusion:
+
+class AbstractDiffusion:
 
     def __init__(self, p: Processing, sampler: Sampler):
         self.method = self.__class__.__name__
@@ -33,14 +35,6 @@ class TiledDiffusion:
             self.is_edit_model = (shared.sd_model.cond_stage_key == "edit"      # "txt"
                 and self.sampler.image_cfg_scale is not None 
                 and self.sampler.image_cfg_scale != 1.0)
-            
-        # img conditioning for different models (inpaint/unclip model)
-        if shared.sd_model.model.conditioning_key == "crossattn-adm":
-            self.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": c_crossattn, "c_adm": c_adm} 
-            self.get_image_cond = lambda c_in: c_in['c_adm']
-        else:
-            self.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": c_crossattn, "c_concat": [c_concat]} 
-            self.get_image_cond = lambda c_in: c_in['c_concat'][0]
 
         # cache. final result of current sampling step, [B, C=4, H//8, W//8]
         # avoiding overhead of creating new tensors and weight summing
@@ -50,7 +44,7 @@ class TiledDiffusion:
         # weights for background & grid bboxes
         self.weights: Tensor = torch.zeros((1, 1, self.h, self.w), device=devices.device, dtype=torch.float32)
 
-        # ME: I'm trying to count the step correctly but it's not working
+        # FIXME: I'm trying to count the step correctly but it's not working
         self.step_count = 0         
         self.inner_loop_count = 0  
         self.kdiff_step = -1
@@ -136,6 +130,49 @@ class TiledDiffusion:
         assert self.total_bboxes > 0, "Nothing to paint! No background to draw and no custom bboxes were provided."
 
         self.pbar = tqdm(total=(self.total_bboxes) * state.sampling_steps, desc=f"{self.method} Sampling: ")
+
+    ''' ↓↓↓ cond_dict utils ↓↓↓ '''
+
+    def _tcond_key(self, cond_dict:CondDict) -> str:
+        return 'crossattn' if 'crossattn' in cond_dict else 'c_crossattn'
+
+    def get_tcond(self, cond_dict:CondDict) -> Tensor:
+        tcond = cond_dict[self._tcond_key(cond_dict)]
+        if isinstance(tcond, list): tcond = tcond[0]
+        return tcond
+
+    def set_tcond(self, cond_dict:CondDict, tcond:Tensor):
+        key = self._tcond_key(cond_dict)
+        if isinstance(cond_dict[key], list): tcond = [tcond]
+        cond_dict[key] = tcond
+
+    def _icond_key(self, cond_dict:CondDict) -> str:
+        return 'c_adm' if shared.sd_model.model.conditioning_key in ['crossattn-adm', 'adm'] else 'c_concat'
+
+    def get_icond(self, cond_dict:CondDict) -> Tensor:
+        ''' icond differs for different models (inpaint/unclip model) '''
+        key = self._icond_key(cond_dict)
+        icond = cond_dict[key]
+        if isinstance(icond, list): icond = icond[0]
+        return icond
+
+    def set_icond(self, cond_dict:CondDict, icond:Tensor):
+        key = self._icond_key(cond_dict)
+        if isinstance(cond_dict[key], list): icond = [icond]
+        cond_dict[key] = icond
+
+    def _vcond_key(self, cond_dict:CondDict) -> Optional[str]:
+        return 'vector' if 'vector' in cond_dict else None
+
+    def get_vcond(self, cond_dict:CondDict) -> Optional[Tensor]:
+        ''' vector for SDXL '''
+        key = self._vcond_key(cond_dict)
+        return cond_dict.get(key)
+
+    def set_vcond(self, cond_dict:CondDict, vcond:Optional[Tensor]):
+        key = self._vcond_key(cond_dict)
+        if key is not None:
+            cond_dict[key] = vcond
 
     ''' ↓↓↓ extensive functionality ↓↓↓ '''
 
@@ -505,7 +542,8 @@ class TiledDiffusion:
         for param_id in range(len(self.control_params)):
             control_tensor = self.control_tensor_custom[param_id][bbox_id].to(devices.device)
             self.control_params[param_id].hint_cond = control_tensor.repeat((repeat_size, 1, 1, 1))
-    
+
+
     @stablesr
     def init_stablesr(self, stablesr_script:ModuleType):
         if stablesr_script.stablesr_model is None: return
@@ -534,7 +572,6 @@ class TiledDiffusion:
         if not self.enable_stablesr: return
         if self.stablesr_script.stablesr_model is None: return
         self.stablesr_script.stablesr_model.latent_image = self.stablesr_tensor
-
 
     @stablesr
     def switch_stablesr_tensors(self, batch_id:int):

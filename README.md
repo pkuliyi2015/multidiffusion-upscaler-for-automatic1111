@@ -25,6 +25,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ## Features
 
+- [x] SDXL model support (no region control)
 - [x] [StableSR support](https://github.com/pkuliyi2015/sd-webui-stablesr)
 - [x] [Tiled Noise Inversion](#🆕-tiled-noise-inversion)
 - [x] [Tiled VAE](#🔥-tiled-vae)

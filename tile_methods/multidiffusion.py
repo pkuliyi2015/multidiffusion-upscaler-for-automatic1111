@@ -2,13 +2,15 @@ import torch
 
 from modules import devices, extra_networks
 from modules.shared import state
+from modules.shared_state import State
+state: State
 
-from tile_methods.abstractdiffusion import TiledDiffusion
+from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_utils.utils import *
 from tile_utils.typing import *
 
 
-class MultiDiffusion(TiledDiffusion):
+class MultiDiffusion(AbstractDiffusion):
     """
         Multi-Diffusion Implementation
         https://arxiv.org/abs/2302.08113
@@ -30,8 +32,12 @@ class MultiDiffusion(TiledDiffusion):
             self.sampler.inner_model.forward = self.kdiff_forward
         else:
             self.sampler: VanillaStableDiffusionSampler
-            self.sampler_forward = self.sampler.orig_p_sample_ddim
-            self.sampler.orig_p_sample_ddim = self.ddim_forward
+            if isinstance(self.p, ProcessingImg2Img):
+                self.sampler_forward = self.sampler.sample_img2img
+                self.sampler.sample_img2img = self.ddim_forward
+            else:
+                self.sampler_forward = self.sampler.sample
+                self.sampler.sample = self.ddim_forward
 
     @staticmethod
     def unhook():
@@ -59,81 +65,51 @@ class MultiDiffusion(TiledDiffusion):
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
 
-    def repeat_cond_dict(self, cond_input:CondDict, bboxes:List[CustomBBox]) -> CondDict:
-        cond = cond_input['c_crossattn'][0]
-        # repeat the condition on its first dim
-        cond_shape = cond.shape
-        cond = cond.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
-        image_cond = self.get_image_cond(cond_input)
-        if image_cond.shape[2] == self.h and image_cond.shape[3] == self.w:
-            image_cond_list = []
-            for bbox in bboxes:
-                image_cond_list.append(image_cond[bbox.slicer])
-            image_cond_tile = torch.cat(image_cond_list, dim=0)
-        else:
-            image_cond_shape = image_cond.shape
-            image_cond_tile = image_cond.repeat((len(bboxes),) + (1,) * (len(image_cond_shape) - 1))
-        return self.make_condition_dict([cond], image_cond_tile)
-
     @torch.no_grad()
     @keep_signature
     def kdiff_forward(self, x_in:Tensor, sigma_in:Tensor, cond:CondDict) -> Tensor:
-        '''
-        This function hijacks `k_diffusion.external.CompVisDenoiser.forward()`
-        So its signature should be the same as the original function, especially the "cond" should be with exactly the same name
-        '''
-
         assert CompVisDenoiser.forward
 
-        def org_func(x:Tensor):
+        def org_func(x:Tensor) -> Tensor:
             return self.sampler_forward(x, sigma_in, cond=cond)
 
-        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
+        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]) -> Tensor:
             # For kdiff sampler, the dim 0 of input x_in is:
             #   = batch_size * (num_AND + 1)   if not an edit model
             #   = batch_size * (num_AND + 2)   otherwise
-            sigma_in_tile = sigma_in.repeat(len(bboxes))
-            new_cond = self.repeat_cond_dict(cond, bboxes)
-            x_tile_out = self.sampler_forward(x_tile, sigma_in_tile, cond=new_cond)
+            sigma_tile = self._rep_dim0(sigma_in, len(bboxes))
+            cond_tile = self.repeat_cond_dict(cond, bboxes)
+            x_tile_out = self.sampler_forward(x_tile, sigma_tile, cond=cond_tile)
             return x_tile_out
 
-        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
+        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox) -> Tensor:
             return self.kdiff_custom_forward(x, sigma_in, cond, bbox_id, bbox, self.sampler_forward)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
     @torch.no_grad()
     @keep_signature
-    def ddim_forward(self, x_in:Tensor, cond_in:Union[CondDict, Tensor], ts:Tensor, unconditional_conditioning:Tensor, *args, **kwargs) -> Tuple[Tensor, Tensor]:
-        '''
-        This function will replace the original p_sample_ddim function in ldm/diffusionmodels/ddim.py
-        So its signature should be the same as the original function,
-        Particularly, the unconditional_conditioning should be with exactly the same name
-        '''
+    def ddim_forward(self, p:Processing, x_in:Tensor, cond_in:Union[CondDict, Tensor], ts:Tensor, unconditional_conditioning:Tensor, *args, **kwargs) -> Tuple[Tensor, Tensor]:
+        assert VanillaStableDiffusionSampler.sample
+        assert VanillaStableDiffusionSampler.sample_img2img
 
-        assert VanillaStableDiffusionSampler.p_sample_ddim_hook
+        def org_func(x:Tensor) -> Tensor:
+            return self.sampler_forward(x, p, cond_in, ts, unconditional_conditioning=unconditional_conditioning, *args, **kwargs)
 
-        def org_func(x:Tensor):
-            return self.sampler_forward(x, cond_in, ts, unconditional_conditioning=unconditional_conditioning, *args, **kwargs)
-
-        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
-            if isinstance(cond_in, dict):
-                ts_tile    = ts.repeat(len(bboxes))
+        def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]) -> Tuple[Tensor, Tensor]:
+            n_rep = len(bboxes)
+            if isinstance(cond_in, dict):   # FIXME: when will enter this branch?
+                ts_tile    = self._rep_dim0(ts, n_rep)
                 cond_tile  = self.repeat_cond_dict(cond_in, bboxes)
                 ucond_tile = self.repeat_cond_dict(unconditional_conditioning, bboxes)
             else:
-                ts_tile = ts.repeat(len(bboxes))
-                cond_shape  = cond_in.shape
-                cond_tile   = cond_in.repeat((len(bboxes),) + (1,) * (len(cond_shape) - 1))
-                ucond_shape = unconditional_conditioning.shape
-                ucond_tile  = unconditional_conditioning.repeat((len(bboxes),) + (1,) * (len(ucond_shape) - 1))
-            x_tile_out, x_pred = self.sampler_forward(
-                x_tile, cond_tile, ts_tile, 
-                unconditional_conditioning=ucond_tile, 
-                *args, **kwargs)
+                ts_tile    = self._rep_dim0(ts, n_rep)
+                cond_tile  = self._rep_dim0(cond_in, n_rep)
+                ucond_tile = self._rep_dim0(unconditional_conditioning, n_rep)
+            x_tile_out, x_pred = self.sampler_forward(x_tile, cond_tile, ts_tile, unconditional_conditioning=ucond_tile, *args, **kwargs)
             return x_tile_out, x_pred
 
-        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
+        def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox) -> Tensor:
             # before the final forward, we can set the control tensor
             def forward_func(x, *args, **kwargs):
                 self.set_custom_controlnet_tensors(bbox_id, 2*x.shape[0])
@@ -143,17 +119,48 @@ class MultiDiffusion(TiledDiffusion):
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
 
-    def sample_one_step(self, x_in:Tensor, org_func: Callable, repeat_func:Callable, custom_func:Callable) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    def _rep_dim0(self, x:Tensor, n:int) -> Tensor:
+        ''' repeat the tensor on it's first dim '''
+        if n == 1: return x
+        shape = [n] + [-1] * (len(x.shape) - 1)     # [N, 1, ...]
+        return x.expand(shape)      # `expand` is much lighter than `tile`
+
+    def repeat_cond_dict(self, cond_in:CondDict, bboxes:List[CustomBBox]) -> CondDict:
+        ''' repeat cond_dict for a batch of tiles '''
+        # n_repeat
+        breakpoint()
+        n_rep = len(bboxes)
+        cond_out = cond_in.copy()
+        # txt cond
+        tcond = self.get_tcond(cond_in)           # [B=1, L, D] => [B*N, L, D]
+        tcond = self._rep_dim0(tcond, n_rep)
+        self.set_tcond(cond_out, tcond)
+        # img cond
+        icond = self.get_icond(cond_in)
+        if icond.shape[2:] == (self.h, self.w):   # img2img, [B=1, C, H, W]
+            icond = torch.cat([icond[bbox.slicer] for bbox in bboxes], dim=0)
+        else:                                     # txt2img, [B=1, C=5, H=1, W=1]
+            icond = self._rep_dim0(icond, n_rep)
+        self.set_icond(cond_out, icond)
+        # vec cond (SDXL)
+        vcond = self.get_vcond(cond_in)           # [B=1, D]
+        if vcond is not None:
+            vcond = self._rep_dim0(vcond, n_rep)  # [B*N, D]
+            self.set_vcond(cond_out, vcond)
+        return cond_out
+
+    def sample_one_step(self, x_in:Tensor, org_func:Callable, repeat_func:Callable, custom_func:Callable) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         '''
         this method splits the whole latent and process in tiles
             - x_in: current whole U-Net latent
             - org_func: original forward function, when use highres
-            - denoise_func: one step denoiser for grid tile
-            - denoise_custom_func: one step denoiser for custom tile
+            - repeat_func: one step denoiser for grid tile
+            - custom_func: one step denoiser for custom tile
         '''
 
         N, C, H, W = x_in.shape
-        if H != self.h or W != self.w:
+        if (H, W) != (self.h, self.w):
+            # We don't tile highres, let's just use the original org_func
             self.reset_controlnet_tensors()
             return org_func(x_in)
 
@@ -166,13 +173,10 @@ class MultiDiffusion(TiledDiffusion):
                 if state.interrupted: return x_in
 
                 # batching
-                x_tile_list = []
-                for bbox in bboxes:
-                    x_tile_list.append(x_in[bbox.slicer])
-                x_tile = torch.cat(x_tile_list, dim=0)
+                x_tile = torch.cat([x_in[bbox.slicer] for bbox in bboxes], dim=0)   # [TB, C, TH, TW]
 
                 # controlnet tiling
-                # FIXME: is_denoise is default to False, however it is set to True in case of MixtureOfDiffusers
+                # FIXME: is_denoise is default to False, however it is set to True in case of MixtureOfDiffusers, why?
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes))
 
                 # stablesr tiling
@@ -262,30 +266,30 @@ class MultiDiffusion(TiledDiffusion):
                 x_pred_out            = torch.where(x_feather_count > 0, x_pred_out * (1 - x_feather_mask) + x_feather_pred_buffer * x_feather_mask, x_pred_out)
 
         return x_out if self.is_kdiff else (x_out, x_pred_out)
-    
 
     def get_noise(self, x_in:Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
         # NOTE: The following code is analytically wrong but aesthetically beautiful
-        local_cond_in = cond_in.copy()
+        cond_in_original = cond_in.copy()
+
         def org_func(x:Tensor):
-            return shared.sd_model.apply_model(x, sigma_in, cond=local_cond_in)
+            return shared.sd_model.apply_model(x, sigma_in, cond=cond_in_original)
 
         def repeat_func(x_tile:Tensor, bboxes:List[CustomBBox]):
             sigma_in_tile = sigma_in.repeat(len(bboxes))
-            new_cond = self.repeat_cond_dict(local_cond_in, bboxes)
-            x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=new_cond)
+            cond_out = self.repeat_cond_dict(cond_in_original, bboxes)
+            x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=cond_out)
             return x_tile_out
         
         def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             # The negative prompt in custom bbox should not be used for noise inversion
             # otherwise the result will be astonishingly bad.
-            cond = Condition.reconstruct_cond(bbox.cond, step)
-            image_cond = self.get_image_cond(local_cond_in)
-            if image_cond.shape[2:] == (self.h, self.w):
-                image_cond = image_cond[bbox.slicer]
-            image_conditioning = image_cond
-            self.make_condition_dict([cond], image_conditioning)
-            return shared.sd_model.apply_model(x, sigma_in, cond=cond_in)
+            cond_out: CondDict = cond_in.copy()
+            tcond = Condition.reconstruct_cond(bbox.cond, step).unsqueeze_(0)
+            self.set_tcond(cond_out, tcond)
+            icond = self.get_icond(cond_in_original)
+            if icond.shape[2:] == (self.h, self.w):
+                icond = icond[bbox.slicer]
+            self.set_icond(cond_out, icond)
+            return shared.sd_model.apply_model(x, sigma_in, cond=cond_out)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
-    

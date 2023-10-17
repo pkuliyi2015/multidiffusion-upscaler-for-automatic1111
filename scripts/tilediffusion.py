@@ -68,7 +68,7 @@ from modules.shared import opts
 from modules.processing import opt_f, get_fixed_seed
 from modules.ui import gr_show
 
-from tile_methods.abstractdiffusion import TiledDiffusion
+from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_methods.multidiffusion import MultiDiffusion
 from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
 from tile_utils.utils import *
@@ -83,7 +83,7 @@ class Script(scripts.Script):
     def __init__(self):
         self.controlnet_script: ModuleType = None
         self.stablesr_script: ModuleType = None
-        self.delegate: TiledDiffusion = None
+        self.delegate: AbstractDiffusion = None
         self.noise_inverse_cache: NoiseInverseCache = None
 
     def title(self):
