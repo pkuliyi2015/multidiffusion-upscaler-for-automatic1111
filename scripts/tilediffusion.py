@@ -95,11 +95,9 @@ class Script(scripts.Script):
     def ui(self, is_img2img):
         tab    = 't2i'  if not is_img2img else 'i2i'
         is_t2i = 'true' if not is_img2img else 'false'
+        uid = lambda name: f'MD-{tab}-{name}'
 
-        def uid(name):
-            return f'MD-{tab}-{name}'
-
-        with gr.Accordion('Tiled Diffusion', open=False):
+        with gr.Accordion('Tiled Diffusion', open=False, elem_id=f'MD-{tab}'):
             with gr.Row(variant='compact') as tab_enable:
                 enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id=uid('enabled'))
                 overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id=uid('overwrite-image-size'))

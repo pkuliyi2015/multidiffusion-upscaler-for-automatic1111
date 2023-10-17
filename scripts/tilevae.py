@@ -663,9 +663,9 @@ class Script(scripts.Script):
 
     def ui(self, is_img2img):
         tab = 't2i' if not is_img2img else 'i2i'
-        def uid(name):
-            return f'tiledvae-{tab}-{name}'
-        with gr.Accordion('Tiled VAE', open=False):
+        uid = lambda name: f'MD-{tab}-{name}'
+
+        with gr.Accordion('Tiled VAE', open=False, elem_id=f'MDV-{tab}'):
             with gr.Row() as tab_enable:
                 enabled = gr.Checkbox(label='Enable Tiled VAE', value=False, elem_id=uid('enable'))
                 vae_to_gpu = gr.Checkbox(label='Move VAE to GPU (if possible)', value=True, elem_id=uid('vae2gpu'))
