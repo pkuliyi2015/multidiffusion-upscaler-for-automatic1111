@@ -423,7 +423,7 @@ class Script(scripts.Script):
 
         flag_noise_inverse = hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse
         if flag_noise_inverse:
-            print('warn: noise inversion only supports the Euler sampler, switch to it sliently...')
+            print('warn: noise inversion only supports the "Euler" sampler, switch to it sliently...')
             name = 'Euler'
             p.sampler_name = 'Euler'
         if name is None: print('>> name is empty')
@@ -457,16 +457,18 @@ class Script(scripts.Script):
 
         self.delegate = delegate
 
-        info = (
-            f"{method.value} hooked into {name!r} sampler, " +
-            f"Tile size: {tile_width}x{tile_height}, " +
-            f"Tile batches: {len(self.delegate.batched_bboxes)}, " +
-            f"Batch size: {tile_batch_size}."
-        )
+        info = ' '.join([
+            f"{method.value} hooked into {name!r} sampler," +
+            f"Tile size: {delegate.tile_h}x{delegate.tile_w}," +
+            f"Tile count: {delegate.num_tiles}," +
+            f"Batch size: {delegate.tile_bs}," +
+            f"Tile batches: {len(delegate.batched_bboxes)}."
+        ])
         exts = [
-            f"NoiseInv"   if flag_noise_inverse     else None,
-            f"RegionCtrl" if enable_bbox_control    else None,
-            f"ContrlNet"  if self.controlnet_script else None,
+            "NoiseInv"   if flag_noise_inverse     else None,
+            "RegionCtrl" if enable_bbox_control    else None,
+            "ContrlNet"  if self.controlnet_script else None,
+            "StableSR"   if self.stablesr_script   else None,
         ]
         ext_info = ', '.join([e for e in exts if e])
         if ext_info: ext_info = f' (ext: {ext_info})'

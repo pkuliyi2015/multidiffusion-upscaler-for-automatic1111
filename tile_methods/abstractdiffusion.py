@@ -53,6 +53,8 @@ class AbstractDiffusion:
         self.enable_grid_bbox: bool = False
         self.tile_w: int = None
         self.tile_h: int = None
+        self.tile_bs: int = None
+        self.num_tiles: int = None
         self.num_batches: int = None
         self.batched_bboxes: List[List[BBox]] = []
 
@@ -187,9 +189,10 @@ class AbstractDiffusion:
         # weights basically indicate how many times a pixel is painted
         bboxes, weights = split_bboxes(self.w, self.h, self.tile_w, self.tile_h, overlap, self.get_tile_weights())
         self.weights += weights
-        self.num_batches = math.ceil(len(bboxes) / tile_bs)
-        BS = math.ceil(len(bboxes) / self.num_batches)          # optimal_batch_size
-        self.batched_bboxes = [bboxes[i*BS:(i+1)*BS] for i in range(self.num_batches)]
+        self.num_tiles = len(bboxes)
+        self.num_batches = math.ceil(self.num_tiles / tile_bs)
+        self.tile_bs = math.ceil(len(bboxes) / self.num_batches)          # optimal_batch_size
+        self.batched_bboxes = [bboxes[i*self.tile_bs:(i+1)*self.tile_bs] for i in range(self.num_batches)]
 
     @grid_bbox
     def get_tile_weights(self) -> Union[Tensor, float]:
