@@ -72,7 +72,6 @@ from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_methods.multidiffusion import MultiDiffusion
 from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
 from tile_utils.utils import *
-from tile_utils.typing import *
 
 CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, 'md_max_regions', 8), 16)

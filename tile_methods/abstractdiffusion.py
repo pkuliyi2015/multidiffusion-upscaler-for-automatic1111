@@ -8,13 +8,9 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from modules import devices, shared, sd_samplers_common
-from modules.shared import state
-from modules.shared_state import State
-state: State
 from modules.processing import opt_f
 
 from tile_utils.utils import *
-from tile_utils.typing import *
 
 
 class AbstractDiffusion:
@@ -27,8 +23,7 @@ class AbstractDiffusion:
         # sampler
         self.sampler_name = p.sampler_name
         self.sampler_raw = sampler
-        if self.is_kdiff: self.sampler: CFGDenoiser = sampler.model_wrap_cfg
-        else: self.sampler: VanillaStableDiffusionSampler = sampler
+        self.sampler = sampler
 
         # fix. Kdiff 'AND' support and image editing model support
         if self.is_kdiff and not hasattr(self, 'is_edit_model'):
@@ -97,7 +92,7 @@ class AbstractDiffusion:
 
     @property
     def is_ddim(self):
-        return isinstance(self.sampler_raw, VanillaStableDiffusionSampler)
+        return isinstance(self.sampler_raw, CompVisSampler)
 
     def update_pbar(self):
         if self.pbar.n >= self.pbar.total:
@@ -176,8 +171,9 @@ class AbstractDiffusion:
         if key is not None:
             cond_dict[key] = vcond
 
-    def make_cond_dict(self, cond_dict:CondDict, tcond:Tensor, icond:Tensor, vcond:Tensor=None) -> CondDict:
-        cond_out = cond_dict.copy()
+    def make_cond_dict(self, cond_in:CondDict, tcond:Tensor, icond:Tensor, vcond:Tensor=None) -> CondDict:
+        ''' copy & replace the content, returns a new object '''
+        cond_out = cond_in.copy()
         self.set_tcond(cond_out, tcond)
         self.set_icond(cond_out, icond)
         self.set_vcond(cond_out, vcond)

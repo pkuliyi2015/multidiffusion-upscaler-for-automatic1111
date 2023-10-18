@@ -1,13 +1,9 @@
 import torch
 
 from modules import devices, shared, extra_networks
-from modules.shared import state
-from modules.shared_state import State
-state: State
 
 from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_utils.utils import *
-from tile_utils.typing import *
 
 
 class MixtureOfDiffusers(AbstractDiffusion):

@@ -8,6 +8,9 @@ import numpy as np
 
 from modules import devices, shared, prompt_parser, extra_networks
 from modules.processing import opt_f
+from modules.shared import state
+from modules.shared_state import State
+state: State
 
 from tile_utils.typing import *
 
