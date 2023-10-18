@@ -32,12 +32,8 @@ class MultiDiffusion(AbstractDiffusion):
             self.sampler.inner_model.forward = self.kdiff_forward
         else:
             self.sampler: VanillaStableDiffusionSampler
-            if isinstance(self.p, ProcessingImg2Img):
-                self.sampler_forward = self.sampler.sample_img2img
-                self.sampler.sample_img2img = self.ddim_forward
-            else:
-                self.sampler_forward = self.sampler.sample
-                self.sampler.sample = self.ddim_forward
+            self.sampler_forward = self.sampler.orig_p_sample_ddim      # FIXME: this is boken due to sd-webui's update
+            self.sampler.orig_p_sample_ddim = self.ddim_forward
 
     @staticmethod
     def unhook():
@@ -128,7 +124,6 @@ class MultiDiffusion(AbstractDiffusion):
     def repeat_cond_dict(self, cond_in:CondDict, bboxes:List[CustomBBox]) -> CondDict:
         ''' repeat cond_dict for a batch of tiles '''
         # n_repeat
-        breakpoint()
         n_rep = len(bboxes)
         cond_out = cond_in.copy()
         # txt cond
