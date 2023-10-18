@@ -353,9 +353,8 @@ class Script(scripts.Script):
                     print("[Tiled Diffusion] StableSR found, support is enabled.")
                     break
 
-        ''' hijack inner APIs '''
-        if getattr(Script, "create_sampler_original_md", None) is None:
-            Script.create_sampler_original_md = sd_samplers.create_sampler
+        ''' hijack inner APIs, see unhijack in reset() '''
+        Script.create_sampler_original_md = sd_samplers.create_sampler
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method(method), 
             tile_width, tile_height, overlap, tile_batch_size,
@@ -369,7 +368,7 @@ class Script(scripts.Script):
         if enable_bbox_control:
             region_info = { f'Region {i+1}': v._asdict() for i, v in bbox_settings.items() }
             info["Region control"] = region_info
-            processing.create_random_tensors_original_md = processing.create_random_tensors
+            Script.create_random_tensors_original_md = processing.create_random_tensors
             processing.create_random_tensors = lambda *args, **kwargs: self.create_random_tensors_hijack(
                 bbox_settings, region_info, 
                 *args, **kwargs,
@@ -480,7 +479,7 @@ class Script(scripts.Script):
             self, bbox_settings: Dict, region_info: Dict,
             shape, seeds, subseeds=None, subseed_strength=0.0, seed_resize_from_h=0, seed_resize_from_w=0, p=None,
         ):
-        org_random_tensors = processing.create_random_tensors_original_md(shape, seeds, subseeds, subseed_strength, seed_resize_from_h, seed_resize_from_w, p)
+        org_random_tensors = Script.create_random_tensors_original_md(shape, seeds, subseeds, subseed_strength, seed_resize_from_h, seed_resize_from_w, p)
         height, width = shape[1], shape[2]
         background_noise = torch.zeros_like(org_random_tensors)
         background_noise_count = torch.zeros((1, 1, height, width), device=org_random_tensors.device)
@@ -570,12 +569,13 @@ class Script(scripts.Script):
         return self.noise_inverse_cache
 
     def reset(self):
-        ''' unhijack inner APIs '''
-        if hasattr(processing, "create_random_original_md"):
+        ''' unhijack inner APIs, see hijack in process() '''
+        if hasattr(Script, "create_sampler_original_md"):
             sd_samplers.create_sampler = Script.create_sampler_original_md
-        if hasattr(processing, "create_random_tensors_original_md"):
-            processing.create_random_tensors = processing.create_random_tensors_original_md
-            del processing.create_random_tensors_original_md
+            del Script.create_sampler_original_md
+        if hasattr(Script, "create_random_tensors_original_md"):
+            processing.create_random_tensors = Script.create_random_tensors_original_md
+            del Script.create_random_tensors_original_md
         MultiDiffusion    .unhook()
         MixtureOfDiffusers.unhook()
         self.delegate = None
