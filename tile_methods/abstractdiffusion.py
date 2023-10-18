@@ -176,6 +176,13 @@ class AbstractDiffusion:
         if key is not None:
             cond_dict[key] = vcond
 
+    def make_cond_dict(self, cond_dict:CondDict, tcond:Tensor, icond:Tensor, vcond:Tensor=None) -> CondDict:
+        cond_out = cond_dict.copy()
+        self.set_tcond(cond_out, tcond)
+        self.set_icond(cond_out, icond)
+        self.set_vcond(cond_out, vcond)
+        return cond_out
+
     ''' ↓↓↓ extensive functionality ↓↓↓ '''
 
     @grid_bbox
@@ -241,10 +248,10 @@ class AbstractDiffusion:
     def reconstruct_custom_cond(self, org_cond:CondDict, custom_cond:Cond, custom_uncond:Uncond, bbox:CustomBBox) -> Tuple[List, Tensor, Uncond, Tensor]:
         image_conditioning = None
         if isinstance(org_cond, dict):
-            image_cond = self.get_image_cond(org_cond)
-            if image_cond.shape[2:] == (self.h, self.w):    # img2img
-                image_cond = image_cond[bbox.slicer]
-            image_conditioning = image_cond
+            icond = self.get_icond(org_cond)
+            if icond.shape[2:] == (self.h, self.w):    # img2img
+                icond = icond[bbox.slicer]
+            image_conditioning = icond
 
         tensor = Condition.reconstruct_cond(custom_cond, self.sampler.step)
         custom_uncond = Condition.reconstruct_uncond(custom_uncond, self.sampler.step)
@@ -288,7 +295,11 @@ class AbstractDiffusion:
                             cond = torch.cat([tensor, uncond, uncond])
                         self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
                         self.set_custom_stablesr_tensors(bbox_id)
-                        return forward_func(x_tile, sigma_in, cond=self.make_condition_dict([cond], image_cond_in))
+                        return forward_func(
+                            x_tile, 
+                            sigma_in, 
+                            cond=self.make_cond_dict(original_cond, cond, image_cond_in),
+                        )
                     else:
                         # When not, we need to pass the tensor to UNet separately.
                         x_out = torch.zeros_like(x_tile)
@@ -298,7 +309,7 @@ class AbstractDiffusion:
                         cond_out = forward_func(
                             x_tile  [:cond_size], 
                             sigma_in[:cond_size], 
-                            cond=self.make_condition_dict([tensor], image_cond_in[:cond_size])
+                            cond=self.make_cond_dict(original_cond, tensor, image_cond_in[:cond_size]),
                         )
                         uncond_size = uncond.shape[0]
                         self.set_custom_controlnet_tensors(bbox_id, uncond_size)
@@ -306,7 +317,7 @@ class AbstractDiffusion:
                         uncond_out = forward_func(
                             x_tile  [cond_size:cond_size+uncond_size], 
                             sigma_in[cond_size:cond_size+uncond_size], 
-                            cond=self.make_condition_dict([uncond], image_cond_in[cond_size:cond_size+uncond_size])
+                            cond=self.make_cond_dict(original_cond, uncond, image_cond_in[cond_size:cond_size+uncond_size]),
                         )
                         x_out[:cond_size] = cond_out
                         x_out[cond_size:cond_size+uncond_size] = uncond_out
@@ -322,8 +333,8 @@ class AbstractDiffusion:
             self.image_cond_in[bbox_id] = image_cond_in
 
         # Now we get current batch of prompt and neg_prompt tensors
-        tensor = self.tensor[bbox_id]
-        uncond = self.uncond[bbox_id]
+        tensor: Tensor = self.tensor[bbox_id]
+        uncond: Tensor = self.uncond[bbox_id]
         batch_size = x_tile.shape[0]
         # get the start and end index of the current batch
         a = self.a[bbox_id]
@@ -376,7 +387,7 @@ class AbstractDiffusion:
                 return forward_func(
                     x_tile, 
                     sigma_in, 
-                    cond=self.make_condition_dict([cond_in], self.image_cond_in[bbox_id])
+                    cond=self.make_cond_dict(original_cond, cond_in, self.image_cond_in[bbox_id]),
                 )
             else:
                 # If not, we need to pass the tensor to UNet separately.
@@ -387,14 +398,14 @@ class AbstractDiffusion:
                 cond_out = forward_func(
                     x_tile  [:cond_size], 
                     sigma_in[:cond_size], 
-                    cond=self.make_condition_dict([cond_in], self.image_cond_in[bbox_id])
+                    cond=self.make_cond_dict(original_cond, cond_in, self.image_cond_in[bbox_id])
                 )
                 self.set_custom_controlnet_tensors(bbox_id, uncond_in.shape[0])
                 self.set_custom_stablesr_tensors(bbox_id)
                 uncond_out = forward_func(
                     x_tile  [cond_size:], 
                     sigma_in[cond_size:], 
-                    cond=self.make_condition_dict([uncond_in], self.image_cond_in[bbox_id])
+                    cond=self.make_cond_dict(original_cond, uncond_in, self.image_cond_in[bbox_id])
                 )
                 x_out[:cond_size] = cond_out
                 x_out[cond_size:] = uncond_out
@@ -408,7 +419,7 @@ class AbstractDiffusion:
         if a < tensor.shape[0]:
             # Deal with custom prompt tensor
             if not self.is_edit_model:
-                c_crossattn = [tensor[a:b]]
+                c_crossattn = tensor[a:b]
             else:
                 c_crossattn = torch.cat([tensor[a:b]], uncond)
             self.set_custom_controlnet_tensors(bbox_id, x_tile.shape[0])
@@ -417,7 +428,7 @@ class AbstractDiffusion:
             return forward_func(
                 x_tile, 
                 sigma_in, 
-                cond=self.make_condition_dict(c_crossattn, self.image_cond_in[bbox_id])
+                cond=self.make_cond_dict(original_cond, c_crossattn, self.image_cond_in[bbox_id])
             )
         else:
             # if the cond is finished, we need to process the uncond.
@@ -426,7 +437,7 @@ class AbstractDiffusion:
             return forward_func(
                 x_tile, 
                 sigma_in, 
-                cond=self.make_condition_dict([uncond], self.image_cond_in[bbox_id])
+                cond=self.make_cond_dict(original_cond, uncond, self.image_cond_in[bbox_id])
             )
 
     @custom_bbox
@@ -447,8 +458,8 @@ class AbstractDiffusion:
         # Wrap the image conditioning back up since the DDIM code can accept the dict directly.
         # Note that they need to be lists because it just concatenates them later.
         if image_conditioning is not None:
-            cond   = self.make_condition_dict([cond],  image_conditioning)
-            uncond = self.make_condition_dict([uncond], image_conditioning)
+            cond   = self.make_cond_dict(cond_in, cond,   image_conditioning)
+            uncond = self.make_cond_dict(cond_in, uncond, image_conditioning)
         
         # We cannot determine the batch size here for different methods, so delay it to the forward_func.
         return forward_func(x, cond, ts, unconditional_conditioning=uncond, *args, **kwargs)
@@ -696,7 +707,12 @@ class AbstractDiffusion:
         else:
             skip = 0
         cond = self.p.sd_model.get_learned_conditioning(prompts)
-        cond_in = self.make_condition_dict([cond], self.p.image_conditioning)
+        # NOTE: should be List[Tensor]
+        cond_dict_dummy = {
+            'c_crossattn': [],
+            'c_concat': [],
+        }
+        cond_in = self.make_cond_dict(cond_dict_dummy, cond, self.p.image_conditioning)
         sigmas = dnw.get_sigmas(steps).flip(0)
         shared.state.sampling_steps = steps
 
@@ -736,4 +752,4 @@ class AbstractDiffusion:
     @noise_inverse
     @torch.no_grad()
     def get_noise(self, x_in: Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
-        pass
+        raise NotImplementedError

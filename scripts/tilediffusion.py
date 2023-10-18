@@ -456,12 +456,12 @@ class Script(scripts.Script):
 
         self.delegate = delegate
 
-        info = ' '.join([
-            f"{method.value} hooked into {name!r} sampler," +
-            f"Tile size: {delegate.tile_h}x{delegate.tile_w}," +
-            f"Tile count: {delegate.num_tiles}," +
-            f"Batch size: {delegate.tile_bs}," +
-            f"Tile batches: {len(delegate.batched_bboxes)}."
+        info = ', '.join([
+            f"{method.value} hooked into {name!r} sampler",
+            f"Tile size: {delegate.tile_h}x{delegate.tile_w}",
+            f"Tile count: {delegate.num_tiles}",
+            f"Batch size: {delegate.tile_bs}",
+            f"Tile batches: {len(delegate.batched_bboxes)}",
         ])
         exts = [
             "NoiseInv"   if flag_noise_inverse     else None,

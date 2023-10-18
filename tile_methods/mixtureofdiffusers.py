@@ -115,10 +115,7 @@ class MixtureOfDiffusers(AbstractDiffusion):
                 icond_tile = torch.cat(icond_tile_list, dim=0)  # differs each
                 vcond_tile = torch.cat(vcond_tile_list, dim=0) if None not in vcond_tile_list else None # just repeat
 
-                c_tile: CondDict = c_in.copy()
-                self.set_tcond(c_tile, tcond_tile)  # [1, 77, 768]
-                self.set_icond(c_tile, icond_tile)  # [1, 5, 1, 1]
-                self.set_vcond(c_tile, vcond_tile)  # [1, ?]
+                c_tile = self.make_cond_dict(c_in, tcond_tile, icond_tile, vcond_tile)
 
                 # controlnet
                 self.switch_controlnet_tensors(batch_id, N, len(bboxes), is_denoise=True)
@@ -152,15 +149,12 @@ class MixtureOfDiffusers(AbstractDiffusion):
                 if noise_inverse_step < 0:
                     x_tile_out = self.custom_apply_model(x_tile, t_in, c_in, bbox_id, bbox)
                 else:
-                    c_out: CondDict = c_in.copy()
                     tcond = Condition.reconstruct_cond(bbox.cond, noise_inverse_step)
-                    self.set_tcond(c_out, tcond)
                     icond = self.get_icond(c_in)
                     if icond.shape[2:] == (self.h, self.w):
                         icond = icond[bbox.slicer]
-                    self.set_icond(c_out, icond)
                     vcond = self.get_vcond(c_in)
-                    self.set_vcond(c_out, vcond)
+                    c_out = self.make_cond_dict(c_in, tcond, icond, vcond)
                     x_tile_out = shared.sd_model.apply_model(x_tile, t_in, cond=c_out)
 
                 if bbox.blend_mode == BlendMode.BACKGROUND:

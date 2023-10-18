@@ -125,24 +125,20 @@ class MultiDiffusion(AbstractDiffusion):
         ''' repeat cond_dict for a batch of tiles '''
         # n_repeat
         n_rep = len(bboxes)
-        cond_out = cond_in.copy()
         # txt cond
         tcond = self.get_tcond(cond_in)           # [B=1, L, D] => [B*N, L, D]
         tcond = self._rep_dim0(tcond, n_rep)
-        self.set_tcond(cond_out, tcond)
         # img cond
         icond = self.get_icond(cond_in)
         if icond.shape[2:] == (self.h, self.w):   # img2img, [B=1, C, H, W]
             icond = torch.cat([icond[bbox.slicer] for bbox in bboxes], dim=0)
         else:                                     # txt2img, [B=1, C=5, H=1, W=1]
             icond = self._rep_dim0(icond, n_rep)
-        self.set_icond(cond_out, icond)
         # vec cond (SDXL)
         vcond = self.get_vcond(cond_in)           # [B=1, D]
         if vcond is not None:
             vcond = self._rep_dim0(vcond, n_rep)  # [B*N, D]
-            self.set_vcond(cond_out, vcond)
-        return cond_out
+        return self.make_cond_dict(cond_in, tcond, icond, vcond)
 
     def sample_one_step(self, x_in:Tensor, org_func:Callable, repeat_func:Callable, custom_func:Callable) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         '''
@@ -278,13 +274,11 @@ class MultiDiffusion(AbstractDiffusion):
         def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             # The negative prompt in custom bbox should not be used for noise inversion
             # otherwise the result will be astonishingly bad.
-            cond_out: CondDict = cond_in.copy()
             tcond = Condition.reconstruct_cond(bbox.cond, step).unsqueeze_(0)
-            self.set_tcond(cond_out, tcond)
             icond = self.get_icond(cond_in_original)
             if icond.shape[2:] == (self.h, self.w):
                 icond = icond[bbox.slicer]
-            self.set_icond(cond_out, icond)
+            cond_out = self.make_cond_dict(cond_in, tcond, icond)
             return shared.sd_model.apply_model(x, sigma_in, cond=cond_out)
 
         return self.sample_one_step(x_in, org_func, repeat_func, custom_func)
