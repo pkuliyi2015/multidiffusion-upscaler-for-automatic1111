@@ -100,8 +100,14 @@ class MultiDiffusion(AbstractDiffusion):
     def repeat_tensor(self, x:Tensor, n:int) -> Tensor:
         ''' repeat the tensor on it's first dim '''
         if n == 1: return x
-        shape = [n] + [-1] * (len(x.shape) - 1)     # [N, 1, ...]
-        return x.expand(shape)      # `expand` is much lighter than `tile`
+        B = x.shape[0]
+        r_dims = len(x.shape) - 1
+        if B == 1:      # batch_size = 1 (not `tile_batch_size`)
+            shape = [n] + [-1] * r_dims     # [N, -1, ...]
+            return x.expand(shape)          # `expand` is much lighter than `tile`
+        else:
+            shape = [n] + [1] * r_dims      # [N, 1, ...]
+            return x.repeat(shape)
 
     def repeat_cond_dict(self, cond_in:CondDict, bboxes:List[CustomBBox]) -> CondDict:
         ''' repeat all tensors in cond_dict on it's first dim (for a batch of tiles), returns a new object '''
