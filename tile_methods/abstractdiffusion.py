@@ -28,8 +28,8 @@ class AbstractDiffusion:
         # fix. Kdiff 'AND' support and image editing model support
         if self.is_kdiff and not hasattr(self, 'is_edit_model'):
             self.is_edit_model = (shared.sd_model.cond_stage_key == "edit"      # "txt"
-                and self.sampler.image_cfg_scale is not None 
-                and self.sampler.image_cfg_scale != 1.0)
+                and self.sampler.model_wrap_cfg.image_cfg_scale is not None 
+                and self.sampler.model_wrap_cfg.image_cfg_scale != 1.0)
 
         # cache. final result of current sampling step, [B, C=4, H//8, W//8]
         # avoiding overhead of creating new tensors and weight summing
@@ -249,8 +249,9 @@ class AbstractDiffusion:
                 icond = icond[bbox.slicer]
             image_conditioning = icond
 
-        tensor = Condition.reconstruct_cond(custom_cond, self.sampler.step)
-        custom_uncond = Condition.reconstruct_uncond(custom_uncond, self.sampler.step)
+        sampler_step = self.sampler.model_wrap_cfg.step
+        tensor = Condition.reconstruct_cond(custom_cond, sampler_step)
+        custom_uncond = Condition.reconstruct_uncond(custom_uncond, sampler_step)
         return tensor, custom_uncond, image_conditioning
 
     @custom_bbox
@@ -261,21 +262,22 @@ class AbstractDiffusion:
         This can be extremely tricky.
         '''
 
-        if self.kdiff_step != self.sampler.step:
-            self.kdiff_step = self.sampler.step
+        sampler_step = self.sampler.model_wrap_cfg.step
+        if self.kdiff_step != sampler_step:
+            self.kdiff_step = sampler_step
             self.kdiff_step_bbox = [-1 for _ in range(len(self.custom_bboxes))]
             self.tensor = {}        # {int: Tensor[cond]}
             self.uncond = {}        # {int: Tensor[cond]}
             self.image_cond_in = {}
             # Initialize global prompts just for estimate the behavior of kdiff
-            self.real_tensor = Condition.reconstruct_cond(self.cond_basis, self.sampler.step)
-            self.real_uncond = Condition.reconstruct_uncond(self.uncond_basis, self.sampler.step)
+            self.real_tensor = Condition.reconstruct_cond(self.cond_basis, sampler_step)
+            self.real_uncond = Condition.reconstruct_uncond(self.uncond_basis, sampler_step)
             # reset the progress for all bboxes
             self.a = [0 for _ in range(len(self.custom_bboxes))]
 
-        if self.kdiff_step_bbox[bbox_id] != self.sampler.step:
+        if self.kdiff_step_bbox[bbox_id] != sampler_step:
             # When a new step starts for a bbox, we need to judge whether the tensor is batched.
-            self.kdiff_step_bbox[bbox_id] = self.sampler.step
+            self.kdiff_step_bbox[bbox_id] = sampler_step
 
             tensor, uncond, image_cond_in = self.reconstruct_custom_cond(original_cond, bbox.cond, bbox.uncond, bbox)
 
@@ -710,13 +712,13 @@ class AbstractDiffusion:
         }
         cond_in = self.make_cond_dict(cond_dict_dummy, cond, self.p.image_conditioning)
         sigmas = dnw.get_sigmas(steps).flip(0)
-        shared.state.sampling_steps = steps
+        state.sampling_steps = steps
 
         pbar = tqdm(total=steps, desc='Noise Inversion')
         for i in range(1, len(sigmas)):
-            if shared.state.interrupted:
+            if state.interrupted:
                 return x
-            shared.state.sampling_step += 1
+            state.sampling_step += 1
 
             x_in = x
             sigma_in = torch.cat([sigmas[i] * s_in])

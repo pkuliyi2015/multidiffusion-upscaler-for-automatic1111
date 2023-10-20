@@ -10,8 +10,8 @@ from ldm.models.diffusion.ddpm import LatentDiffusion
 from modules.processing import StableDiffusionProcessing as Processing, StableDiffusionProcessingImg2Img as ProcessingImg2Img, Processed
 from modules.prompt_parser import MulticondLearnedConditioning, ScheduledPromptConditioning
 from modules.extra_networks import ExtraNetworkParams
-from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiser
-from modules.sd_samplers_timesteps import CompVisSampler, CompVisTimestepsDenoiser, CompVisTimestepsVDenoiser
+from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiserKDiffusion, CFGDenoiser
+from modules.sd_samplers_timesteps import CompVisSampler, CFGDenoiserTimesteps, CompVisTimestepsDenoiser, CompVisTimestepsVDenoiser
 
 ModuleType = type(sys)
 

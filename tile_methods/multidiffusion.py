@@ -21,10 +21,14 @@ class MultiDiffusion(AbstractDiffusion):
             # For K-Diffusion sampler with uniform prompt, we hijack into the inner model for simplicity
             # Otherwise, the masked-redraw will break due to the init_latent
             self.sampler: KDiffusionSampler
+            self.sampler.model_wrap_cfg: CFGDenoiserKDiffusion
+            self.sampler.model_wrap_cfg.inner_model: Union[CompVisDenoiser, CompVisVDenoiser]
             self.sampler_forward = self.sampler.model_wrap_cfg.inner_model.forward
             self.sampler.model_wrap_cfg.inner_model.forward = self.kdiff_forward
         else:
             self.sampler: CompVisSampler
+            self.sampler.model_wrap_cfg: CFGDenoiserTimesteps
+            self.sampler.model_wrap_cfg.inner_model: Union[CompVisTimestepsDenoiser, CompVisTimestepsVDenoiser]
             self.sampler_forward = self.sampler.model_wrap_cfg.inner_model.forward
             self.sampler.model_wrap_cfg.inner_model.forward = self.ddim_forward
 
