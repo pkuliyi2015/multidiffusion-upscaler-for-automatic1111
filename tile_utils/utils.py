@@ -1,18 +1,21 @@
 import math
 from enum import Enum
 from collections import namedtuple
+from types import MethodType
 
 import cv2
 import torch
 import numpy as np
+from tqdm import tqdm
 
 from modules import devices, shared, prompt_parser, extra_networks
-from modules.processing import opt_f
+from modules import sd_samplers_common
 from modules.shared import state
-from modules.shared_state import State
-state: State
+from modules.processing import opt_f
 
 from tile_utils.typing import *
+
+state: State
 
 
 class ComparableEnum(Enum):

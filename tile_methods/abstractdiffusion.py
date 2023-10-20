@@ -1,15 +1,3 @@
-import math
-import torch
-from types import MethodType
-
-import k_diffusion as K
-import torch.nn.functional as F
-
-from tqdm import tqdm
-
-from modules import devices, shared, sd_samplers_common
-from modules.processing import opt_f
-
 from tile_utils.utils import *
 
 
@@ -619,6 +607,7 @@ class AbstractDiffusion:
                        x:Tensor, noise:Tensor, conditioning, unconditional_conditioning,
                        steps=None, image_conditioning=None):
         # noise inverse sampling - renoise mask
+        import torch.nn.functional as F
         renoise_mask = None
         if self.noise_inverse_renoise_strength > 0:
             image = p.init_images[0]
@@ -696,6 +685,7 @@ class AbstractDiffusion:
         Migrate from the built-in script img2imgalt.py
         Tiled noise inverse for better image upscaling
         '''
+        import k_diffusion as K
         assert self.p.sampler_name == 'Euler'
 
         x = self.p.init_latent

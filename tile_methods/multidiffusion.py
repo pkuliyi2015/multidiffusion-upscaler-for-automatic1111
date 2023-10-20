@@ -1,7 +1,3 @@
-import torch
-
-from modules import devices, extra_networks
-
 from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_utils.utils import *
 
