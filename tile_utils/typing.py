@@ -11,9 +11,12 @@ from ldm.models.diffusion.ddpm import LatentDiffusion
 from modules.processing import StableDiffusionProcessing as Processing, StableDiffusionProcessingImg2Img as ProcessingImg2Img, Processed
 from modules.prompt_parser import MulticondLearnedConditioning, ScheduledPromptConditioning
 from modules.extra_networks import ExtraNetworkParams
-from modules.shared_state import State
 from modules.sd_samplers_kdiffusion import KDiffusionSampler, CFGDenoiser
 # ↓↓↓ backward compatible for v1.5.2 ↓↓↓
+try:
+  from modules.shared_state import State
+except ImportError:
+  from modules.shared import State
 try:
   from modules.sd_samplers_kdiffusion import CFGDenoiserKDiffusion
 except ImportError:
