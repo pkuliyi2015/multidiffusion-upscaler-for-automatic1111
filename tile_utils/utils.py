@@ -30,6 +30,9 @@ class Method(ComparableEnum):
     MULTI_DIFF = 'MultiDiffusion'
     MIX_DIFF   = 'Mixture of Diffusers'
 
+class Method_2(ComparableEnum):
+    DEMO_FU = "DemoFusion"
+
 class BlendMode(Enum):  # i.e. LayerType
 
     FOREGROUND = 'Foreground'
