@@ -15,7 +15,7 @@
 
 本插件通过以下三种技术实现了 **在有限的显存中进行大型图像绘制**：
 
-1. 两种 SOTA diffusion tiling 算法：[Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) 和 [MultiDiffusion](https://multidiffusion.github.io)
+1. SOTA diffusion tiling 算法：[Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) 和 [MultiDiffusion](https://multidiffusion.github.io)，新增[Demofusion](https://github.com/PRIS-CV/DemoFusion)
 2. 原创的 Tiled VAE 算法。
 3. 原创混合放大算法生成超高清图像
 
