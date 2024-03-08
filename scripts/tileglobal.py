@@ -34,7 +34,8 @@ class Script(scripts.Script):
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
-        tab    = 't2i'  if not is_img2img else 'i2i'
+        ext_id = 'demofusion'
+        tab    = f'{ext_id}-t2i'  if not is_img2img else f'{ext_id}-i2i'
         is_t2i = 'true' if not is_img2img else 'false'
         uid = lambda name: f'MD-{tab}-{name}'
 
