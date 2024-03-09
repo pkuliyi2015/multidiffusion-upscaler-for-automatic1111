@@ -508,6 +508,7 @@ class VAEHook:
         @return: image
         """
         device = next(self.net.parameters()).device
+        dtype = next(self.net.parameters()).dtype
         net = self.net
         tile_size = self.tile_size
         is_decoder = self.is_decoder
@@ -647,7 +648,7 @@ class VAEHook:
 
         # Done!
         pbar.close()
-        return result if result is not None else result_approx.to(device)
+        return result.to(dtype) if result is not None else result_approx.to(device, dtype=dtype)
 
 
 class Script(scripts.Script):
