@@ -196,6 +196,8 @@
 
 ℹ不要同时开启tilediffusion. 但该组件支持tilevae、noise inversion等常用功能
 
+ℹ更适合写实风格的图像
+
 ℹc1，c2，c3等参数可以参考demofusion. 你不必调整这些参数
 
 ****
