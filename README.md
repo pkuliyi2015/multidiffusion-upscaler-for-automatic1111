@@ -201,7 +201,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ℹ Do not enable it together with tilediffusion.  It supports operations such as tilevae, noise inversion, etc.
 
-ℹ more suitable for realistic styles
+ℹ More suitable for realistic styles
 
 ℹ For parameters such as c1, c2, and c3, please refer to the demofusion. You don't have to adjust it.
 
