@@ -32,7 +32,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 - [x] [Regional Prompt Control](#region-prompt-control)
 - [x] [Img2img upscale](#img2img-upscale)
 - [x] [Ultra-Large image generation](#ultra-large-image-generation)
-- [x] [Demofusion available](#Demofusion available)
+- [x] [Demofusion available](#Demofusion-available)
 
 => Quickstart Tutorial: [Tutorial for multidiffusion upscaler for automatic1111](https://civitai.com/models/34726), thanks to [@PotatoBananaApple](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/discussions/120) 🎉
 
