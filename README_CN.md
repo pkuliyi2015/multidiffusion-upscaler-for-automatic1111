@@ -1,4 +1,4 @@
-# 用 Tiled Diffusion & VAE 生成大型图像
+用 Tiled Diffusion & VAE 生成大型图像
 
 [![CC 署名-非商用-相同方式共享 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
 
@@ -28,6 +28,7 @@
 - [x] [区域提示控制](#区域提示控制)
 - [x] [Img2img 放大](#img2img-放大)
 - [x] [生成超大图像](#生成超大图像)
+- [x] [Demofusion现已可用](#Demofusion现已可用)
 
 => 快速入门教程: [Tutorial for multidiffusion upscaler for automatic1111](https://civitai.com/models/34726), 感谢由 [@PotatoBananaApple](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/discussions/120) 提供 🎉
 
@@ -180,6 +181,26 @@
 ![你的名字](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
 
 ****
+
+### Demofusion现已可用
+
+ℹ 建议设定随机种子以获取更好的图像
+
+ℹ 勾选随机抖动通常会得到更好的结果
+
+ℹ推荐使用较高的步数，例如30步以上，往往会有更好的效果
+
+ℹ如果你设定的生图大小是512*512， 合适的window size和overlap是64和32或者更小。如果是1024则推荐翻倍
+
+ℹimg2img推荐使用较高的重绘幅度，并尽可能地使用原图的生图模型、随机种子以及prompt等
+
+ℹ不要同时开启tilediffusion. 但该组件支持tilevae、noise inversion等常用功能
+
+ℹc1，c2，c3等参数可以参考demofusion. 你不必调整这些参数
+
+****
+
+### 
 
 ## 安装
 

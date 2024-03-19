@@ -108,10 +108,6 @@ class DemoFusion(AbstractDiffusion):
             cols=1
         dx = (w_l - tile_w) / (cols - 1) if cols > 1 else 0
         dy = (h_l - tile_h) / (rows - 1) if rows > 1 else 0
-        if self.p.random_jitter:
-            self.jitter_range = max((min(self.w, self.h)-self.stride)//4,0)
-        else:
-            self.jitter_range=0
         bbox_list: List[BBox] = []
         for row in range(rows):
             for col in range(cols):
@@ -232,8 +228,10 @@ class DemoFusion(AbstractDiffusion):
                 w,h = bbox
 
                 ######
-
-                x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg) # x_in_tmp could be changed to latents_gaussian
+                if self.gaussian_filter:
+                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.latents_gaussian[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg)
+                else:
+                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg) # x_in_tmp could be changed to latents_gaussian
                 x_global[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num] +=  x_global_i
 
                 ######

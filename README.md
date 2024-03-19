@@ -18,7 +18,7 @@ If you like the project, please give me a star! ⭐
 
 The extension enables **large image drawing & upscaling with limited VRAM** via the following techniques:
 
-1. Two SOTA diffusion tiling algorithms: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io), add [Demofusion](https://github.com/PRIS-CV/DemoFusion)
+1. SOTA diffusion tiling algorithms: [Mixture of Diffusers](https://github.com/albarji/mixture-of-diffusers) and [MultiDiffusion](https://multidiffusion.github.io), add [Demofusion](https://github.com/PRIS-CV/DemoFusion)
 2. My original Tiled VAE algorithm.
 3. My original TIled Noise Inversion for better upscaling.
 
@@ -32,6 +32,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 - [x] [Regional Prompt Control](#region-prompt-control)
 - [x] [Img2img upscale](#img2img-upscale)
 - [x] [Ultra-Large image generation](#ultra-large-image-generation)
+- [x] [Demofusion available](#Demofusion available)
 
 => Quickstart Tutorial: [Tutorial for multidiffusion upscaler for automatic1111](https://civitai.com/models/34726), thanks to [@PotatoBananaApple](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111/discussions/120) 🎉
 
@@ -185,6 +186,26 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 ![yourname](https://github.com/pkuliyi2015/multidiffusion-img-demo/blob/master/yourname.jpeg?raw=true)
 
 ****
+
+### Demofusion available
+
+ℹ Please set seed in for a better result. 
+
+ℹ Ticking  the random jitter  usually yields better results.
+
+ℹ Recommend using higher steps, such as 30 or more, for better results
+
+ℹ If you set the image size to 512 * 512, the appropriate window size and overlap are 64 and 32 or smaller. If it is 1024, it is recommended to double it.
+
+ℹ Recommend using a higher denoising strength in img2img，and try to use the original model, seeds, and prompt as much as possible
+
+ℹ Do not enable it together with tilediffusion.  It supports operations such as tilevae, noise inversion, etc.
+
+ℹFor parameters such as c1, c2, and c3, please refer to the demofusion. You don't have to adjust it.
+
+****
+
+### 
 
 ## Installation
 
