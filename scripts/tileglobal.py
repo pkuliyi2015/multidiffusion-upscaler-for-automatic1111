@@ -61,11 +61,12 @@ class Script(scripts.Script):
                 with gr.Row(variant='compact'):
                     overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent window overlap', value=64, elem_id=uid('latent-tile-overlap'))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent window batch size', value=4, elem_id=uid('latent-tile-batch-size'))
-
-                with gr.Row(variant='compact', visible=True) as tab_size:
-                    c1  = gr.Slider(minimum=0, maximum=5, step=0.1, label='c1',  value=3, elem_id=f'c1-{tab}')
-                    c2 = gr.Slider(minimum=0, maximum=5, step=0.1, label='c2', value=1, elem_id=f'c2-{tab}')
-                    c3 = gr.Slider(minimum=0, maximum=5, step=0.1, label='c3', value=1, elem_id=f'c3-{tab}')
+                with gr.Row(variant='compact', visible=True) as tab_c:
+                    c1  = gr.Slider(minimum=0, maximum=5, step=0.1, label='C1',  value=3, elem_id=f'C1-{tab}')
+                    c2 = gr.Slider(minimum=0, maximum=5, step=0.1, label='C2', value=1, elem_id=f'C2-{tab}')
+                    c3 = gr.Slider(minimum=0, maximum=5, step=0.1, label='C3', value=1, elem_id=f'C3-{tab}')
+            with gr.Group() as tab_denoise:
+                strength  = gr.Slider(minimum=0, maximum=1, step=0.01, value = 0.9, label='Denoising strength substage',visible= not is_img2img, elem_id=f'strength-{tab}')
             with gr.Row(variant='compact') as tab_upscale:
 
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
@@ -91,7 +92,7 @@ class Script(scripts.Script):
             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
             control_tensor_cpu,
             random_jitter,
-            c1,c2,c3,gaussian_filter
+            c1,c2,c3,gaussian_filter,strength
         ]
 
 
@@ -103,7 +104,7 @@ class Script(scripts.Script):
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
             control_tensor_cpu: bool,
             random_jitter:bool,
-            c1,c2,c3,gaussian_filter
+            c1,c2,c3,gaussian_filter,strength
         ):
 
         # unhijack & unhook, in case it broke at last time
@@ -190,7 +191,7 @@ class Script(scripts.Script):
 
         p.sample = lambda conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts: self.sample_hijack(
         conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts,p, is_img2img,
-        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3)
+        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength)
         ## end
 
 
@@ -218,12 +219,12 @@ class Script(scripts.Script):
 
     ''' ↓↓↓ inner API hijack ↓↓↓ '''
     @torch.no_grad()
-    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3):
+    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength):
         ################################################## Phase Initialization ######################################################
 
         if not image_ori:
             p.current_step = 0
-            p.denoising_strength = 1
+            p.denoising_strength = strength
             # p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model) #NOTE:Wrong but very useful. If corrected, please replace with the content with the following lines
             # latents = p.rng.next()
 
@@ -245,9 +246,9 @@ class Script(scripts.Script):
         devices.torch_gc()
 
         ####################################################### Phase Upscaling #####################################################
-        p.cosine_scale_1 = c1 # 3
-        p.cosine_scale_2 = c2 # 1
-        p.cosine_scale_3 = c3 # 1
+        p.cosine_scale_1 = c1
+        p.cosine_scale_2 = c2
+        p.cosine_scale_3 = c3
         p.latents = latents
         for current_scale_num in range(starting_scale, p.scale_factor+1):
             p.current_scale_num = current_scale_num

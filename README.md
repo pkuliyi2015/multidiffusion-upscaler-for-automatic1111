@@ -195,7 +195,7 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ℹ If you set the image size to 512 * 512, the appropriate window size and overlap are 64 and 32 or smaller. If it is 1024, it is recommended to double it.
 
-ℹ Recommend using a higher denoising strength in img2img，and try to use the original model, seeds, and prompt as much as possible
+ℹ Recommend using a higher denoising strength in img2img, maybe 0.8-1，and try to use the original model, seeds, and prompt as much as possible
 
 ℹ Do not enable it together with tilediffusion.  It supports operations such as tilevae, noise inversion, etc.
 
