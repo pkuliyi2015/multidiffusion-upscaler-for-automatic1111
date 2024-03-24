@@ -13,11 +13,12 @@ from modules.ui import gr_show
 from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_methods.demofusion import DemoFusion
 from tile_utils.utils import *
+from modules.sd_samplers_common import InterruptedException
+# import k_diffusion.sampling
 
 
 CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, 'md_max_regions', 8), 16)
-
 
 
 class Script(scripts.Script):
@@ -42,10 +43,8 @@ class Script(scripts.Script):
         with gr.Accordion('DemoFusion', open=False, elem_id=f'MD-{tab}'):
             with gr.Row(variant='compact') as tab_enable:
                 enabled = gr.Checkbox(label='Enable DemoFusion(Do not open it with tilediffusion)', value=False,  elem_id=uid('enabled'))
-
-            with gr.Row(variant='compact') as tab_default:
-                random_jitter = gr.Checkbox(label='Random jitter windows', value=True, elem_id=uid('random-jitter'))
-                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('keep-input-size'))
+                random_jitter = gr.Checkbox(label='Random jitter', value = True, elem_id=uid('random-jitter'))
+                keep_input_size = gr.Checkbox(label='Keep input-image size', value=False,visible=is_img2img, elem_id=uid('keep-input-size'))
                 gaussian_filter = gr.Checkbox(label='Gaussian filter', value=False, elem_id=uid('gaussian'))
 
 
@@ -64,9 +63,9 @@ class Script(scripts.Script):
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent window batch size', value=4, elem_id=uid('latent-tile-batch-size'))
 
                 with gr.Row(variant='compact', visible=True) as tab_size:
-                    c1  = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c1',  value=3, elem_id=f'c1-{tab}')
-                    c2 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c2', value=1, elem_id=f'c2-{tab}')
-                    c3 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c3', value=1, elem_id=f'c3-{tab}')
+                    c1  = gr.Slider(minimum=0, maximum=5, step=0.1, label='c1',  value=3, elem_id=f'c1-{tab}')
+                    c2 = gr.Slider(minimum=0, maximum=5, step=0.1, label='c2', value=1, elem_id=f'c2-{tab}')
+                    c3 = gr.Slider(minimum=0, maximum=5, step=0.1, label='c3', value=1, elem_id=f'c3-{tab}')
             with gr.Row(variant='compact') as tab_upscale:
 
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
@@ -223,11 +222,12 @@ class Script(scripts.Script):
         ################################################## Phase Initialization ######################################################
 
         if not image_ori:
-
+            p.current_step = 0
+            p.denoising_strength = 1
             # p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model) #NOTE:Wrong but very useful. If corrected, please replace with the content with the following lines
             # latents = p.rng.next()
-            p.denoising_strength = 1
-            p.sampler = Script.create_sampler_original_md(p.sampler_name, p.sd_model)
+
+            p.sampler = Script.create_sampler_original_md(p.sampler_name, p.sd_model) #scale
             x = p.rng.next()
             latents = p.sampler.sample(p, x, conditioning, unconditional_conditioning, image_conditioning=p.txt2img_image_conditioning(x))
             del x
@@ -285,7 +285,7 @@ class Script(scripts.Script):
 
             p.noise = noise
             p.x = p.latents.clone()
-            p.current_step=-1
+            p.current_step=0
 
             p.latents = p.sampler.sample_img2img(p,p.latents, noise , conditioning, unconditional_conditioning, image_conditioning=p.image_conditioning)
             if self.flag_noise_inverse:
@@ -297,6 +297,17 @@ class Script(scripts.Script):
         p.width = p.width*p.scale_factor
         p.height = p.height*p.scale_factor
         return p.latents
+    
+    @staticmethod
+    def callback_hijack(self_sampler,d,p):
+        p.current_step = d['i']
+
+        if self_sampler.stop_at is not None and p.current_step > self_sampler.stop_at:
+            raise InterruptedException
+
+        state.sampling_step = p.current_step
+        shared.total_tqdm.update()
+        p.current_step += 1
 
 
     def create_sampler_hijack(
@@ -313,6 +324,8 @@ class Script(scripts.Script):
                 return self.delegate.sampler_raw
             else:
                 self.reset()
+        sd_samplers_common.Sampler.callback_ori = sd_samplers_common.Sampler.callback_state
+        sd_samplers_common.Sampler.callback_state = lambda self_sampler,d:Script.callback_hijack(self_sampler,d,p)
 
         self.flag_noise_inverse = hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse
         flag_noise_inverse = self.flag_noise_inverse
@@ -467,6 +480,9 @@ class Script(scripts.Script):
         if hasattr(Script, "create_random_tensors_original_md"):
             processing.create_random_tensors = Script.create_random_tensors_original_md
             del Script.create_random_tensors_original_md
+        if hasattr(sd_samplers_common.Sampler, "callback_ori"):
+            sd_samplers_common.Sampler.callback_state = sd_samplers_common.Sampler.callback_ori
+            del sd_samplers_common.Sampler.callback_ori
         DemoFusion.unhook()
         self.delegate = None
 

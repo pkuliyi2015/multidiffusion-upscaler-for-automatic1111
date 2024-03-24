@@ -17,10 +17,6 @@ class DemoFusion(AbstractDiffusion):
         super().__init__(p, *args, **kwargs)
         assert p.sampler_name != 'UniPC', 'Demofusion is not compatible with UniPC!'
 
-    def add_one(self):
-        self.p.current_step += 1
-        return
-
 
     def hook(self):
         steps, self.t_enc = sd_samplers_common.setup_img2img_steps(self.p, None)
@@ -177,13 +173,13 @@ class DemoFusion(AbstractDiffusion):
         blurred_latents = F.conv2d(latents, kernel, padding=kernel_size//2, groups=channels)
 
         return blurred_latents
+        
 
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
     @torch.no_grad()
     @keep_signature
     def forward_one_step(self, x_in, sigma, **kwarg):
-        self.add_one()
         if self.is_kdiff:
             self.xi = self.p.x + self.p.noise * self.p.sigmas[self.p.current_step]
         else:
@@ -197,23 +193,24 @@ class DemoFusion(AbstractDiffusion):
 
         self.c1 = self.cosine_factor ** self.p.cosine_scale_1
 
-        self.x_in_tmp = x_in*(1 - self.c1) + self.xi * self.c1
+        x_in_tmp = x_in*(1 - self.c1) + self.xi * self.c1
 
         if self.p.random_jitter:
             jitter_range = self.jitter_range
         else:
             jitter_range = 0
-        self.x_in_tmp_ = F.pad(self.x_in_tmp,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
-        _,_,H,W = self.x_in_tmp.shape
+        x_in_tmp_ = F.pad(x_in_tmp,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
+        _,_,H,W = x_in_tmp.shape
 
-        std_, mean_ = self.x_in_tmp.std(), self.x_in_tmp.mean()
+        std_, mean_ = x_in_tmp.std(), x_in_tmp.mean()
         c3 = 0.99 * self.cosine_factor ** self.p.cosine_scale_3 + 1e-2
-        latents_gaussian = self.gaussian_filter(self.x_in_tmp, kernel_size=(2*self.p.current_scale_num-1), sigma=0.8*c3)
-        self.latents_gaussian = (latents_gaussian - latents_gaussian.mean()) / latents_gaussian.std() * std_ + mean_
+        latents_gaussian = self.gaussian_filter(x_in_tmp, kernel_size=(2*self.p.current_scale_num-1), sigma=0.8*c3)
+        latents_gaussian = (latents_gaussian - latents_gaussian.mean()) / latents_gaussian.std() * std_ + mean_
         self.jitter_range = jitter_range
         self.sampler.model_wrap_cfg.inner_model.forward  = self.sample_one_step_local
         self.repeat_3 = False
-        x_local = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp_,sigma, **kwarg)
+
+        x_local = self.sampler.model_wrap_cfg.forward_ori(x_in_tmp_,sigma, **kwarg)
         self.sampler.model_wrap_cfg.inner_model.forward = self.sampler_forward
         x_local = x_local[:,:,jitter_range:jitter_range+H,jitter_range:jitter_range+W]
 
@@ -229,9 +226,9 @@ class DemoFusion(AbstractDiffusion):
 
                 ######
                 if self.gaussian_filter:
-                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.latents_gaussian[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg)
+                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(latents_gaussian[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg)
                 else:
-                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg) # x_in_tmp could be changed to latents_gaussian
+                    x_global_i = self.sampler.model_wrap_cfg.forward_ori(x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg) # x_in_tmp could be changed to latents_gaussian
                 x_global[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num] +=  x_global_i
 
                 ######
@@ -241,9 +238,9 @@ class DemoFusion(AbstractDiffusion):
                 # self.x_out_list = []
                 # self.x_out_idx = -1
                 # self.flag = 1
-                # self.sampler.model_wrap_cfg.forward_ori(self.latents_gaussian[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
+                # self.sampler.model_wrap_cfg.forward_ori(x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
                 # self.flag = 0
-                # x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
+                # x_global_i = self.sampler.model_wrap_cfg.forward_ori(x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
                 # x_global[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num] +=  x_global_i
 
         self.p.sd_model.apply_model = self.p.sd_model.apply_model_ori
