@@ -369,7 +369,7 @@ class Script(scripts.Script):
             info["Region control"] = region_info
             Script.create_random_tensors_original_md = processing.create_random_tensors
             processing.create_random_tensors = lambda *args, **kwargs: self.create_random_tensors_hijack(
-                bbox_settings, region_info, 
+                bbox_settings, region_info,
                 *args, **kwargs,
             )
 

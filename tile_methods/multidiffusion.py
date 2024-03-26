@@ -36,7 +36,7 @@ class MultiDiffusion(AbstractDiffusion):
 
     def reset_buffer(self, x_in:Tensor):
         super().reset_buffer(x_in)
-        
+
     @custom_bbox
     def init_custom_bbox(self, *args):
         super().init_custom_bbox(*args)
@@ -229,7 +229,7 @@ class MultiDiffusion(AbstractDiffusion):
             cond_out = self.repeat_cond_dict(cond_in_original, bboxes)
             x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=cond_out)
             return x_tile_out
-        
+
         def custom_func(x:Tensor, bbox_id:int, bbox:CustomBBox):
             # The negative prompt in custom bbox should not be used for noise inversion
             # otherwise the result will be astonishingly bad.

@@ -23,7 +23,7 @@ class ComparableEnum(Enum):
     def __eq__(self, other: Any) -> bool:
         if   isinstance(other, str):            return self.value == other
         elif isinstance(other, ComparableEnum): return self.value == other.value
-        else: raise TypeError(f'unsupported type: {type(other)}')    
+        else: raise TypeError(f'unsupported type: {type(other)}')
 
 class Method(ComparableEnum):
 
