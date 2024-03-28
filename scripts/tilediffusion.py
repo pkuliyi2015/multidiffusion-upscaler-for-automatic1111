@@ -72,6 +72,10 @@ from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_methods.multidiffusion import MultiDiffusion
 from tile_methods.mixtureofdiffusers import MixtureOfDiffusers
 from tile_utils.utils import *
+if hasattr(opts, 'hypertile_enable_unet'):  # webui >= 1.7
+    from modules.ui_components import InputAccordion
+else:
+    InputAccordion = None
 
 CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, 'md_max_regions', 8), 16)
@@ -96,9 +100,14 @@ class Script(scripts.Script):
         is_t2i = 'true' if not is_img2img else 'false'
         uid = lambda name: f'MD-{tab}-{name}'
 
-        with gr.Accordion('Tiled Diffusion', open=False, elem_id=f'MD-{tab}'):
+        with (
+            InputAccordion(False, label='Tiled Diffusion', elem_id=uid('enabled')) if InputAccordion
+            else gr.Accordion('Tiled Diffusion', open=False, elem_id=f'MD-{tab}')
+            as enabled
+        ):
             with gr.Row(variant='compact') as tab_enable:
-                enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id=uid('enabled'))
+                if not InputAccordion:
+                    enabled = gr.Checkbox(label='Enable Tiled Diffusion', value=False,  elem_id=uid('enabled'))
                 overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id=uid('overwrite-image-size'))
                 keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('keep-input-size'))
 
