@@ -308,20 +308,19 @@ class Script(scripts.Script):
 
             self.delegate.w = int(p.current_width  / opt_f)
             self.delegate.h = int(p.current_height / opt_f)
-            if current_scale_num>1:
-                self.delegate.get_views(overlap, tile_batch_size,batch_size_g)
+            self.delegate.get_views(overlap, tile_batch_size,batch_size_g)
 
-                info = ', '.join([
-                    # f"{method.value} hooked into {name!r} sampler",
-                    f"Tile size: {self.delegate.window_size}",
-                    f"Tile count: {self.delegate.num_tiles}",
-                    f"Batch size: {self.delegate.tile_bs}",
-                    f"Tile batches: {len(self.delegate.batched_bboxes)}",
-                    f"Global batch size: {self.delegate.global_tile_bs}",
-                    f"Global batches: {len(self.delegate.global_batched_bboxes)}",
-                ])
+            info = ', '.join([
+                # f"{method.value} hooked into {name!r} sampler",
+                f"Tile size: {self.delegate.window_size}",
+                f"Tile count: {self.delegate.num_tiles}",
+                f"Batch size: {self.delegate.tile_bs}",
+                f"Tile batches: {len(self.delegate.batched_bboxes)}",
+                f"Global batch size: {self.delegate.global_tile_bs}",
+                f"Global batches: {len(self.delegate.global_batched_bboxes)}",
+            ])
 
-                print(info)
+            print(info)
 
             noise = p.rng.next()
             if hasattr(p,'initial_noise_multiplier'):
@@ -401,7 +400,7 @@ class Script(scripts.Script):
             set_cache_callback = lambda x0, xt, prompts: self.noise_inverse_set_cache(p, x0, xt, prompts, noise_inverse_steps, noise_inverse_retouch)
             delegate.init_noise_inverse(noise_inverse_steps, noise_inverse_retouch, get_cache_callback, set_cache_callback, noise_inverse_renoise_strength, noise_inverse_renoise_kernel)
 
-        delegate.get_views(overlap,tile_batch_size,batch_size_g)
+        # delegate.get_views(overlap,tile_batch_size,batch_size_g)
         if self.controlnet_script:
             delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
         if self.stablesr_script:
@@ -413,22 +412,13 @@ class Script(scripts.Script):
 
         self.delegate = delegate
 
-        info = ', '.join([
-            f"{method.value} hooked into {name!r} sampler",
-            f"Tile size: {delegate.window_size}",
-            f"Tile count: {delegate.num_tiles}",
-            f"Batch size: {delegate.tile_bs}",
-            f"Tile batches: {len(delegate.batched_bboxes)}",
-            f"Global batch size: {self.delegate.global_tile_bs}",
-            f"Global batches: {len(self.delegate.global_batched_bboxes)}",
-        ])
         exts = [
             "ContrlNet"  if self.controlnet_script else None,
             "StableSR"   if self.stablesr_script   else None,
         ]
         ext_info = ', '.join([e for e in exts if e])
         if ext_info: ext_info = f' (ext: {ext_info})'
-        print(info + ext_info)
+        print(ext_info)
 
         return delegate.sampler_raw
 
