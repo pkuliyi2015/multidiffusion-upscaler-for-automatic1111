@@ -196,6 +196,8 @@
 
 ℹ由于实现细节的差异，c1，c2，c3等参数可以参考[demofusion](https://ruoyidu.github.io/demofusion/demofusion.html)但不一定完全奏效. 如果出现模糊图像建议提高c3并降低Sigma
 
+ℹMixture mode结果略有差异，但unet推理时间会额外增加约50%，正常情况下不建议开启
+
 ![demo-example](https://github.com/Jaylen-Lee/image-demo/blob/main/example.png?raw=true)
 
 #### 示例 txt2img 1024*1024图片 3倍放大
