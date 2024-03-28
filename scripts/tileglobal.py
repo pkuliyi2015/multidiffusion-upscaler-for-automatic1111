@@ -15,6 +15,10 @@ from tile_methods.demofusion import DemoFusion
 from tile_utils.utils import *
 from modules.sd_samplers_common import InterruptedException
 # import k_diffusion.sampling
+if hasattr(opts, 'hypertile_enable_unet'):  # webui >= 1.7
+    from modules.ui_components import InputAccordion
+else:
+    InputAccordion = None
 
 
 CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
@@ -54,9 +58,16 @@ class Script(scripts.Script):
         is_t2i = 'true' if not is_img2img else 'false'
         uid = lambda name: f'MD-{tab}-{name}'
 
-        with gr.Accordion('DemoFusion', open=False, elem_id=f'MD-{tab}'):
+        with (
+            InputAccordion(False, label='DemoFusion', elem_id=uid('enabled')) if InputAccordion
+            else gr.Accordion('DemoFusion', open=False, elem_id=f'MD-{tab}')
+            as enabled
+        ):
             with gr.Row(variant='compact') as tab_enable:
-                enabled = gr.Checkbox(label='Enable DemoFusion(Dont open with tilediffusion)', value=False,  elem_id=uid('enabled'))
+                if not InputAccordion:
+                    enabled = gr.Checkbox(label='Enable DemoFusion(Dont open with tilediffusion)', value=False,  elem_id=uid('enabled'))
+                else:
+                    gr.Markdown('(Dont open with tilediffusion)')
                 random_jitter = gr.Checkbox(label='Random Jitter', value = True, elem_id=uid('random-jitter'))
                 gaussian_filter = gr.Checkbox(label='Gaussian Filter', value=True, visible=False, elem_id=uid('gaussian'))
                 keep_input_size = gr.Checkbox(label='Keep input-image size', value=False,visible=is_img2img, elem_id=uid('keep-input-size'))
