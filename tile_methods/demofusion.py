@@ -17,25 +17,17 @@ class DemoFusion(AbstractDiffusion):
         super().__init__(p, *args, **kwargs)
         assert p.sampler_name != 'UniPC', 'Demofusion is not compatible with UniPC!'
 
-    def add_one(self):
-        self.p.current_step += 1
-        return
-
 
     def hook(self):
         steps, self.t_enc = sd_samplers_common.setup_img2img_steps(self.p, None)
-        # print("ENC",self.t_enc)
 
         self.sampler.model_wrap_cfg.forward_ori = self.sampler.model_wrap_cfg.forward
-        self.sampler.model_wrap_cfg.forward = self.forward_one_step
         self.sampler_forward = self.sampler.model_wrap_cfg.inner_model.forward
+        self.sampler.model_wrap_cfg.forward = self.forward_one_step
         if self.is_kdiff:
             self.sampler: KDiffusionSampler
             self.sampler.model_wrap_cfg: CFGDenoiserKDiffusion
             self.sampler.model_wrap_cfg.inner_model: Union[CompVisDenoiser, CompVisVDenoiser]
-            sigmas = self.sampler.get_sigmas(self.p, steps)
-            # print("SIGMAS:",sigmas)
-            self.p.sigmas = sigmas[steps - self.t_enc - 1:]
         else:
             self.sampler: CompVisSampler
             self.sampler.model_wrap_cfg: CFGDenoiserTimesteps
@@ -108,17 +100,14 @@ class DemoFusion(AbstractDiffusion):
             cols=1
         dx = (w_l - tile_w) / (cols - 1) if cols > 1 else 0
         dy = (h_l - tile_h) / (rows - 1) if rows > 1 else 0
-        if self.p.random_jitter:
-            self.jitter_range = max((min(self.w, self.h)-self.stride)//4,0)
-        else:
-            self.jitter_range=0
         bbox_list: List[BBox] = []
+        self.jitter_range = 0
         for row in range(rows):
             for col in range(cols):
                 h = min(int(row * dy), h_l - tile_h)
                 w = min(int(col * dx), w_l - tile_w)
                 if self.p.random_jitter:
-                    self.jitter_range = min(max((min(self.w, self.h)-self.stride)//4,0),int(self.stride/2))
+                    self.jitter_range = min(max((min(self.w, self.h)-self.stride)//4,0),min(int(self.window_size/2),int(self.overlap/2)))
                     jitter_range = self.jitter_range
                     w_jitter = 0
                     h_jitter = 0
@@ -149,12 +138,11 @@ class DemoFusion(AbstractDiffusion):
 
         self.overlap = max(0, min(overlap, self.window_size - 4))
 
-        self.stride = max(1,self.window_size - self.overlap)
+        self.stride = max(4,self.window_size - self.overlap)
 
         # split the latent into overlapped tiles, then batching
         # weights basically indicate how many times a pixel is painted
-        bboxes, _ = self.split_bboxes_jitter(self.w, self.h, self.tile_w, self.tile_h, overlap, self.get_tile_weights())
-        print("BBOX:",len(bboxes))
+        bboxes, _ = self.split_bboxes_jitter(self.w, self.h, self.tile_w, self.tile_h, self.overlap, self.get_tile_weights())
         self.num_tiles = len(bboxes)
         self.num_batches = math.ceil(self.num_tiles / tile_bs)
         self.tile_bs = math.ceil(len(bboxes) / self.num_batches)          # optimal_batch_size
@@ -181,82 +169,47 @@ class DemoFusion(AbstractDiffusion):
         blurred_latents = F.conv2d(latents, kernel, padding=kernel_size//2, groups=channels)
 
         return blurred_latents
+        
 
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
     @torch.no_grad()
     @keep_signature
     def forward_one_step(self, x_in, sigma, **kwarg):
-        self.add_one()
         if self.is_kdiff:
-            self.xi = self.p.x + self.p.noise * self.p.sigmas[self.p.current_step]
+            x_noisy = self.p.x + self.p.noise * sigma[0]
         else:
             alphas_cumprod = self.p.sd_model.alphas_cumprod
             sqrt_alpha_cumprod = torch.sqrt(alphas_cumprod[self.timesteps[self.t_enc-self.p.current_step]])
             sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - alphas_cumprod[self.timesteps[self.t_enc-self.p.current_step]])
-            self.xi = self.p.x*sqrt_alpha_cumprod + self.p.noise * sqrt_one_minus_alpha_cumprod
+            x_noisy = self.p.x*sqrt_alpha_cumprod + self.p.noise * sqrt_one_minus_alpha_cumprod
 
         self.cosine_factor = 0.5 * (1 + torch.cos(torch.pi *torch.tensor(((self.p.current_step + 1) / (self.t_enc+1)))))
-        c2 = self.cosine_factor**self.p.cosine_scale_2
 
-        self.c1 = self.cosine_factor ** self.p.cosine_scale_1
+        c1 = self.cosine_factor ** self.p.cosine_scale_1
 
-        self.x_in_tmp = x_in*(1 - self.c1) + self.xi * self.c1
+        x_in = x_in*(1 - c1) + x_noisy * c1
 
         if self.p.random_jitter:
             jitter_range = self.jitter_range
         else:
             jitter_range = 0
-        self.x_in_tmp_ = F.pad(self.x_in_tmp,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
-        _,_,H,W = self.x_in_tmp.shape
+        x_in_ = F.pad(x_in,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
+        _,_,H,W = x_in.shape
 
-        std_, mean_ = self.x_in_tmp.std(), self.x_in_tmp.mean()
-        c3 = 0.99 * self.cosine_factor ** self.p.cosine_scale_3 + 1e-2
-        latents_gaussian = self.gaussian_filter(self.x_in_tmp, kernel_size=(2*self.p.current_scale_num-1), sigma=0.8*c3)
-        self.latents_gaussian = (latents_gaussian - latents_gaussian.mean()) / latents_gaussian.std() * std_ + mean_
-        self.jitter_range = jitter_range
-        self.sampler.model_wrap_cfg.inner_model.forward  = self.sample_one_step_local
+        self.sampler.model_wrap_cfg.inner_model.forward  = self.sample_one_step
         self.repeat_3 = False
-        x_local = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp_,sigma, **kwarg)
+
+        x_out = self.sampler.model_wrap_cfg.forward_ori(x_in_,sigma, **kwarg)
         self.sampler.model_wrap_cfg.inner_model.forward = self.sampler_forward
-        x_local = x_local[:,:,jitter_range:jitter_range+H,jitter_range:jitter_range+W]
+        x_out = x_out[:,:,jitter_range:jitter_range+H,jitter_range:jitter_range+W]
 
-        ############################################# Dilated Sampling #############################################
-        if not hasattr(self.p.sd_model, 'apply_model_ori'):
-            self.p.sd_model.apply_model_ori = self.p.sd_model.apply_model
-        self.p.sd_model.apply_model = self.apply_model_hijack
-        x_global = torch.zeros_like(x_local)
-
-        for batch_id, bboxes in enumerate(self.global_batched_bboxes):
-            for bbox in bboxes:
-                w,h = bbox
-
-                ######
-
-                x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma, **kwarg) # x_in_tmp could be changed to latents_gaussian
-                x_global[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num] +=  x_global_i
-
-                ######
-
-                #NOTE: Predicting Noise on Gaussian Latent and Obtaining Denoised on Original Latent
-
-                # self.x_out_list = []
-                # self.x_out_idx = -1
-                # self.flag = 1
-                # self.sampler.model_wrap_cfg.forward_ori(self.latents_gaussian[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
-                # self.flag = 0
-                # x_global_i = self.sampler.model_wrap_cfg.forward_ori(self.x_in_tmp[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num],sigma,**kwarg)
-                # x_global[:,:,h::self.p.current_scale_num,w::self.p.current_scale_num] +=  x_global_i
-
-        self.p.sd_model.apply_model = self.p.sd_model.apply_model_ori
-
-        x_out= x_local*(1-c2)+ x_global*c2
         return x_out
 
 
     @torch.no_grad()
     @keep_signature
-    def sample_one_step_local(self, x_in, sigma, cond):
+    def sample_one_step(self, x_in, sigma, cond):
         assert LatentDiffusion.apply_model
         def repeat_func_1(x_tile:Tensor, bboxes:List[CustomBBox]) -> Tensor:
             sigma_tile = self.repeat_tensor(sigma, len(bboxes))
@@ -287,11 +240,10 @@ class DemoFusion(AbstractDiffusion):
             repeat_func = repeat_func_2
         N,_,_,_ = x_in.shape
 
-        H = self.h
-        W = self.w
 
         self.x_buffer = torch.zeros_like(x_in)
         self.weights = torch.zeros_like(x_in)
+
         for batch_id, bboxes in enumerate(self.batched_bboxes):
             if state.interrupted: return x_in
             x_tile = torch.cat([x_in[bbox.slicer] for bbox in bboxes], dim=0)
@@ -302,9 +254,44 @@ class DemoFusion(AbstractDiffusion):
                 self.weights[bbox.slicer] += 1
         self.weights = torch.where(self.weights == 0, torch.tensor(1), self.weights) #Prevent NaN from appearing in random_jitter mode
 
-        x_buffer = self.x_buffer/self.weights
+        x_local = self.x_buffer/self.weights
 
-        return x_buffer
+        self.x_buffer = torch.zeros_like(self.x_buffer) 
+        self.weights = torch.zeros_like(self.weights)
+
+        std_, mean_ = x_in.std(), x_in.mean()
+        c3 = 0.99 * self.cosine_factor ** self.p.cosine_scale_3 + 1e-2
+        if self.p.gaussian_filter:
+            x_in_g = self.gaussian_filter(x_in, kernel_size=(2*self.p.current_scale_num-1), sigma=self.sig*c3)
+            x_in_g = (x_in_g - x_in_g.mean()) / x_in_g.std() * std_ + mean_
+
+        if not hasattr(self.p.sd_model, 'apply_model_ori'):
+            self.p.sd_model.apply_model_ori = self.p.sd_model.apply_model
+        self.p.sd_model.apply_model = self.apply_model_hijack
+        x_global = torch.zeros_like(x_local)
+        jitter_range = self.jitter_range
+        end = x_global.shape[3]-jitter_range
+
+        for batch_id, bboxes in enumerate(self.global_batched_bboxes):
+            for bbox in bboxes:
+                w,h = bbox
+                # self.x_out_list = []
+                # self.x_out_idx = -1
+                # self.flag = 1
+                x_global_i0 = self.sampler_forward(x_in_g[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num],sigma,cond = cond)
+                # self.flag = 0
+                x_global_i1 = self.sampler_forward(x_in[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num],sigma,cond = cond) #NOTE According to the original execution process, it would be very strange to use the predicted noise of gaussian latents to predict the denoised data in non Gaussian latents. Why?
+                self.x_buffer[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num] +=  (x_global_i0 + x_global_i1)/2
+                self.weights[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num] += 1
+
+        self.p.sd_model.apply_model = self.p.sd_model.apply_model_ori
+        self.weights = torch.where(self.weights == 0, torch.tensor(1), self.weights) #Prevent NaN from appearing in random_jitter mode
+
+        x_global = self.x_buffer/self.weights
+        c2 = self.cosine_factor**self.p.cosine_scale_2
+        self.x_buffer= x_local*(1-c2)+ x_global*c2
+
+        return self.x_buffer
 
 
 
@@ -315,7 +302,7 @@ class DemoFusion(AbstractDiffusion):
 
         x_tile_out = self.p.sd_model.apply_model_ori(x_in,t_in,cond)
         return x_tile_out
-        #NOTE: Using Gaussian Latent to Predict Noise on the Original Latent
+        # NOTE: Using Gaussian Latent to Predict Noise on the Original Latent
         # if self.flag == 1:
         #     x_tile_out = self.p.sd_model.apply_model_ori(x_in,t_in,cond)
         #     self.x_out_list.append(x_tile_out)

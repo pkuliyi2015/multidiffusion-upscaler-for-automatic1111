@@ -13,12 +13,27 @@ from modules.ui import gr_show
 from tile_methods.abstractdiffusion import AbstractDiffusion
 from tile_methods.demofusion import DemoFusion
 from tile_utils.utils import *
+from modules.sd_samplers_common import InterruptedException
+# import k_diffusion.sampling
 
 
 CFG_PATH = os.path.join(scripts.basedir(), 'region_configs')
 BBOX_MAX_NUM = min(getattr(shared.cmd_opts, 'md_max_regions', 8), 16)
 
 
+def create_infotext_hijack(p, all_prompts, all_seeds, all_subseeds, comments=None, iteration=0, position_in_batch=0, use_main_prompt=False, index=-1, all_negative_prompts=None):
+    idx = index
+    if index == -1:
+        idx = None
+    text = processing.create_infotext_ori(p, all_prompts, all_seeds, all_subseeds, comments, iteration, position_in_batch, use_main_prompt, idx, all_negative_prompts)
+    start_index = text.find("Size")
+    if start_index != -1:
+        r_text = f"Size:{p.width_list[index]}x{p.height_list[index]}"
+        end_index = text.find(",", start_index) 
+        if end_index != -1:
+            replaced_string = text[:start_index] + r_text + text[end_index:]
+            return replaced_string
+    return text 
 
 class Script(scripts.Script):
     def __init__(self):
@@ -41,55 +56,45 @@ class Script(scripts.Script):
 
         with gr.Accordion('DemoFusion', open=False, elem_id=f'MD-{tab}'):
             with gr.Row(variant='compact') as tab_enable:
-                enabled = gr.Checkbox(label='Enable DemoFusion(Do not open it with tilediffusion)', value=False,  elem_id=uid('enabled'))
-                # overwrite_size = gr.Checkbox(label='Overwrite image size', value=False, visible=not is_img2img, elem_id=uid('overwrite-image-size'))
-                keep_input_size = gr.Checkbox(label='Keep input image size', value=True, visible=is_img2img, elem_id=uid('keep-input-size'))
-                random_jitter = gr.Checkbox(label='Random jitter windows', value=True, elem_id=uid('random-jitter'))
+                enabled = gr.Checkbox(label='Enable DemoFusion(Dont open with tilediffusion)', value=False,  elem_id=uid('enabled'))
+                random_jitter = gr.Checkbox(label='Random Jitter', value = True, elem_id=uid('random-jitter'))
+                gaussian_filter = gr.Checkbox(label='Gaussian Filter', value=True, visible=False, elem_id=uid('gaussian'))
+                keep_input_size = gr.Checkbox(label='Keep input-image size', value=False,visible=is_img2img, elem_id=uid('keep-input-size'))
 
-            # with gr.Row(variant='compact', visible=False) as tab_size:
-            #     image_width  = gr.Slider(minimum=256, maximum=16384, step=16, label='Image width',  value=1024, elem_id=f'MD-overwrite-width-{tab}')
-            #     image_height = gr.Slider(minimum=256, maximum=16384, step=16, label='Image height', value=1024, elem_id=f'MD-overwrite-height-{tab}')
-                # overwrite_size.change(fn=gr_show, inputs=overwrite_size, outputs=tab_size, show_progress=False)
-
-            # with gr.Row(variant='compact', visible=True) as tab_size:
-            #     c1  = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c1',  value=3, elem_id=f'c1-{tab}')
-            #     c2 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c2', value=1, elem_id=f'c2-{tab}')
-            #     c3 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c3', value=1, elem_id=f'c3-{tab}')
 
             with gr.Row(variant='compact') as tab_param:
-                method = gr.Dropdown(label='Method', choices=[Method_2.DEMO_FU.value], value=Method_2.DEMO_FU.value, elem_id=uid('method-2'))
-                control_tensor_cpu = gr.Checkbox(label='Move ControlNet tensor to CPU (if applicable)', value=False, elem_id=uid('control-tensor-cpu-2'))
+                method = gr.Dropdown(label='Method', choices=[Method_2.DEMO_FU.value], value=Method_2.DEMO_FU.value, visible= False, elem_id=uid('method'))
+                control_tensor_cpu = gr.Checkbox(label='Move ControlNet tensor to CPU (if applicable)', value=False, elem_id=uid('control-tensor-cpu'))
                 reset_status = gr.Button(value='Free GPU', variant='tool')
                 reset_status.click(fn=self.reset_and_gc, show_progress=False)
 
             with gr.Group() as tab_tile:
                 with gr.Row(variant='compact'):
                     window_size = gr.Slider(minimum=16, maximum=256, step=16, label='Latent window size', value=128, elem_id=uid('latent-window-size'))
-                    # tile_height = gr.Slider(minimum=16, maximum=256, step=16, label='Latent tile height', value=96, elem_id=uid('latent-tile-height'))
 
                 with gr.Row(variant='compact'):
-                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent window overlap', value=64, elem_id=uid('latent-tile-overlap-2'))
-                    batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent window batch size', value=4, elem_id=uid('latent-tile-batch-size-2'))
-
-                with gr.Row(variant='compact', visible=True) as tab_size:
-                    c1  = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c1',  value=3, elem_id=f'c1-{tab}')
-                    c2 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c2', value=1, elem_id=f'c2-{tab}')
-                    c3 = gr.Slider(minimum=0.5, maximum=3, step=0.1, label='c3', value=1, visible=False, elem_id=f'c3-{tab}') #XXX:this parameter is useless in current version
-
+                    overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent window overlap', value=64, elem_id=uid('latent-tile-overlap'))
+                    batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent window batch size', value=4, elem_id=uid('latent-tile-batch-size'))
+                with gr.Row(variant='compact', visible=True) as tab_c:
+                    c1  = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 1',  value=3, elem_id=f'C1-{tab}')
+                    c2 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 2', value=1, elem_id=f'C2-{tab}')
+                    c3 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 3', value=1, elem_id=f'C3-{tab}')
+                    sigma = gr.Slider(minimum=0, maximum=1, step=0.01, label='Sigma', value=0.5, elem_id=f'Sigma-{tab}')
+            with gr.Group() as tab_denoise:
+                strength  = gr.Slider(minimum=0, maximum=1, step=0.01, value = 0.85,label='Denoising Strength for Substage',visible=not is_img2img, elem_id=f'strength-{tab}')
             with gr.Row(variant='compact') as tab_upscale:
-                # upscaler_name = gr.Dropdown(label='Upscaler', choices=[x.name for x in shared.sd_upscalers], value='None', elem_id=uid('upscaler-index'))
-                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Scale_Factor', value=2.0, elem_id=uid('upscaler-factor-2'))
-                # scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Overwrite Scale Factor', value=2.0,value=is_img2img, elem_id=uid('upscaler-factor'))
+                scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
+
 
             with gr.Accordion('Noise Inversion', open=True, visible=is_img2img) as tab_noise_inv:
                 with gr.Row(variant='compact'):
-                    noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False, elem_id=uid('noise-inverse-2'))
-                    noise_inverse_steps = gr.Slider(minimum=1, maximum=200, step=1, label='Inversion steps', value=10, elem_id=uid('noise-inverse-steps-2'))
+                    noise_inverse = gr.Checkbox(label='Enable Noise Inversion', value=False, elem_id=uid('noise-inverse'))
+                    noise_inverse_steps = gr.Slider(minimum=1, maximum=200, step=1, label='Inversion steps', value=10, elem_id=uid('noise-inverse-steps'))
                     gr.HTML('<p>Please test on small images before actual upscale. Default params require denoise <= 0.6</p>')
                 with gr.Row(variant='compact'):
-                    noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id=uid('noise-inverse-retouch-2'))
-                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id=uid('noise-inverse-renoise-strength-2'))
-                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=uid('noise-inverse-renoise-kernel-2'))
+                    noise_inverse_retouch = gr.Slider(minimum=1, maximum=100, step=0.1, label='Retouch', value=1, elem_id=uid('noise-inverse-retouch'))
+                    noise_inverse_renoise_strength = gr.Slider(minimum=0, maximum=2, step=0.01, label='Renoise strength', value=1, elem_id=uid('noise-inverse-renoise-strength'))
+                    noise_inverse_renoise_kernel = gr.Slider(minimum=2, maximum=512, step=1, label='Renoise kernel size', value=64, elem_id=uid('noise-inverse-renoise-kernel'))
 
             # The control includes txt2img and img2img, we use t2i and i2i to distinguish them
 
@@ -101,7 +106,7 @@ class Script(scripts.Script):
             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
             control_tensor_cpu,
             random_jitter,
-            c1,c2,c3
+            c1,c2,c3,gaussian_filter,strength,sigma
         ]
 
 
@@ -113,7 +118,7 @@ class Script(scripts.Script):
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
             control_tensor_cpu: bool,
             random_jitter:bool,
-            c1,c2,c3
+            c1,c2,c3,gaussian_filter,strength,sigma
         ):
 
         # unhijack & unhook, in case it broke at last time
@@ -129,6 +134,7 @@ class Script(scripts.Script):
         p.width_original_md  = p.width
         p.height_original_md = p.height
         p.current_scale_num = 1
+        p.gaussian_filter = gaussian_filter
         p.scale_factor = int(scale_factor)
 
         is_img2img = hasattr(p, "init_images") and len(p.init_images) > 0
@@ -136,16 +142,17 @@ class Script(scripts.Script):
             init_img = p.init_images[0]
             init_img = images.flatten(init_img, opts.img2img_background_color)
             image = init_img
-            if keep_input_size: #若 scale factor为1则为真
-                p.scale_factor = 1
+            if keep_input_size:
                 p.width  = image.width
                 p.height = image.height
+                p.width_original_md  = p.width
+                p.height_original_md = p.height
             else: #XXX:To adapt to noise inversion, we do not multiply the scale factor here
                 p.width  = p.width_original_md
                 p.height = p.height_original_md
         else:  # txt2img
-            p.width  = p.width*(p.scale_factor)
-            p.height = p.height*(p.scale_factor)
+            p.width  = p.width_original_md
+            p.height = p.height_original_md
 
         if 'png info':
             info = {}
@@ -198,7 +205,14 @@ class Script(scripts.Script):
 
         p.sample = lambda conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts: self.sample_hijack(
         conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts,p, is_img2img,
-        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3)
+        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma)
+
+        processing.create_infotext_ori = processing.create_infotext
+
+        p.width_list = [p.height]
+        p.height_list = [p.height]
+        
+        processing.create_infotext = create_infotext_hijack
         ## end
 
 
@@ -206,6 +220,20 @@ class Script(scripts.Script):
         if not enabled: return
 
         if self.delegate is not None: self.delegate.reset_controlnet_tensors()
+
+    def postprocess_batch_list(self, p, pp, *args, **kwargs):
+        for idx,image in enumerate(pp.images):
+            idx_b = idx//p.batch_size
+            pp.images[idx] = image[:,:image.shape[1]//(p.scale_factor)*(idx_b+1),:image.shape[2]//(p.scale_factor)*(idx_b+1)]
+        p.seeds =  [item for _ in range(p.scale_factor) for item in p.seeds]
+        p.prompts = [item for _ in range(p.scale_factor) for item in p.prompts]
+        p.all_negative_prompts = [item for _ in range(p.scale_factor) for item in p.all_negative_prompts]
+        p.negative_prompts = [item  for _ in range(p.scale_factor) for item in p.negative_prompts]
+        if p.color_corrections != None:
+           p.color_corrections = [item for _ in range(p.scale_factor) for item in p.color_corrections]
+        p.width_list = [item*(idx+1) for idx in range(p.scale_factor) for item in [p.width for _ in range(p.batch_size)]]
+        p.height_list = [item*(idx+1) for idx in range(p.scale_factor) for item in [p.height for _ in range(p.batch_size)]]
+        return
 
     def postprocess(self, p: Processing, processed, enabled, *args):
         if not enabled: return
@@ -226,32 +254,28 @@ class Script(scripts.Script):
 
     ''' ↓↓↓ inner API hijack ↓↓↓ '''
     @torch.no_grad()
-    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3):
-
-        if self.delegate==None:
-            p.denoising_strength=1
-            # p.sampler = Script.create_sampler_original_md(p.sampler_name, p.sd_model)
-            p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model) #NOTE:Wrong but very useful. If corrected, please replace with the content from the previous line
-        # 3. Encode input prompts
-        shared.state.sampling_step = 0
-        noise = p.rng.next()
-
-        if hasattr(p,'initial_noise_multiplier'):
-            if p.initial_noise_multiplier != 1.0:
-                p.extra_generation_params["Noise multiplier"] = p.initial_noise_multiplier
-                noise *= p.initial_noise_multiplier
-
+    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma):
         ################################################## Phase Initialization ######################################################
 
         if not image_ori:
-             latents = p.rng.next() #Same with line 233. Replaced with the following lines
-            #  latents = p.sampler.sample(p, x, conditioning, unconditional_conditioning, image_conditioning=p.txt2img_image_conditioning(x))
-            #  del x
-            #  p.denoising_strength=1
-            #  p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model)
+            p.current_step = 0
+            p.denoising_strength = strength
+            # p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model) #NOTE:Wrong but very useful. If corrected, please replace with the content with the following lines
+            # latents = p.rng.next()
+
+            p.sampler = Script.create_sampler_original_md(p.sampler_name, p.sd_model) #scale
+            x = p.rng.next()
+            print("### Phase 1 Denoising ###")
+            latents = p.sampler.sample(p, x, conditioning, unconditional_conditioning, image_conditioning=p.txt2img_image_conditioning(x))
+            latents_ = F.pad(latents, (0, latents.shape[3]*(p.scale_factor-1), 0, latents.shape[2]*(p.scale_factor-1)))
+            res = latents_
+            del x
+            p.sampler = sd_samplers.create_sampler(p.sampler_name, p.sd_model)
+            starting_scale = 2
         else: # img2img
             print("### Encoding Real Image ###")
             latents = p.init_latent
+            starting_scale = 1
 
 
         anchor_mean = latents.mean()
@@ -260,10 +284,10 @@ class Script(scripts.Script):
         devices.torch_gc()
 
         ####################################################### Phase Upscaling #####################################################
-        starting_scale = 1
-        p.cosine_scale_1 = c1 # 3
-        p.cosine_scale_2 = c2 # 1
-        p.cosine_scale_3 = c3 # 1
+        p.cosine_scale_1 = c1
+        p.cosine_scale_2 = c2
+        p.cosine_scale_3 = c3
+        self.delegate.sig = sigma
         p.latents = latents
         for current_scale_num in range(starting_scale, p.scale_factor+1):
             p.current_scale_num = current_scale_num
@@ -283,7 +307,7 @@ class Script(scripts.Script):
 
                 info = ', '.join([
                     # f"{method.value} hooked into {name!r} sampler",
-                    f"Tile size: {window_size}",
+                    f"Tile size: {self.delegate.window_size}",
                     f"Tile count: {self.delegate.num_tiles}",
                     f"Batch size: {self.delegate.tile_bs}",
                     f"Tile batches: {len(self.delegate.batched_bboxes)}",
@@ -301,7 +325,7 @@ class Script(scripts.Script):
 
             p.noise = noise
             p.x = p.latents.clone()
-            p.current_step=-1
+            p.current_step=0
 
             p.latents = p.sampler.sample_img2img(p,p.latents, noise , conditioning, unconditional_conditioning, image_conditioning=p.image_conditioning)
             if self.flag_noise_inverse:
@@ -309,10 +333,26 @@ class Script(scripts.Script):
                 self.flag_noise_inverse = False
 
             p.latents = (p.latents - p.latents.mean()) / p.latents.std() * anchor_std + anchor_mean
+            latents_ = F.pad(p.latents, (0, p.latents.shape[3]//current_scale_num*(p.scale_factor-current_scale_num), 0, p.latents.shape[2]//current_scale_num*(p.scale_factor-current_scale_num)))
+            if current_scale_num==1:
+                res = latents_
+            else:
+                res = torch.concatenate((res,latents_),axis=0)
+
         #########################################################################################################################################
-        p.width = p.width*p.scale_factor
-        p.height = p.height*p.scale_factor
-        return p.latents
+
+        return res
+    
+    @staticmethod
+    def callback_hijack(self_sampler,d,p):
+        p.current_step = d['i']
+
+        if self_sampler.stop_at is not None and p.current_step > self_sampler.stop_at:
+            raise InterruptedException
+
+        state.sampling_step = p.current_step
+        shared.total_tqdm.update()
+        p.current_step += 1
 
 
     def create_sampler_hijack(
@@ -329,6 +369,8 @@ class Script(scripts.Script):
                 return self.delegate.sampler_raw
             else:
                 self.reset()
+        sd_samplers_common.Sampler.callback_ori = sd_samplers_common.Sampler.callback_state
+        sd_samplers_common.Sampler.callback_state = lambda self_sampler,d:Script.callback_hijack(self_sampler,d,p)
 
         self.flag_noise_inverse = hasattr(p, "init_images") and len(p.init_images) > 0 and noise_inverse
         flag_noise_inverse = self.flag_noise_inverse
@@ -343,7 +385,7 @@ class Script(scripts.Script):
         else: raise NotImplementedError(f"Method {method} not implemented.")
 
         delegate = delegate_cls(p, sampler)
-        delegate.window_size = window_size
+        delegate.window_size = min(min(window_size,p.width//8),p.height//8)
         p.random_jitter = random_jitter
 
         if flag_noise_inverse:
@@ -365,7 +407,7 @@ class Script(scripts.Script):
 
         info = ', '.join([
             f"{method.value} hooked into {name!r} sampler",
-            f"Tile size: {window_size}",
+            f"Tile size: {delegate.window_size}",
             f"Tile count: {delegate.num_tiles}",
             f"Batch size: {delegate.tile_bs}",
             f"Tile batches: {len(delegate.batched_bboxes)}",
@@ -424,8 +466,6 @@ class Script(scripts.Script):
         org_random_tensors = torch.where(background_noise_count > 0, background_noise, org_random_tensors)
         org_random_tensors = torch.where(foreground_noise_count > 0, foreground_noise, org_random_tensors)
         return org_random_tensors
-        # p.sd_model.sd_model_hash改为p.sd_model_hash
-    ''' ↓↓↓ helper methods ↓↓↓ '''
 
     ''' ↓↓↓ helper methods ↓↓↓ '''
 
@@ -485,6 +525,12 @@ class Script(scripts.Script):
         if hasattr(Script, "create_random_tensors_original_md"):
             processing.create_random_tensors = Script.create_random_tensors_original_md
             del Script.create_random_tensors_original_md
+        if hasattr(sd_samplers_common.Sampler, "callback_ori"):
+            sd_samplers_common.Sampler.callback_state = sd_samplers_common.Sampler.callback_ori
+            del sd_samplers_common.Sampler.callback_ori
+        if hasattr(processing, "create_infotext_ori"):
+            processing.create_infotext = processing.create_infotext_ori
+            del processing.create_infotext_ori
         DemoFusion.unhook()
         self.delegate = None
 

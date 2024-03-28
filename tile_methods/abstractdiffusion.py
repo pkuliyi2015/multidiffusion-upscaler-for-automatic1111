@@ -104,7 +104,7 @@ class AbstractDiffusion:
     def init_done(self):
         '''
           Call this after all `init_*`, settings are done, now perform:
-            - settings sanity check 
+            - settings sanity check
             - pre-computations, cache init
             - anything thing needed before denoising starts
         '''
@@ -214,7 +214,7 @@ class AbstractDiffusion:
             h = min(self.h - y, h)
             self.custom_bboxes.append(CustomBBox(x, y, w, h, p, n, blend_mode, feather_ratio, seed))
 
-        if len(self.custom_bboxes) == 0: 
+        if len(self.custom_bboxes) == 0:
             self.enable_custom_bbox = False
             return
 
