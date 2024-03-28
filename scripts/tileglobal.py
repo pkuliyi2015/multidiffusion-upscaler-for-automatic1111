@@ -79,9 +79,9 @@ class Script(scripts.Script):
                     c1  = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 1',  value=3, elem_id=f'C1-{tab}')
                     c2 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 2', value=1, elem_id=f'C2-{tab}')
                     c3 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 3', value=1, elem_id=f'C3-{tab}')
-                    sigma = gr.Slider(minimum=0, maximum=1, step=0.01, label='Sigma', value=0.4, elem_id=f'Sigma-{tab}')
+                    sigma = gr.Slider(minimum=0, maximum=1, step=0.01, label='Sigma', value=0.5, elem_id=f'Sigma-{tab}')
             with gr.Group() as tab_denoise:
-                strength  = gr.Slider(minimum=0, maximum=1, step=0.01, value = 0.9,label='Denoising Strength for Substage',visible=not is_img2img, elem_id=f'strength-{tab}')
+                strength  = gr.Slider(minimum=0, maximum=1, step=0.01, value = 0.85,label='Denoising Strength for Substage',visible=not is_img2img, elem_id=f'strength-{tab}')
             with gr.Row(variant='compact') as tab_upscale:
                 scale_factor = gr.Slider(minimum=1.0, maximum=8.0, step=1, label='Scale Factor', value=2.0, elem_id=uid('upscaler-factor'))
 
@@ -256,8 +256,6 @@ class Script(scripts.Script):
     @torch.no_grad()
     def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma):
         ################################################## Phase Initialization ######################################################
-        # p.width  = p.width_original_md
-        # p.height = p.height_original_md
 
         if not image_ori:
             p.current_step = 0
@@ -342,8 +340,6 @@ class Script(scripts.Script):
                 res = torch.concatenate((res,latents_),axis=0)
 
         #########################################################################################################################################
-        # p.width = p.width*p.scale_factor
-        # p.height = p.height*p.scale_factor
 
         return res
     

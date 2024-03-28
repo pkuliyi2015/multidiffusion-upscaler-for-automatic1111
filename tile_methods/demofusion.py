@@ -28,8 +28,6 @@ class DemoFusion(AbstractDiffusion):
             self.sampler: KDiffusionSampler
             self.sampler.model_wrap_cfg: CFGDenoiserKDiffusion
             self.sampler.model_wrap_cfg.inner_model: Union[CompVisDenoiser, CompVisVDenoiser]
-            # sigmas = self.sampler.get_sigmas(self.p, steps)
-            # self.p.sigmas = sigmas[steps - self.t_enc - 1:]
         else:
             self.sampler: CompVisSampler
             self.sampler.model_wrap_cfg: CFGDenoiserTimesteps
@@ -242,8 +240,6 @@ class DemoFusion(AbstractDiffusion):
             repeat_func = repeat_func_2
         N,_,_,_ = x_in.shape
 
-        # H = self.h
-        # W = self.w
 
         self.x_buffer = torch.zeros_like(x_in)
         self.weights = torch.zeros_like(x_in)
