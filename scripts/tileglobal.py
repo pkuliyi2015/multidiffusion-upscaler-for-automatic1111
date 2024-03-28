@@ -58,8 +58,10 @@ class Script(scripts.Script):
             with gr.Row(variant='compact') as tab_enable:
                 enabled = gr.Checkbox(label='Enable DemoFusion(Dont open with tilediffusion)', value=False,  elem_id=uid('enabled'))
                 random_jitter = gr.Checkbox(label='Random Jitter', value = True, elem_id=uid('random-jitter'))
-                gaussian_filter = gr.Checkbox(label='Gaussian Filter', value=True, visible=False, elem_id=uid('gaussian'))
                 keep_input_size = gr.Checkbox(label='Keep input-image size', value=False,visible=is_img2img, elem_id=uid('keep-input-size'))
+                mixture_mode = gr.Checkbox(label='Mixture mode', value=False,elem_id=uid('mixture-mode'))
+
+                gaussian_filter = gr.Checkbox(label='Gaussian Filter', value=True, visible=False, elem_id=uid('gaussian'))
 
 
             with gr.Row(variant='compact') as tab_param:
@@ -75,11 +77,12 @@ class Script(scripts.Script):
                 with gr.Row(variant='compact'):
                     overlap = gr.Slider(minimum=0, maximum=256, step=4, label='Latent window overlap', value=64, elem_id=uid('latent-tile-overlap'))
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Latent window batch size', value=4, elem_id=uid('latent-tile-batch-size'))
+                    batch_size_g = gr.Slider(minimum=1, maximum=8, step=1, label='Global window batch size', value=4, elem_id=uid('Global-tile-batch-size'))
                 with gr.Row(variant='compact', visible=True) as tab_c:
                     c1  = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 1',  value=3, elem_id=f'C1-{tab}')
                     c2 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 2', value=1, elem_id=f'C2-{tab}')
                     c3 = gr.Slider(minimum=0, maximum=5, step=0.01, label='Cosine Scale 3', value=1, elem_id=f'C3-{tab}')
-                    sigma = gr.Slider(minimum=0, maximum=1, step=0.01, label='Sigma', value=0.5, elem_id=f'Sigma-{tab}')
+                    sigma = gr.Slider(minimum=0, maximum=2, step=0.01, label='Sigma', value=0.6, elem_id=f'Sigma-{tab}')
             with gr.Group() as tab_denoise:
                 strength  = gr.Slider(minimum=0, maximum=1, step=0.01, value = 0.85,label='Denoising Strength for Substage',visible=not is_img2img, elem_id=f'strength-{tab}')
             with gr.Row(variant='compact') as tab_upscale:
@@ -106,7 +109,7 @@ class Script(scripts.Script):
             noise_inverse, noise_inverse_steps, noise_inverse_retouch, noise_inverse_renoise_strength, noise_inverse_renoise_kernel,
             control_tensor_cpu,
             random_jitter,
-            c1,c2,c3,gaussian_filter,strength,sigma
+            c1,c2,c3,gaussian_filter,strength,sigma,batch_size_g,mixture_mode
         ]
 
 
@@ -118,12 +121,14 @@ class Script(scripts.Script):
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
             control_tensor_cpu: bool,
             random_jitter:bool,
-            c1,c2,c3,gaussian_filter,strength,sigma
+            c1,c2,c3,gaussian_filter,strength,sigma,batch_size_g,mixture_mode
         ):
 
         # unhijack & unhook, in case it broke at last time
         self.reset()
-
+        p.mixture = mixture_mode
+        if not mixture_mode:
+            sigma = sigma/2
         if not enabled: return
 
         ''' upscale '''
@@ -162,6 +167,7 @@ class Script(scripts.Script):
             info['Window Size']  = window_size
             info['Tile Overlap']     = overlap
             info['Tile batch size']  = tile_batch_size
+            info["Global batch size"] = batch_size_g
 
             if is_img2img:
                 info['Upscale factor'] = scale_factor
@@ -199,19 +205,19 @@ class Script(scripts.Script):
 
         sd_samplers.create_sampler = lambda name, model: self.create_sampler_hijack(
             name, model, p, Method_2(method), control_tensor_cpu,window_size, noise_inverse, noise_inverse_steps, noise_inverse_retouch,
-            noise_inverse_renoise_strength, noise_inverse_renoise_kernel, overlap, tile_batch_size,random_jitter
+            noise_inverse_renoise_strength, noise_inverse_renoise_kernel, overlap, tile_batch_size,random_jitter,batch_size_g
         )
 
 
         p.sample = lambda conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts: self.sample_hijack(
         conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts,p, is_img2img,
-        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma)
+        window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma,batch_size_g)
 
         processing.create_infotext_ori = processing.create_infotext
 
         p.width_list = [p.height]
         p.height_list = [p.height]
-        
+
         processing.create_infotext = create_infotext_hijack
         ## end
 
@@ -254,7 +260,7 @@ class Script(scripts.Script):
 
     ''' ↓↓↓ inner API hijack ↓↓↓ '''
     @torch.no_grad()
-    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma):
+    def sample_hijack(self, conditioning, unconditional_conditioning,seeds, subseeds, subseed_strength, prompts,p,image_ori,window_size, overlap, tile_batch_size,random_jitter,c1,c2,c3,strength,sigma,batch_size_g):
         ################################################## Phase Initialization ######################################################
 
         if not image_ori:
@@ -303,7 +309,7 @@ class Script(scripts.Script):
             self.delegate.w = int(p.current_width  / opt_f)
             self.delegate.h = int(p.current_height / opt_f)
             if current_scale_num>1:
-                self.delegate.get_views(overlap, tile_batch_size)
+                self.delegate.get_views(overlap, tile_batch_size,batch_size_g)
 
                 info = ', '.join([
                     # f"{method.value} hooked into {name!r} sampler",
@@ -311,6 +317,8 @@ class Script(scripts.Script):
                     f"Tile count: {self.delegate.num_tiles}",
                     f"Batch size: {self.delegate.tile_bs}",
                     f"Tile batches: {len(self.delegate.batched_bboxes)}",
+                    f"Global batch size: {self.delegate.global_tile_bs}",
+                    f"Global batches: {len(self.delegate.global_batched_bboxes)}",
                 ])
 
                 print(info)
@@ -342,7 +350,7 @@ class Script(scripts.Script):
         #########################################################################################################################################
 
         return res
-    
+
     @staticmethod
     def callback_hijack(self_sampler,d,p):
         p.current_step = d['i']
@@ -357,7 +365,7 @@ class Script(scripts.Script):
 
     def create_sampler_hijack(
             self, name: str, model: LatentDiffusion, p: Processing, method: Method_2, control_tensor_cpu:bool,window_size, noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch:float,
-            noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int, overlap:int, tile_batch_size:int, random_jitter:bool
+            noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int, overlap:int, tile_batch_size:int, random_jitter:bool,batch_size_g:int
         ):
         if self.delegate is not None:
             # samplers are stateless, we reuse it if possible
@@ -393,7 +401,7 @@ class Script(scripts.Script):
             set_cache_callback = lambda x0, xt, prompts: self.noise_inverse_set_cache(p, x0, xt, prompts, noise_inverse_steps, noise_inverse_retouch)
             delegate.init_noise_inverse(noise_inverse_steps, noise_inverse_retouch, get_cache_callback, set_cache_callback, noise_inverse_renoise_strength, noise_inverse_renoise_kernel)
 
-        delegate.get_views(overlap,tile_batch_size)
+        delegate.get_views(overlap,tile_batch_size,batch_size_g)
         if self.controlnet_script:
             delegate.init_controlnet(self.controlnet_script, control_tensor_cpu)
         if self.stablesr_script:
@@ -411,6 +419,8 @@ class Script(scripts.Script):
             f"Tile count: {delegate.num_tiles}",
             f"Batch size: {delegate.tile_bs}",
             f"Tile batches: {len(delegate.batched_bboxes)}",
+            f"Global batch size: {self.delegate.global_tile_bs}",
+            f"Global batches: {len(self.delegate.global_batched_bboxes)}",
         ])
         exts = [
             "ContrlNet"  if self.controlnet_script else None,

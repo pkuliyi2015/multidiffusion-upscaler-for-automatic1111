@@ -201,17 +201,19 @@ The extension enables **large image drawing & upscaling with limited VRAM** via 
 
 ℹ Due to differences in implementation details, parameters such as c1, c2, c3 and sigma can refer to the [demofusion](https://ruoyidu.github.io/demofusion/demofusion.html), but may not be entirely effective sometimes. If there are blurred images, it is recommended to increase c3 and reduce Sigma.
 
+ℹ There is a slight difference in the results of Mixture mode, but the inference time of UNet will increase by about 50%. It is not recommended to enable it under normal circumstances.
+
 ![demo-example](https://github.com/Jaylen-Lee/image-demo/blob/main/example.png?raw=true)
 
 #### Example: txt2img, 1024 * 1024 image 3x upscale
 
 - Params：
 
-  - Step=45, sampler=Euler, same prompt as official demofusion, random seed 35, model SDXL1.0
+  - Step=45, sampler=Euler, same prompt as official demofusion, model SDXL1.0
 
-  - Denoising Strength for Substage = 0.85， Sigma=0.5，use default values for the rest，enable tilevae
+  - Sigma=0.5，use default values for the rest，enable tilevae
 
-  - Device： 4060ti 16GB
+  - Device: 4060ti 16GB
   - The following are the images obtained at a resolution of 1024, 2048, and 3072
 
   ![demo-result](https://github.com/Jaylen-Lee/image-demo/blob/main/3.png?raw=true)

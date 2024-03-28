@@ -201,9 +201,9 @@
 #### 示例 txt2img 1024*1024图片 3倍放大
 
 - 参数：
-  - 步数 = 45，采样器 = Euler，与demofusion示例同样的提示语，随机种子35，模型为SDXL1.0
-  - 子阶段降噪 = 0.85， Sigma=0.5，其余采用默认值，开启tilevae
-  - 设备 4060ti 16GB
+  - 步数 = 45，采样器 = Euler，与demofusion示例同样的提示语，模型为SDXL1.0
+  - Sigma=0.5，其余采用默认值，开启tilevae
+  - 设备：4060ti 16GB
   - 以下为获得的1024，2048，3072分辨率的图片
 
 ![demo-result](https://github.com/Jaylen-Lee/image-demo/blob/main/3.png?raw=true)
