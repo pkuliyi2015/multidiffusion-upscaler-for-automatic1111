@@ -190,7 +190,7 @@
 
 ℹ如果你设定的生图大小是512*512， 合适的window size和overlap是64和32或者更小。如果是1024则推荐翻倍，以此类推
 
-ℹimg2img推荐使用较高的重绘幅度,比如0.8-1，并尽可能地使用原图的生图模型、随机种子以及prompt等
+ℹimg2img请尽可能地使用较高的重绘幅度以及原图的生图模型、随机种子以及prompt等
 
 ℹ不要同时开启tilediffusion. 但该组件支持tilevae、noise inversion等常用功能
 
