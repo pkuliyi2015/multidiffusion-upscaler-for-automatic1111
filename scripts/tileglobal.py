@@ -227,7 +227,8 @@ class Script(scripts.Script):
 
         if self.delegate is not None: self.delegate.reset_controlnet_tensors()
 
-    def postprocess_batch_list(self, p, pp, *args, **kwargs):
+    def postprocess_batch_list(self, p, pp, enabled,*args, **kwargs):
+        if not enabled: return
         for idx,image in enumerate(pp.images):
             idx_b = idx//p.batch_size
             pp.images[idx] = image[:,:image.shape[1]//(p.scale_factor)*(idx_b+1),:image.shape[2]//(p.scale_factor)*(idx_b+1)]
