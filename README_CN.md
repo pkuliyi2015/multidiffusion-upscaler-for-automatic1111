@@ -190,20 +190,22 @@
 
 ℹ如果你设定的生图大小是512*512， 合适的window size和overlap是64和32或者更小。如果是1024则推荐翻倍，以此类推
 
-ℹimg2img推荐使用较高的重绘幅度,比如0.8-1，并尽可能地使用原图的生图模型、随机种子以及prompt等
+ℹimg2img请尽可能地使用较高的重绘幅度以及原图的生图模型、随机种子以及prompt等
 
 ℹ不要同时开启tilediffusion. 但该组件支持tilevae、noise inversion等常用功能
 
 ℹ由于实现细节的差异，c1，c2，c3等参数可以参考[demofusion](https://ruoyidu.github.io/demofusion/demofusion.html)但不一定完全奏效. 如果出现模糊图像建议提高c3并降低Sigma
+
+ℹMixture mode结果略有差异，但unet推理时间会额外增加约50%，正常情况下不建议开启
 
 ![demo-example](https://github.com/Jaylen-Lee/image-demo/blob/main/example.png?raw=true)
 
 #### 示例 txt2img 1024*1024图片 3倍放大
 
 - 参数：
-  - 步数 = 45，采样器 = Euler，与demofusion示例同样的提示语，随机种子35，模型为SDXL1.0
-  - 子阶段降噪 = 0.85， Sigma=0.5，其余采用默认值，开启tilevae
-  - 设备 4060ti 16GB
+  - 步数 = 45，采样器 = Euler，与demofusion示例同样的提示语，模型为SDXL1.0
+  - Sigma=0.5，其余采用默认值，开启tilevae
+  - 设备：4060ti 16GB
   - 以下为获得的1024，2048，3072分辨率的图片
 
 ![demo-result](https://github.com/Jaylen-Lee/image-demo/blob/main/3.png?raw=true)

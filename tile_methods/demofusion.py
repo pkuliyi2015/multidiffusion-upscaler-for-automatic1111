@@ -57,7 +57,7 @@ class DemoFusion(AbstractDiffusion):
             shape = [n] + [1] * r_dims      # [N, 1, ...]
             return x.repeat(shape)
 
-    def repeat_cond_dict(self, cond_in:CondDict, bboxes:List[CustomBBox]) -> CondDict:
+    def repeat_cond_dict(self, cond_in:CondDict, bboxes,mode) -> CondDict:
         ''' repeat all tensors in cond_dict on it's first dim (for a batch of tiles), returns a new object '''
         # n_repeat
         n_rep = len(bboxes)
@@ -67,9 +67,16 @@ class DemoFusion(AbstractDiffusion):
         # img cond
         icond = self.get_icond(cond_in)
         if icond.shape[2:] == (self.h, self.w):   # img2img, [B=1, C, H, W]
-            icond = torch.cat([icond[bbox.slicer] for bbox in bboxes], dim=0)
+            if mode == 0:
+                if self.p.random_jitter:
+                    jitter_range = self.jitter_range
+                    icond = F.pad(icond,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
+                icond = torch.cat([icond[bbox.slicer] for bbox in bboxes], dim=0)
+            else:
+                icond = torch.cat([icond[:,:,bbox[1]::self.p.current_scale_num,bbox[0]::self.p.current_scale_num] for bbox in bboxes], dim=0)
         else:                                     # txt2img, [B=1, C=5, H=1, W=1]
             icond = self.repeat_tensor(icond, n_rep)
+
         # vec cond (SDXL)
         vcond = self.get_vcond(cond_in)           # [B=1, D]
         if vcond is not None:
@@ -89,7 +96,7 @@ class DemoFusion(AbstractDiffusion):
                 bbox = (x, y)
                 bbox_list.append(bbox)
 
-        return bbox_list
+        return bbox_list+bbox_list if self.p.mixture else bbox_list
 
     def split_bboxes_jitter(self,w_l:int, h_l:int, tile_w:int, tile_h:int, overlap:int=16, init_weight:Union[Tensor, float]=1.0) -> Tuple[List[BBox], Tensor]:
         cols = math.ceil((w_l - overlap) / (tile_w - overlap))
@@ -131,7 +138,7 @@ class DemoFusion(AbstractDiffusion):
         return bbox_list, None
 
     @grid_bbox
-    def get_views(self, overlap:int, tile_bs:int):
+    def get_views(self, overlap:int, tile_bs:int,tile_bs_g:int):
         self.enable_grid_bbox = True
         self.tile_w = self.window_size
         self.tile_h = self.window_size
@@ -150,7 +157,7 @@ class DemoFusion(AbstractDiffusion):
 
         global_bboxes = self.global_split_bboxes()
         self.global_num_tiles = len(global_bboxes)
-        self.global_num_batches = math.ceil(self.global_num_tiles / tile_bs)
+        self.global_num_batches = math.ceil(self.global_num_tiles / tile_bs_g)
         self.global_tile_bs = math.ceil(len(global_bboxes) / self.global_num_batches)
         self.global_batched_bboxes = [global_bboxes[i*self.global_tile_bs:(i+1)*self.global_tile_bs] for i in range(self.global_num_batches)]
 
@@ -169,7 +176,7 @@ class DemoFusion(AbstractDiffusion):
         blurred_latents = F.conv2d(latents, kernel, padding=kernel_size//2, groups=channels)
 
         return blurred_latents
-        
+
 
 
     ''' ↓↓↓ kernel hijacks ↓↓↓ '''
@@ -211,23 +218,23 @@ class DemoFusion(AbstractDiffusion):
     @keep_signature
     def sample_one_step(self, x_in, sigma, cond):
         assert LatentDiffusion.apply_model
-        def repeat_func_1(x_tile:Tensor, bboxes:List[CustomBBox]) -> Tensor:
+        def repeat_func_1(x_tile:Tensor, bboxes,mode=0) -> Tensor:
             sigma_tile = self.repeat_tensor(sigma, len(bboxes))
-            cond_tile = self.repeat_cond_dict(cond, bboxes)
+            cond_tile = self.repeat_cond_dict(cond, bboxes,mode)
             return self.sampler_forward(x_tile, sigma_tile, cond=cond_tile)
 
-        def repeat_func_2(x_tile:Tensor, bboxes:List[CustomBBox]) -> Tuple[Tensor, Tensor]:
+        def repeat_func_2(x_tile:Tensor, bboxes,mode=0) -> Tuple[Tensor, Tensor]:
             n_rep = len(bboxes)
             ts_tile = self.repeat_tensor(sigma, n_rep)
             if isinstance(cond, dict):   # FIXME: when will enter this branch?
-                cond_tile = self.repeat_cond_dict(cond, bboxes)
+                cond_tile = self.repeat_cond_dict(cond, bboxes,mode)
             else:
                 cond_tile = self.repeat_tensor(cond, n_rep)
             return self.sampler_forward(x_tile, ts_tile, cond=cond_tile)
 
-        def repeat_func_3(x_tile:Tensor, bboxes:List[CustomBBox]):
+        def repeat_func_3(x_tile:Tensor, bboxes,mode=0):
             sigma_in_tile = sigma.repeat(len(bboxes))
-            cond_out = self.repeat_cond_dict(cond, bboxes)
+            cond_out = self.repeat_cond_dict(cond, bboxes,mode)
             x_tile_out = shared.sd_model.apply_model(x_tile, sigma_in_tile, cond=cond_out)
             return x_tile_out
 
@@ -256,7 +263,7 @@ class DemoFusion(AbstractDiffusion):
 
         x_local = self.x_buffer/self.weights
 
-        self.x_buffer = torch.zeros_like(self.x_buffer) 
+        self.x_buffer = torch.zeros_like(self.x_buffer)
         self.weights = torch.zeros_like(self.weights)
 
         std_, mean_ = x_in.std(), x_in.mean()
@@ -272,20 +279,43 @@ class DemoFusion(AbstractDiffusion):
         jitter_range = self.jitter_range
         end = x_global.shape[3]-jitter_range
 
-        for batch_id, bboxes in enumerate(self.global_batched_bboxes):
-            for bbox in bboxes:
-                w,h = bbox
-                # self.x_out_list = []
-                # self.x_out_idx = -1
-                # self.flag = 1
-                x_global_i0 = self.sampler_forward(x_in_g[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num],sigma,cond = cond)
-                # self.flag = 0
-                x_global_i1 = self.sampler_forward(x_in[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num],sigma,cond = cond) #NOTE According to the original execution process, it would be very strange to use the predicted noise of gaussian latents to predict the denoised data in non Gaussian latents. Why?
-                self.x_buffer[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num] +=  (x_global_i0 + x_global_i1)/2
-                self.weights[:,:,h+jitter_range:end:self.p.current_scale_num,w+jitter_range:end:self.p.current_scale_num] += 1
+        current_num = 0
+        if self.p.mixture:
+            for batch_id, bboxes in enumerate(self.global_batched_bboxes):
+                current_num += len(bboxes)
+                if current_num > (self.global_num_tiles//2) and (current_num-self.global_tile_bs) < (self.global_num_tiles//2):
+                    res = len(bboxes) - (current_num - self.global_num_tiles//2)
+                    x_in_i = torch.cat([x_in[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] if idx<res else x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
+                elif current_num > (self.global_num_tiles//2):
+                    x_in_i = torch.cat([x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
+                else:
+                    x_in_i = torch.cat([x_in[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
+
+                x_global_i = repeat_func(x_in_i,bboxes,mode=1)
+
+                if current_num > (self.global_num_tiles//2) and (current_num-self.global_tile_bs) < (self.global_num_tiles//2):
+                    for idx,bbox in enumerate(bboxes):
+                        x_global[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] += x_global_i[idx*N:(idx+1)*N,:,:,:]
+                elif current_num > (self.global_num_tiles//2):
+                    for idx,bbox in enumerate(bboxes):
+                        x_global[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] += x_global_i[idx*N:(idx+1)*N,:,:,:]
+                else:
+                    for idx,bbox in enumerate(bboxes):
+                        x_global[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] += x_global_i[idx*N:(idx+1)*N,:,:,:]
+        else:
+            for batch_id, bboxes in enumerate(self.global_batched_bboxes):
+                x_in_i = torch.cat([x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
+                x_global_i = repeat_func(x_in_i,bboxes,mode=1)
+                for idx,bbox in enumerate(bboxes):
+                    x_global[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] += x_global_i[idx*N:(idx+1)*N,:,:,:]
+        #NOTE According to the original execution process, it would be very strange to use the predicted noise of gaussian latents to predict the denoised data in non Gaussian latents. Why?
+        if self.p.mixture:
+            self.x_buffer +=x_global/2
+        else:
+            self.x_buffer +=  x_global
+        self.weights += 1
 
         self.p.sd_model.apply_model = self.p.sd_model.apply_model_ori
-        self.weights = torch.where(self.weights == 0, torch.tensor(1), self.weights) #Prevent NaN from appearing in random_jitter mode
 
         x_global = self.x_buffer/self.weights
         c2 = self.cosine_factor**self.p.cosine_scale_2
