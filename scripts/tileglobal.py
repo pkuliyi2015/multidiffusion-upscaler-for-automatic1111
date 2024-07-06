@@ -126,7 +126,7 @@ class Script(scripts.Script):
 
     def process(self, p: Processing,
             enabled: bool, method: str,
-             keep_input_size: bool,
+            keep_input_size: bool,
             window_size:int, overlap: int, tile_batch_size: int,
             scale_factor: float,
             noise_inverse: bool, noise_inverse_steps: int, noise_inverse_retouch: float, noise_inverse_renoise_strength: float, noise_inverse_renoise_kernel: int,
@@ -146,7 +146,6 @@ class Script(scripts.Script):
         # store canvas size settings
         if hasattr(p, "init_images"):
             p.init_images_original_md = [img.copy() for img in p.init_images]
-
         p.width_original_md  = p.width
         p.height_original_md = p.height
         p.current_scale_num = 1
