@@ -285,7 +285,7 @@ class DemoFusion(AbstractDiffusion):
                 current_num += len(bboxes)
                 if current_num > (self.global_num_tiles//2) and (current_num-self.global_tile_bs) < (self.global_num_tiles//2):
                     res = len(bboxes) - (current_num - self.global_num_tiles//2)
-                    x_in_i = torch.cat([x_in[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] if idx<res else x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
+                    x_in_i = torch.cat([x_in[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] if idx<res else x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for idx,bbox in enumerate(bboxes)],dim=0)
                 elif current_num > (self.global_num_tiles//2):
                     x_in_i = torch.cat([x_in_g[:,:,bbox[1]+jitter_range:end:self.p.current_scale_num,bbox[0]+jitter_range:end:self.p.current_scale_num] for bbox in bboxes],dim=0)
                 else:
@@ -345,7 +345,9 @@ class DemoFusion(AbstractDiffusion):
     def get_noise(self, x_in:Tensor, sigma_in:Tensor, cond_in:Dict[str, Tensor], step:int) -> Tensor:
         # NOTE: The following code is analytically wrong but aesthetically beautiful
         cond_in_original = cond_in.copy()
-
         self.repeat_3 = True
-
-        return self.sample_one_step_local(x_in, sigma_in, cond_in_original)
+        self.cosine_factor = 0.5 * (1 + torch.cos(torch.pi *torch.tensor(((self.p.current_step + 1) / (self.t_enc+1)))))
+        jitter_range = self.jitter_range
+        _,_,H,W = x_in.shape
+        x_in_ = F.pad(x_in,(jitter_range, jitter_range, jitter_range, jitter_range),'constant',value=0)
+        return self.sample_one_step(x_in_, sigma_in, cond_in_original)[:,:,jitter_range:jitter_range+H,jitter_range:jitter_range+W]
